@@ -1,0 +1,1865 @@
+#!/usr/bin/env python3
+"""
+token-usage — Aggregate and display token consumption from AI coding tools.
+
+Supported tools: Claude Code, Codex (OpenAI), Gemini CLI, Cline, OpenCode, Qwen Coder.
+Scans local log/history files to extract token usage data and estimates costs.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import sys
+import urllib.request
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# ─── Pricing (loaded dynamically from LiteLLM) ─────────────────────────────
+# Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+
+LITELLM_PRICING_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
+LITELLM_CACHE_PATH = Path.home() / ".cache" / "token-usage" / "litellm_prices.json"
+LITELLM_CACHE_MAX_AGE = timedelta(hours=24)
+
+# Populated at startup by load_pricing()
+PRICING: dict[str, dict] = {}
+
+
+def load_pricing():
+    """Load model pricing from LiteLLM's model_prices JSON.
+
+    Tries a local cache first (refreshed every 24h), then fetches from GitHub.
+    Falls back to an empty dict if both fail (costs will show as $0).
+    """
+    global PRICING
+    raw = None
+
+    # Try cache
+    if LITELLM_CACHE_PATH.exists():
+        age = datetime.now() - datetime.fromtimestamp(LITELLM_CACHE_PATH.stat().st_mtime)
+        if age < LITELLM_CACHE_MAX_AGE:
+            try:
+                raw = json.loads(LITELLM_CACHE_PATH.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # Fetch from GitHub
+    if raw is None:
+        try:
+            req = urllib.request.Request(LITELLM_PRICING_URL, headers={"User-Agent": "token-usage/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = json.loads(resp.read().decode())
+            # Write cache
+            LITELLM_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LITELLM_CACHE_PATH.write_text(json.dumps(raw))
+        except Exception:
+            pass
+
+    # Fallback: try stale cache
+    if raw is None and LITELLM_CACHE_PATH.exists():
+        try:
+            raw = json.loads(LITELLM_CACHE_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if raw is None:
+        print(f"  {DIM}Warning: could not load LiteLLM pricing data, costs will show as $0{RESET}")
+        return
+
+    # Normalize into our internal format: key -> {input, output, cache_read, cache_write}
+    # LiteLLM uses cost-per-token; we store cost-per-token too for direct multiplication.
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        inp = entry.get("input_cost_per_token")
+        out = entry.get("output_cost_per_token")
+        if inp is None and out is None:
+            continue
+        PRICING[key.lower()] = {
+            "input":       float(inp or 0),
+            "output":      float(out or 0),
+            "cache_read":  float(entry.get("cache_read_input_token_cost") or 0),
+            "cache_write": float(entry.get("cache_creation_input_token_cost") or 0),
+        }
+
+# ─── ANSI colors ─────────────────────────────────────────────────────────────
+BOLD   = "\033[1m"
+DIM    = "\033[2m"
+RESET  = "\033[0m"
+CYAN   = "\033[36m"
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+RED    = "\033[31m"
+MAGENTA = "\033[35m"
+WHITE  = "\033[97m"
+
+BLUE = "\033[34m"
+
+TOOL_COLORS = {
+    "Claude Code": CYAN,
+    "Codex":       GREEN,
+    "Gemini CLI":  YELLOW,
+    "Cline":       MAGENTA,
+    "OpenCode":    WHITE,
+    "Qwen Coder":  RED,
+    "Cursor":      BLUE,
+    "Kiro":        YELLOW,
+}
+
+
+# ─── Data structures ─────────────────────────────────────────────────────────
+
+def empty_bucket():
+    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0}
+
+
+def add_bucket(a, b):
+    return {k: a[k] + b[k] for k in a}
+
+
+# ─── Pricing helpers ─────────────────────────────────────────────────────────
+
+ZERO_PRICE = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+
+
+def match_model(model_name: str) -> dict:
+    """Find the best pricing match for a model name in the LiteLLM data.
+
+    LiteLLM keys use formats like "claude-opus-4-6", "openai/gpt-4o",
+    "gemini/gemini-2.5-pro", etc. We try multiple matching strategies.
+    """
+    if not model_name or not PRICING:
+        return ZERO_PRICE
+    name = model_name.lower().split("[")[0].strip()  # strip [1m] suffixes
+
+    # 1. Exact match
+    if name in PRICING:
+        return PRICING[name]
+
+    # 2. Try with common provider prefixes that LiteLLM uses
+    for prefix in ["", "openai/", "anthropic/", "gemini/", "vertex_ai/",
+                    "deepseek/", "together_ai/", "fireworks_ai/"]:
+        candidate = prefix + name
+        if candidate in PRICING:
+            return PRICING[candidate]
+
+    # 3. Suffix match: find keys that end with our model name
+    for key, val in PRICING.items():
+        if key.endswith("/" + name) or key == name:
+            return val
+
+    # 4. Best substring match: find the longest PRICING key contained in name
+    #    (or name contained in key), to handle version suffixes like -20250929
+    best_key = None
+    best_len = 0
+    for key in PRICING:
+        # Skip very short keys that would match too broadly
+        if len(key) < 5:
+            continue
+        # Strip provider prefix from key for comparison
+        bare_key = key.split("/")[-1] if "/" in key else key
+        if bare_key in name and len(bare_key) > best_len:
+            best_key = key
+            best_len = len(bare_key)
+        elif name in bare_key and len(name) > best_len:
+            best_key = key
+            best_len = len(name)
+
+    if best_key:
+        return PRICING[best_key]
+
+    return ZERO_PRICE
+
+
+def compute_cost(tokens: dict, model: str) -> float:
+    """Compute cost in USD from token counts and model name.
+
+    LiteLLM prices are per-token (not per-1M), so we multiply directly.
+    """
+    p = match_model(model)
+    cost = 0.0
+    cost += tokens.get("input", 0) * p["input"]
+    cost += tokens.get("output", 0) * p["output"]
+    cost += tokens.get("cache_read", 0) * p["cache_read"]
+    cost += tokens.get("cache_write", 0) * p["cache_write"]
+    return cost
+
+
+# ─── Period helpers ──────────────────────────────────────────────────────────
+
+def period_boundaries() -> dict:
+    """Return named periods with their start datetime (UTC)."""
+    now = datetime.now(timezone.utc)
+    return {
+        "Last hour":    now - timedelta(hours=1),
+        "Last 5 hours": now - timedelta(hours=5),
+        "Today":        now.replace(hour=0, minute=0, second=0, microsecond=0),
+        "Last 7 days":  now - timedelta(days=7),
+        "Last 30 days": now - timedelta(days=30),
+        "Last year":  now - timedelta(days=365),
+    }
+
+
+def classify_periods(ts: datetime, boundaries: dict) -> list[str]:
+    """Return list of period names this timestamp falls into."""
+    return [name for name, start in boundaries.items() if ts >= start]
+
+
+# ─── Project normalization ────────────────────────────────────────────────────
+
+import re
+
+# Cache for worktree -> main project resolution
+_worktree_cache: dict[str, str] = {}
+# Set of all known project paths (populated before normalization)
+_all_project_paths: set[str] = set()
+
+
+def _resolve_git_main_worktree(dir_path: str) -> str | None:
+    """Return the main worktree path for a git directory, or None on failure."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "-C", dir_path, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            # First "worktree" line in porcelain output is the main worktree
+            for line in result.stdout.splitlines():
+                if line.startswith("worktree "):
+                    return line[len("worktree "):]
+    except Exception:
+        pass
+    return None
+
+
+def normalize_project(path: str) -> str:
+    """Normalize a project path by resolving Cline worktrees to their main project.
+
+    Cline worktrees follow the pattern: ~/.cline/worktrees/{hash}/{project-name}
+    """
+    # Only act on Cline worktree paths
+    cline_wt_match = re.match(r".*/\.cline/worktrees/[^/]+/(.+)", path)
+    if not cline_wt_match:
+        return path
+
+    if path in _worktree_cache:
+        return _worktree_cache[path]
+
+    # 1) Try git resolution if the worktree still exists on disk
+    main_path = _resolve_git_main_worktree(path)
+    if main_path and "/.cline/worktrees/" not in main_path:
+        _worktree_cache[path] = main_path
+        return main_path
+
+    # 2) Worktree no longer on disk — resolve by project name
+    proj_name = cline_wt_match.group(1)
+
+    # Check if another worktree with the same name already resolved
+    for cached_wt, cached_main in _worktree_cache.items():
+        if cached_wt.endswith("/" + proj_name) and cached_main != cached_wt:
+            _worktree_cache[path] = cached_main
+            return cached_main
+
+    # Match against all known non-worktree project paths
+    for other_path in _all_project_paths:
+        if other_path.rstrip("/").endswith("/" + proj_name) and "/.cline/worktrees/" not in other_path:
+            _worktree_cache[path] = other_path
+            return other_path
+
+    _worktree_cache[path] = path
+    return path
+
+
+# ─── Scanners ────────────────────────────────────────────────────────────────
+
+def decode_project_dir(dirname: str) -> str:
+    """Convert Claude Code project dir name back to a path.
+
+    Encoding: '---' = literal dash, single '-' = path separator '/'.
+    We use a placeholder to avoid collision during replacement.
+    """
+    PLACEHOLDER = "\x00DASH\x00"
+    return dirname.replace("---", PLACEHOLDER).replace("-", "/").replace(PLACEHOLDER, "-")
+
+
+def scan_claude_code() -> list[dict]:
+    """Scan Claude Code JSONL transcripts for token usage."""
+    records = []
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return records
+    for proj_dir in base.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        project = decode_project_dir(proj_dir.name)
+        for jsonl_file in proj_dir.glob("*.jsonl"):
+            try:
+                with open(jsonl_file, "r", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        msg = rec.get("message", {})
+                        if not isinstance(msg, dict):
+                            continue
+                        usage = msg.get("usage")
+                        if not usage:
+                            continue
+                        ts_str = rec.get("timestamp")
+                        if not ts_str:
+                            continue
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        except (ValueError, AttributeError):
+                            continue
+                        model = msg.get("model", "unknown")
+                        speed_mode = usage.get("speed", "")
+                        if speed_mode and speed_mode != "standard":
+                            model = f"{model} [{speed_mode}]"
+                        tokens = {
+                            "input":       usage.get("input_tokens", 0),
+                            "output":      usage.get("output_tokens", 0),
+                            "cache_read":  usage.get("cache_read_input_tokens", 0),
+                            "cache_write": usage.get("cache_creation_input_tokens", 0),
+                        }
+                        cost = compute_cost(tokens, model)
+                        # Prefer cwd from the record itself, fall back to dir name
+                        rec_project = rec.get("cwd") or project
+                        records.append({
+                            "tool":    "Claude Code",
+                            "model":   model,
+                            "project": rec_project,
+                            "ts":      ts,
+                            **tokens,
+                            "cost":    cost,
+                        })
+            except (OSError, IOError):
+                continue
+    return records
+
+
+def scan_codex() -> list[dict]:
+    """Scan Codex session JSONL files for token usage.
+
+    Token data is in event_msg records with payload.type == "token_count".
+    Structure: payload.info.last_token_usage.{input_tokens, cached_input_tokens,
+    output_tokens, reasoning_output_tokens}.
+    Project cwd comes from the session_meta record in the same file.
+    """
+    records = []
+    base = Path.home() / ".codex" / "sessions"
+    if not base.exists():
+        return records
+    for jsonl_file in base.rglob("*.jsonl"):
+        project = "unknown"
+        current_model = "codex-unknown"
+        current_effort = ""
+        try:
+            with open(jsonl_file, "r", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = rec.get("payload", {})
+                    if not isinstance(payload, dict):
+                        continue
+                    # Extract project from session_meta
+                    if rec.get("type") == "session_meta":
+                        project = payload.get("cwd", "unknown")
+                        continue
+                    # Extract model and effort from turn_context
+                    if rec.get("type") == "turn_context":
+                        if payload.get("model"):
+                            current_model = payload["model"]
+                        current_effort = payload.get("effort", "")
+                        continue
+                    # Token data is in event_msg with payload.type == "token_count"
+                    if rec.get("type") == "event_msg" and payload.get("type") == "token_count":
+                        info = payload.get("info") or {}
+                        usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
+                        if not usage:
+                            continue
+                        ts_str = rec.get("timestamp", "")
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        except (ValueError, AttributeError):
+                            continue
+                        tokens = {
+                            "input":       usage.get("input_tokens", 0),
+                            "output":      usage.get("output_tokens", 0),
+                            "cache_read":  usage.get("cached_input_tokens", 0),
+                            "cache_write": 0,
+                        }
+                        model = current_model
+                        if current_effort and current_effort != "medium":
+                            model = f"{model} [{current_effort}]"
+                        cost = compute_cost(tokens, model)
+                        records.append({
+                            "tool":    "Codex",
+                            "model":   model,
+                            "project": project,
+                            "ts":      ts,
+                            **tokens,
+                            "cost":    cost,
+                        })
+        except (OSError, IOError):
+            continue
+    return records
+
+
+def scan_gemini() -> list[dict]:
+    """Scan Gemini CLI session chat files for token usage.
+
+    Token data is in session JSON files at ~/.gemini/tmp/*/chats/session-*.json,
+    NOT in logs.json (which only has message text).
+    Each message object has: tokens.{input, output, cached, thoughts, tool, total}
+    and a model field.
+    """
+    import hashlib
+
+    records = []
+    base = Path.home() / ".gemini"
+    if not base.exists():
+        return records
+
+    # Build hash->path lookup for resolving hashed project directory names.
+    # Gemini uses SHA256(project_path) as the directory name.
+    hash_to_path = {}
+    home = Path.home()
+    for candidate in home.iterdir():
+        if candidate.is_dir() and not candidate.name.startswith("."):
+            h = hashlib.sha256(str(candidate).encode()).hexdigest()
+            hash_to_path[h] = str(candidate)
+            # Also try one level deeper
+            try:
+                for sub in candidate.iterdir():
+                    if sub.is_dir():
+                        h2 = hashlib.sha256(str(sub).encode()).hexdigest()
+                        hash_to_path[h2] = str(sub)
+            except PermissionError:
+                pass
+    # Also hash home itself
+    hash_to_path[hashlib.sha256(str(home).encode()).hexdigest()] = str(home)
+
+    for session_file in base.rglob("session-*.json"):
+        try:
+            # Derive project from parent folder: .gemini/tmp/{project}/chats/session-*.json
+            project = "unknown"
+            parts = session_file.parts
+            try:
+                tmp_idx = parts.index("tmp")
+                if tmp_idx + 1 < len(parts):
+                    dir_name = parts[tmp_idx + 1]
+                    # Try to resolve hash to real path
+                    project = hash_to_path.get(dir_name, dir_name)
+            except ValueError:
+                pass
+
+            with open(session_file, "r", errors="replace") as f:
+                data = json.load(f)
+            messages = data if isinstance(data, list) else data.get("messages", [])
+            for entry in messages:
+                if not isinstance(entry, dict):
+                    continue
+                tok = entry.get("tokens")
+                if not tok or not isinstance(tok, dict):
+                    continue
+                # Extract timestamp from the entry or infer from filename
+                ts_str = entry.get("timestamp") or entry.get("time", "")
+                ts = None
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        pass
+                if ts is None:
+                    # Parse from filename: session-2026-01-02T17-03-bacdd4ba.json
+                    fname = session_file.stem  # e.g. session-2026-01-02T17-03-bacdd4ba
+                    try:
+                        fparts = fname.split("-", 1)[1]  # 2026-01-02T17-03-bacdd4ba
+                        date_part = fparts[:13]  # 2026-01-02T17
+                        ts = datetime.strptime(date_part, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+                    except (ValueError, IndexError):
+                        continue
+                model = entry.get("model", "gemini-unknown")
+                tokens = {
+                    "input":       tok.get("input", 0),
+                    "output":      tok.get("output", 0),
+                    "cache_read":  tok.get("cached", 0),
+                    "cache_write": 0,
+                }
+                if tokens["input"] == 0 and tokens["output"] == 0:
+                    continue
+                cost = compute_cost(tokens, model)
+                records.append({
+                    "tool":    "Gemini CLI",
+                    "model":   model,
+                    "project": project,
+                    "ts":      ts,
+                    **tokens,
+                    "cost":    cost,
+                })
+        except (OSError, json.JSONDecodeError):
+            continue
+    return records
+
+
+def scan_cline() -> list[dict]:
+    """Scan Cline SQLite database for token usage."""
+    records = []
+    db_path = Path.home() / ".cline" / "data" / "sessions" / "sessions.db"
+    if not db_path.exists():
+        return records
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        # Check schedule_executions table for token data
+        try:
+            cur.execute("""
+                SELECT se.tokens_used, se.cost_usd, se.triggered_at, se.started_at,
+                       s.model, s.cwd, s.provider
+                FROM schedule_executions se
+                JOIN schedules s ON se.schedule_id = s.schedule_id
+                WHERE se.tokens_used IS NOT NULL AND se.tokens_used > 0
+            """)
+            for row in cur.fetchall():
+                ts_str = row["started_at"] or row["triggered_at"]
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    continue
+                total_tokens = row["tokens_used"] or 0
+                # Approximate split (Cline only stores total)
+                inp = int(total_tokens * 0.7)
+                out = total_tokens - inp
+                records.append({
+                    "tool":    "Cline",
+                    "model":   row["model"] or "unknown",
+                    "project": row["cwd"] or "unknown",
+                    "ts":      ts,
+                    "input":   inp,
+                    "output":  out,
+                    "cache_read":  0,
+                    "cache_write": 0,
+                    "cost":    row["cost_usd"] or 0.0,
+                })
+        except sqlite3.OperationalError:
+            pass
+        # Also check sessions table for any metadata_json with token data
+        try:
+            cur.execute("""
+                SELECT session_id, model, cwd, started_at, metadata_json
+                FROM sessions WHERE metadata_json IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+                usage = meta.get("usage") or meta.get("tokenUsage") or {}
+                if not usage:
+                    continue
+                ts_str = row["started_at"]
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    continue
+                tokens = {
+                    "input":  usage.get("input_tokens", 0) or usage.get("totalTokensIn", 0),
+                    "output": usage.get("output_tokens", 0) or usage.get("totalTokensOut", 0),
+                    "cache_read": 0,
+                    "cache_write": 0,
+                }
+                cost = compute_cost(tokens, row["model"])
+                records.append({
+                    "tool":    "Cline",
+                    "model":   row["model"] or "unknown",
+                    "project": row["cwd"] or "unknown",
+                    "ts":      ts,
+                    **tokens,
+                    "cost":    cost,
+                })
+        except sqlite3.OperationalError:
+            pass
+        conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    return records
+
+
+def scan_opencode() -> list[dict]:
+    """Scan OpenCode SQLite database for token usage.
+
+    OpenCode stores data in ~/.local/share/opencode/opencode.db.
+    Token data lives in the message.data JSON column (assistant messages).
+    """
+    records = []
+    db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    if not db_path.exists():
+        return records
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT m.data, s.directory
+            FROM message m
+            JOIN session s ON m.session_id = s.id
+        """)
+        for row in cur.fetchall():
+            try:
+                data = json.loads(row[0])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            tok = data.get("tokens")
+            if not tok:
+                continue
+            ts_ms = (data.get("time") or {}).get("created")
+            if not ts_ms:
+                continue
+            ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            cache = tok.get("cache") or {}
+            model_id = data.get("modelID", "unknown")
+            provider = data.get("providerID", "")
+            # Build a model name that LiteLLM can match (e.g. "anthropic/claude-sonnet-4-5")
+            if provider and provider not in model_id:
+                model = f"{provider}/{model_id}"
+            else:
+                model = model_id
+            tokens = {
+                "input":       tok.get("input", 0),
+                "output":      tok.get("output", 0),
+                "cache_read":  cache.get("read", 0),
+                "cache_write": cache.get("write", 0),
+            }
+            # Use cost from OpenCode if available, otherwise compute
+            cost = data.get("cost") or compute_cost(tokens, model)
+            project = (data.get("path") or {}).get("cwd") or row[1] or "unknown"
+            records.append({
+                "tool": "OpenCode", "model": model,
+                "project": project, "ts": ts,
+                **tokens, "cost": cost,
+            })
+        conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    return records
+
+
+def scan_qwen() -> list[dict]:
+    """Scan Qwen Coder chat logs for token usage.
+
+    Token data is in JSONL chat files at ~/.qwen/projects/*/chats/*.jsonl.
+    Records with type "system" contain telemetry events; token data is in:
+    systemPayload.uiEvent.{input_token_count, output_token_count,
+    cached_content_token_count, thoughts_token_count, total_token_count}
+    for events named "qwen-code.api_response".
+    """
+    records = []
+    base = Path.home() / ".qwen"
+    if not base.exists():
+        return records
+    for jsonl_file in base.rglob("*.jsonl"):
+        # Derive project from path: .qwen/projects/{proj-hash}/chats/xxx.jsonl
+        parts = jsonl_file.parts
+        project = "unknown"
+        try:
+            idx = parts.index("projects")
+            if idx + 1 < len(parts):
+                project = decode_project_dir(parts[idx + 1])
+        except ValueError:
+            pass
+        try:
+            with open(jsonl_file, "r", errors="replace") as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line.strip())
+                    except json.JSONDecodeError:
+                        continue
+                    # Method 1: telemetry events with systemPayload.uiEvent
+                    sys_payload = rec.get("systemPayload") or {}
+                    ui_event = sys_payload.get("uiEvent") or {}
+                    # Qwen uses flat key "event.name" (with literal dot), not nested
+                    event_name = ui_event.get("event.name") or (ui_event.get("event") or {}).get("name", "")
+                    if event_name == "qwen-code.api_response":
+                        ts_str = rec.get("timestamp", "")
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        except (ValueError, AttributeError):
+                            continue
+                        tokens = {
+                            "input":       ui_event.get("input_token_count", 0),
+                            "output":      ui_event.get("output_token_count", 0),
+                            "cache_read":  ui_event.get("cached_content_token_count", 0),
+                            "cache_write": 0,
+                        }
+                        model = ui_event.get("model", "qwen-unknown")
+                        cost = compute_cost(tokens, model)
+                        records.append({
+                            "tool": "Qwen Coder", "model": model,
+                            "project": project, "ts": ts,
+                            **tokens, "cost": cost,
+                        })
+                        continue
+                    # Method 2: direct usage field (fallback)
+                    usage = rec.get("usage")
+                    if not usage:
+                        continue
+                    ts_str = rec.get("timestamp", "")
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        continue
+                    tokens = {
+                        "input":  usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0),
+                        "output": usage.get("output_tokens", 0) or usage.get("completion_tokens", 0),
+                        "cache_read": 0, "cache_write": 0,
+                    }
+                    model = rec.get("model", "qwen-unknown")
+                    cost = compute_cost(tokens, model)
+                    records.append({
+                        "tool": "Qwen Coder", "model": model,
+                        "project": project, "ts": ts,
+                        **tokens, "cost": cost,
+                    })
+        except (OSError, IOError):
+            continue
+    return records
+
+
+def scan_cursor() -> list[dict]:
+    """Scan Cursor state.vscdb for token usage.
+
+    Cursor stores conversation data in a SQLite key-value store (cursorDiskKV).
+    Assistant messages (bubbleId:*) contain tokenCount.{inputTokens, outputTokens}
+    and a createdAt timestamp. Model info is in modelInfo or composerData.modelConfig.
+    """
+    records = []
+    db_path = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+    if not db_path.exists():
+        return records
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+
+        # Build composerId -> (project, model) lookup from composerData
+        composer_projects = {}
+        composer_models = {}
+        cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE ?",
+                    ("composerData:%",))
+        for key, val in cur.fetchall():
+            try:
+                cdata = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            cid = cdata.get("composerId", "")
+            if not cid:
+                continue
+            project = ""
+            # Extract project from file paths: find common directory prefix
+            all_dirs = []
+            for src_key in ("originalFileStates", "newlyCreatedFiles",
+                            "newlyCreatedFolders"):
+                src = cdata.get(src_key)
+                items = []
+                if isinstance(src, dict):
+                    items = list(src.keys())
+                elif isinstance(src, list):
+                    items = src
+                for item in items:
+                    fp = ""
+                    if isinstance(item, str):
+                        fp = item
+                    elif isinstance(item, dict):
+                        uri = item.get("uri") or item
+                        fp = uri.get("path", "") if isinstance(uri, dict) else ""
+                    if fp.startswith("file://"):
+                        fp = fp[7:]
+                    if not fp:
+                        continue
+                    # Use parent dir for files, dir itself for folders
+                    if src_key == "newlyCreatedFolders":
+                        all_dirs.append(fp)
+                    else:
+                        all_dirs.append(str(Path(fp).parent))
+            if all_dirs:
+                # Common prefix of all directories = project root
+                project = os.path.commonpath(all_dirs)
+            composer_projects[cid] = project
+            mc = cdata.get("modelConfig") or {}
+            composer_models[cid] = mc.get("modelName", "")
+
+        # Extract token data from bubbles
+        # Key format: bubbleId:{composerId}:{bubbleId}
+        # Group by composer to aggregate per-composer when no per-bubble tokens
+        composer_bubbles = {}
+        cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE ?",
+                    ("bubbleId:%",))
+        for (key, val) in cur.fetchall():
+            try:
+                data = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            key_parts = key.split(":")
+            composer_id = key_parts[1] if len(key_parts) >= 3 else ""
+            if composer_id not in composer_bubbles:
+                composer_bubbles[composer_id] = []
+            composer_bubbles[composer_id].append(data)
+
+        for composer_id, bubbles in composer_bubbles.items():
+            project = composer_projects.get(composer_id, "") or "unknown"
+            comp_model = composer_models.get(composer_id, "")
+
+            # Check if any bubble has real token data
+            has_real_tokens = any(
+                (b.get("tokenCount") or {}).get("inputTokens", 0) > 0 or
+                (b.get("tokenCount") or {}).get("outputTokens", 0) > 0
+                for b in bubbles
+            )
+
+            if has_real_tokens:
+                # Use actual token counts per bubble
+                for data in bubbles:
+                    tc = data.get("tokenCount") or {}
+                    inp = tc.get("inputTokens", 0)
+                    out = tc.get("outputTokens", 0)
+                    if inp == 0 and out == 0:
+                        continue
+                    ts_str = data.get("createdAt", "")
+                    if not ts_str:
+                        continue
+                    try:
+                        if isinstance(ts_str, (int, float)):
+                            ts = datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
+                        else:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError, OSError):
+                        continue
+                    model_info = data.get("modelInfo") or {}
+                    model = model_info.get("modelName", "")
+                    if not model or model in ("default", "unknown"):
+                        model = comp_model or "cursor-default"
+                    if model in ("default", "unknown", ""):
+                        model = "cursor-default"
+                    tokens = {
+                        "input":       inp,
+                        "output":      out,
+                        "cache_read":  0,
+                        "cache_write": 0,
+                    }
+                    cost = compute_cost(tokens, model)
+                    records.append({
+                        "tool":    "Cursor",
+                        "model":   model,
+                        "project": project,
+                        "ts":      ts,
+                        **tokens,
+                        "cost":    cost,
+                    })
+            else:
+                # Estimate tokens from text + thinking content (~4 chars/token)
+                # Create one aggregated record per composer
+                est_input = 0
+                est_output = 0
+                latest_ts = None
+                earliest_ts = None
+                for data in bubbles:
+                    ts_str = data.get("createdAt", "")
+                    try:
+                        if isinstance(ts_str, (int, float)):
+                            ts = datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
+                        elif ts_str:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        else:
+                            continue
+                    except (ValueError, AttributeError, OSError):
+                        continue
+                    if latest_ts is None or ts > latest_ts:
+                        latest_ts = ts
+                    if earliest_ts is None or ts < earliest_ts:
+                        earliest_ts = ts
+                    text_len = len(data.get("text", ""))
+                    thinking = data.get("thinking") or {}
+                    thinking_len = len(thinking.get("text", "")) if isinstance(thinking, dict) else 0
+                    btype = data.get("type", 0)
+                    if btype == 1:  # user message
+                        est_input += text_len // 4
+                    elif btype == 2:  # assistant message
+                        est_output += (text_len + thinking_len) // 4
+                if latest_ts and (est_input > 0 or est_output > 0):
+                    model = comp_model or "cursor-default"
+                    if model in ("default", "unknown", ""):
+                        model = "cursor-default"
+                    model = f"{model} [est]"
+                    tokens = {
+                        "input":       est_input,
+                        "output":      est_output,
+                        "cache_read":  0,
+                        "cache_write": 0,
+                    }
+                    cost = compute_cost(tokens, model)
+                    records.append({
+                        "tool":    "Cursor",
+                        "model":   model,
+                        "project": project,
+                        "ts":      latest_ts,
+                        **tokens,
+                        "cost":    cost,
+                    })
+        conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    return records
+
+
+def scan_kiro() -> list[dict]:
+    """Scan Kiro devdata.sqlite for token usage.
+
+    Kiro stores cumulative token counts in tokens_generated table.
+    We compute per-request deltas from consecutive records.
+    Project is resolved from workspace-sessions/sessions.json.
+    """
+    records = []
+    kiro_base = (Path.home() / "Library" / "Application Support" / "Kiro"
+                 / "User" / "globalStorage" / "kiro.kiroagent")
+    db_path = kiro_base / "dev_data" / "devdata.sqlite"
+    if not db_path.exists():
+        return records
+
+    # Resolve project from workspace sessions
+    project = "unknown"
+    sessions_dir = kiro_base / "workspace-sessions"
+    if sessions_dir.exists():
+        for sessions_json in sessions_dir.rglob("sessions.json"):
+            try:
+                with open(sessions_json, "r") as f:
+                    sessions = json.load(f)
+                if isinstance(sessions, list):
+                    for s in sessions:
+                        wd = s.get("workspaceDirectory", "")
+                        if wd:
+                            project = wd
+                            break
+            except (json.JSONDecodeError, OSError):
+                pass
+            if project != "unknown":
+                break
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT model, provider, tokens_generated, tokens_prompt, timestamp
+            FROM tokens_generated ORDER BY id
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        prev_prompt = 0
+        for model, provider, tok_gen, tok_prompt, ts_str in rows:
+            try:
+                ts = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                continue
+            # Compute delta from previous record (cumulative counters)
+            delta_prompt = tok_prompt - prev_prompt if tok_prompt > prev_prompt else tok_prompt
+            prev_prompt = tok_prompt
+            if delta_prompt == 0 and tok_gen == 0:
+                continue
+            tokens = {
+                "input":       delta_prompt,
+                "output":      tok_gen,
+                "cache_read":  0,
+                "cache_write": 0,
+            }
+            model_name = f"{provider}/{model}" if provider and provider != model else model
+            cost = compute_cost(tokens, model_name)
+            records.append({
+                "tool":    "Kiro",
+                "model":   model_name,
+                "project": project,
+                "ts":      ts,
+                **tokens,
+                "cost":    cost,
+            })
+    except (sqlite3.Error, OSError):
+        pass
+    return records
+
+
+# ─── Speed scanners ──────────────────────────────────────────────────────────
+
+def scan_speed_claude_code() -> list[dict]:
+    """Extract output speed (tokens/sec) from Claude Code JSONL transcripts.
+
+    Approach: for each user message followed by assistant messages, compute
+    output_tokens / duration. Multi-message turns use first→last assistant
+    timestamps; single-message turns use user→assistant.
+    """
+    results = []
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return results
+    for proj_dir in base.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        for jsonl_file in proj_dir.glob("*.jsonl"):
+            try:
+                msgs = []
+                with open(jsonl_file, "r", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        msg = rec.get("message", {})
+                        if not isinstance(msg, dict) or not msg.get("role"):
+                            continue
+                        ts_str = rec.get("timestamp")
+                        if not ts_str:
+                            continue
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        except (ValueError, AttributeError):
+                            continue
+                        usage = msg.get("usage") or {}
+                        model = msg.get("model", "unknown")
+                        speed_mode = usage.get("speed", "")
+                        if speed_mode and speed_mode != "standard":
+                            model = f"{model} [{speed_mode}]"
+                        msgs.append({
+                            "role":   msg["role"],
+                            "ts":     ts,
+                            "output": usage.get("output_tokens", 0),
+                            "model":  model,
+                        })
+
+                # Walk through messages: find user → assistant(s) sequences
+                for i, m in enumerate(msgs):
+                    if m["role"] != "user":
+                        continue
+                    assistants = []
+                    for j in range(i + 1, len(msgs)):
+                        if msgs[j]["role"] == "assistant":
+                            assistants.append(msgs[j])
+                        else:
+                            break
+                    if not assistants:
+                        continue
+                    last = assistants[-1]
+                    if last["output"] < 10:
+                        continue  # skip trivial responses
+                    if len(assistants) >= 2:
+                        dt = (last["ts"] - assistants[0]["ts"]).total_seconds()
+                        ttft = (assistants[0]["ts"] - m["ts"]).total_seconds()
+                    else:
+                        dt = (last["ts"] - m["ts"]).total_seconds()
+                        ttft = dt  # can't separate TTFT from generation
+                    if dt < 0.5 or dt > 300:
+                        continue  # filter outliers
+                    results.append({
+                        "tool":    "Claude Code",
+                        "model":   last["model"],
+                        "ts":      last["ts"],
+                        "tokens":  last["output"],
+                        "duration": dt,
+                        "speed":   last["output"] / dt,
+                        "ttft":    ttft if len(assistants) >= 2 else None,
+                    })
+            except (OSError, IOError):
+                continue
+    return results
+
+
+def scan_speed_codex() -> list[dict]:
+    """Extract output speed (tokens/sec) from Codex session JSONL files.
+
+    Approach: pair each token_count event (with last_token_usage) with the
+    previous token_count or user_message timestamp to measure generation time.
+    Output tokens include reasoning_output_tokens.
+    """
+    results = []
+    base = Path.home() / ".codex" / "sessions"
+    if not base.exists():
+        return results
+    for jsonl_file in base.rglob("*.jsonl"):
+        try:
+            events = []
+            with open(jsonl_file, "r", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+            last_user_ts = None
+            last_tc_ts = None
+            current_model = "codex-unknown"
+            current_effort = ""
+            after_tool_call = False
+
+            for rec in events:
+                p = rec.get("payload") or {}
+                if not isinstance(p, dict):
+                    continue
+                ts_str = rec.get("timestamp", "")
+                rtype = rec.get("type", "")
+                ptype = p.get("type", "")
+
+                # turn_context carries the model and effort for the current turn
+                if rtype == "turn_context":
+                    if p.get("model"):
+                        current_model = p["model"]
+                    current_effort = p.get("effort", "")
+                    continue
+
+                if ptype == "user_message":
+                    try:
+                        last_user_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        pass
+                    last_tc_ts = None
+                    after_tool_call = False
+                    continue
+
+                if ptype == "task_started":
+                    last_tc_ts = None
+                    after_tool_call = False
+                    continue
+
+                # Track tool calls: token_count after a tool call measures
+                # a new API round-trip, not pure generation speed
+                if ptype in ("function_call_output", "custom_tool_call_output"):
+                    after_tool_call = True
+                    continue
+
+                if ptype == "token_count" and p.get("info"):
+                    info = p["info"]
+                    last_usage = info.get("last_token_usage") or {}
+                    out = last_usage.get("output_tokens", 0) + last_usage.get("reasoning_output_tokens", 0)
+                    if out < 10:
+                        after_tool_call = False
+                        continue
+                    try:
+                        tc_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        continue
+
+                    # Skip measurements after tool calls (polluted by tool execution time)
+                    if after_tool_call:
+                        last_tc_ts = tc_ts
+                        after_tool_call = False
+                        continue
+
+                    start = last_tc_ts or last_user_ts
+                    if start is None:
+                        continue
+                    dt = (tc_ts - start).total_seconds()
+                    if 0.3 < dt < 120:
+                        speed = out / dt
+                        if speed > 500:
+                            # Likely a measurement artifact; skip
+                            last_tc_ts = tc_ts
+                            continue
+                        model = current_model
+                        if current_effort and current_effort != "medium":
+                            model = f"{model} [{current_effort}]"
+                        results.append({
+                            "tool":     "Codex",
+                            "model":    model,
+                            "ts":       tc_ts,
+                            "tokens":   out,
+                            "duration": dt,
+                            "speed":    speed,
+                            "ttft":     (tc_ts - last_user_ts).total_seconds() - dt
+                                        if last_tc_ts is None and last_user_ts else None,
+                        })
+                    last_tc_ts = tc_ts
+                    after_tool_call = False
+        except (OSError, IOError):
+            continue
+    return results
+
+
+def scan_speed_gemini() -> list[dict]:
+    """Extract output speed from Gemini CLI session files.
+
+    Uses consecutive message timestamps within a session to estimate duration.
+    """
+    results = []
+    base = Path.home() / ".gemini"
+    if not base.exists():
+        return results
+    for session_file in base.rglob("session-*.json"):
+        try:
+            with open(session_file, "r", errors="replace") as f:
+                data = json.load(f)
+            messages = data if isinstance(data, list) else data.get("messages", [])
+            prev_ts = None
+            for entry in messages:
+                if not isinstance(entry, dict):
+                    continue
+                tok = entry.get("tokens")
+                ts_str = entry.get("timestamp") or entry.get("time", "")
+                if not ts_str:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    continue
+                if not tok or not isinstance(tok, dict):
+                    prev_ts = ts
+                    continue
+                out = tok.get("output", 0)
+                if out < 10 or prev_ts is None:
+                    prev_ts = ts
+                    continue
+                dt = (ts - prev_ts).total_seconds()
+                if 0.5 < dt < 300:
+                    results.append({
+                        "tool":    "Gemini CLI",
+                        "model":   entry.get("model", "gemini-unknown"),
+                        "ts":      ts,
+                        "tokens":  out,
+                        "duration": dt,
+                        "speed":   out / dt,
+                        "ttft":    None,
+                    })
+                prev_ts = ts
+        except (OSError, json.JSONDecodeError):
+            continue
+    return results
+
+
+# ─── Formatting helpers ──────────────────────────────────────────────────────
+
+def fmt_tokens(n: int) -> str:
+    """Format token count with K/M suffix."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def fmt_cost(c: float) -> str:
+    """Format cost in USD."""
+    if c >= 1.0:
+        return f"${c:.2f}"
+    if c >= 0.01:
+        return f"${c:.3f}"
+    if c > 0:
+        return f"${c:.4f}"
+    return "$0.00"
+
+
+def _strip_ansi(text: str) -> str:
+    clean = text
+    for code in [BOLD, DIM, RESET, CYAN, GREEN, YELLOW, RED, MAGENTA, WHITE, BLUE]:
+        clean = clean.replace(code, "")
+    return clean
+
+
+def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
+    """Calculate the visible width of a table (including 2-char indent)."""
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(_strip_ansi(cell)))
+    return 2 + sum(widths) + 2 * (len(widths) - 1)
+
+
+def print_table(headers: list[str], rows: list[list[str]], col_aligns: list[str] | None = None) -> int:
+    """Print a formatted ASCII table. Returns the visible width of the table."""
+    if not rows:
+        return 0
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(_strip_ansi(cell)))
+
+    if col_aligns is None:
+        col_aligns = ["<"] * len(headers)
+
+    def pad(text, width, align):
+        padding = width - len(_strip_ansi(text))
+        if align == ">":
+            return " " * padding + text
+        return text + " " * padding
+
+    table_width = 2 + sum(widths) + 2 * (len(widths) - 1)
+
+    # Header
+    header_line = "  ".join(pad(h, widths[i], col_aligns[i]) for i, h in enumerate(headers))
+    print(f"  {BOLD}{header_line}{RESET}")
+    sep = "  ".join("─" * w for w in widths)
+    print(f"  {DIM}{sep}{RESET}")
+
+    for row in rows:
+        line = "  ".join(pad(row[i], widths[i], col_aligns[i]) for i in range(len(headers)))
+        print(f"  {line}")
+
+    return table_width
+
+
+def shorten_path(path: str, max_len: int = 40) -> str:
+    """Shorten a path for display."""
+    home = str(Path.home())
+    if path.startswith(home):
+        path = "~" + path[len(home):]
+    if len(path) <= max_len:
+        return path
+    return "..." + path[-(max_len - 3):]
+
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    print(f"\n{BOLD} Token Usage Aggregator{RESET}")
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    if PRICING:
+        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{DIM}  Scanning local AI coding tool data...{RESET}\n")
+
+    # Scan all tools
+    scanners = {
+        "Claude Code": (scan_claude_code, "~/.claude/"),
+        "Codex":       (scan_codex,       "~/.codex/"),
+        "Gemini CLI":  (scan_gemini,      "~/.gemini/"),
+        "Cline":       (scan_cline,       "~/.cline/"),
+        "OpenCode":    (scan_opencode,    "~/.local/share/opencode/"),
+        "Qwen Coder":  (scan_qwen,        "~/.qwen/"),
+        "Cursor":      (scan_cursor,      "~/Library/Application Support/Cursor/"),
+        "Kiro":        (scan_kiro,        "~/Library/Application Support/Kiro/"),
+    }
+
+    all_records = []
+    tools_found = []
+    tools_missing = []
+
+    for tool_name, (scanner, data_path) in scanners.items():
+        expanded = Path(data_path.replace("~", str(Path.home())))
+        if not expanded.exists():
+            tools_missing.append(tool_name)
+            continue
+        records = scanner()
+        color = TOOL_COLORS.get(tool_name, "")
+        if records:
+            tools_found.append((tool_name, len(records)))
+            all_records.extend(records)
+            print(f"  {color}●{RESET} {tool_name:<12} {len(records):>6} records from {data_path}")
+        else:
+            tools_found.append((tool_name, 0))
+
+    if tools_missing:
+        print(f"\n  {DIM}Not installed: {', '.join(tools_missing)}{RESET}")
+
+    if not all_records:
+        print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
+        return
+
+    # ─── 1. Consumption by period ────────────────────────────────────────
+    boundaries = period_boundaries()
+    period_order = ["Last hour", "Last 5 hours", "Today", "Last 7 days", "Last 30 days", "Last year"]
+
+    # Per-tool, per-period aggregation
+    # tool -> period -> bucket
+    tool_period = defaultdict(lambda: defaultdict(empty_bucket))
+    period_totals = defaultdict(empty_bucket)
+
+    for rec in all_records:
+        periods = classify_periods(rec["ts"], boundaries)
+        for period in periods:
+            b = tool_period[rec["tool"]][period]
+            b["input"]       += rec["input"]
+            b["output"]      += rec["output"]
+            b["cache_read"]  += rec["cache_read"]
+            b["cache_write"] += rec["cache_write"]
+            b["cost"]        += rec["cost"]
+            t = period_totals[period]
+            t["input"]       += rec["input"]
+            t["output"]      += rec["output"]
+            t["cache_read"]  += rec["cache_read"]
+            t["cache_write"] += rec["cache_write"]
+            t["cost"]        += rec["cost"]
+
+    active_tools = sorted(set(r["tool"] for r in all_records))
+
+    headers = ["Period", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
+    aligns  = ["<",      "<",    ">",     ">",      ">",       ">",       ">"]
+    rows = []
+
+    for period in period_order:
+        first = True
+        for tool in active_tools:
+            b = tool_period[tool].get(period)
+            if not b or (b["input"] == 0 and b["output"] == 0):
+                continue
+            color = TOOL_COLORS.get(tool, "")
+            rows.append([
+                f"{BOLD}{period}{RESET}" if first else "",
+                f"{color}{tool}{RESET}",
+                fmt_tokens(b["input"]),
+                fmt_tokens(b["output"]),
+                fmt_tokens(b["cache_read"]),
+                fmt_tokens(b["cache_write"]),
+                fmt_cost(b["cost"]),
+            ])
+            first = False
+        # Period total
+        t = period_totals.get(period)
+        if t and (t["input"] > 0 or t["output"] > 0):
+            rows.append([
+                f"{BOLD}{period}{RESET}" if first else "",
+                f"{BOLD}TOTAL{RESET}",
+                f"{BOLD}{fmt_tokens(t['input'])}{RESET}",
+                f"{BOLD}{fmt_tokens(t['output'])}{RESET}",
+                f"{BOLD}{fmt_tokens(t['cache_read'])}{RESET}",
+                f"{BOLD}{fmt_tokens(t['cache_write'])}{RESET}",
+                f"{BOLD}{fmt_cost(t['cost'])}{RESET}",
+            ])
+            rows.append([""] * 7)  # spacer
+
+    w = calc_table_width(headers, rows)
+    print(f"\n{'─' * w}")
+    print(f"{BOLD} CONSUMPTION BY PERIOD{RESET}")
+    print(f"{'─' * w}")
+    print_table(headers, rows, aligns)
+
+    # ─── 2. Consumption by project ───────────────────────────────────────
+    # ─── 2. Consumption by project ───────────────────────────────────────
+    # Pre-warm worktree cache: resolve active worktrees first (via git),
+    # then retry unresolved ones using name-based fallback.
+    all_projects = set(r["project"] for r in all_records)
+    _all_project_paths.update(all_projects)
+    # First pass: resolve non-worktree paths, then worktree paths
+    # (so name-based fallback can find real projects)
+    for p in sorted(all_projects, key=lambda x: ("/.cline/worktrees/" in x, x)):
+        normalize_project(p)
+    # Second pass: retry any that resolved to themselves (stale worktrees)
+    for p in list(_worktree_cache):
+        if _worktree_cache[p] == p and "/.cline/worktrees/" in p:
+            del _worktree_cache[p]
+            normalize_project(p)
+
+    # project -> tool -> bucket
+    proj_tool = defaultdict(lambda: defaultdict(empty_bucket))
+    proj_totals = defaultdict(empty_bucket)
+
+    for rec in all_records:
+        p = normalize_project(rec["project"])
+        b = proj_tool[p][rec["tool"]]
+        b["input"]       += rec["input"]
+        b["output"]      += rec["output"]
+        b["cache_read"]  += rec["cache_read"]
+        b["cache_write"] += rec["cache_write"]
+        b["cost"]        += rec["cost"]
+        t = proj_totals[p]
+        t["input"]       += rec["input"]
+        t["output"]      += rec["output"]
+        t["cache_read"]  += rec["cache_read"]
+        t["cache_write"] += rec["cache_write"]
+        t["cost"]        += rec["cost"]
+
+    # Sort projects by total cost descending
+    sorted_projects = sorted(proj_totals.keys(), key=lambda p: proj_totals[p]["cost"], reverse=True)
+
+    headers = ["Project", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
+    aligns  = ["<",       "<",    ">",     ">",      ">",       ">",       ">"]
+    rows = []
+
+    for proj in sorted_projects:
+        first = True
+        short = shorten_path(proj, 38)
+        for tool in active_tools:
+            b = proj_tool[proj].get(tool)
+            if not b or (b["input"] == 0 and b["output"] == 0):
+                continue
+            color = TOOL_COLORS.get(tool, "")
+            rows.append([
+                f"{BOLD}{short}{RESET}" if first else "",
+                f"{color}{tool}{RESET}",
+                fmt_tokens(b["input"]),
+                fmt_tokens(b["output"]),
+                fmt_tokens(b["cache_read"]),
+                fmt_tokens(b["cache_write"]),
+                fmt_cost(b["cost"]),
+            ])
+            first = False
+        t = proj_totals[proj]
+        rows.append([
+            f"{BOLD}{short}{RESET}" if first else "",
+            f"{BOLD}TOTAL{RESET}",
+            f"{BOLD}{fmt_tokens(t['input'])}{RESET}",
+            f"{BOLD}{fmt_tokens(t['output'])}{RESET}",
+            f"{BOLD}{fmt_tokens(t['cache_read'])}{RESET}",
+            f"{BOLD}{fmt_tokens(t['cache_write'])}{RESET}",
+            f"{BOLD}{fmt_cost(t['cost'])}{RESET}",
+        ])
+        rows.append([""] * 7)
+
+    w = calc_table_width(headers, rows)
+    print(f"\n{'─' * w}")
+    print(f"{BOLD} CONSUMPTION BY PROJECT{RESET}")
+    print(f"{'─' * w}")
+    print_table(headers, rows, aligns)
+
+    # ─── 3. Model breakdown ──────────────────────────────────────────────
+    model_data = defaultdict(lambda: {"input": 0, "output": 0, "cost": 0.0, "tool": ""})
+    for rec in all_records:
+        m = model_data[rec["model"]]
+        m["input"]  += rec["input"]
+        m["output"] += rec["output"]
+        m["cost"]   += rec["cost"]
+        m["tool"]    = rec["tool"]
+
+    sorted_models = sorted(model_data.keys(), key=lambda m: model_data[m]["cost"], reverse=True)
+
+    headers = ["Model", "Tool", "Input", "Output", "Cost"]
+    aligns  = ["<",     "<",    ">",     ">",      ">"]
+    rows = []
+    for model in sorted_models:
+        d = model_data[model]
+        if d["input"] == 0 and d["output"] == 0:
+            continue
+        color = TOOL_COLORS.get(d["tool"], "")
+        rows.append([
+            model,
+            f"{color}{d['tool']}{RESET}",
+            fmt_tokens(d["input"]),
+            fmt_tokens(d["output"]),
+            fmt_cost(d["cost"]),
+        ])
+
+    total_cost = sum(d["cost"] for d in model_data.values())
+    total_in   = sum(d["input"] for d in model_data.values())
+    total_out  = sum(d["output"] for d in model_data.values())
+    rows.append([
+        f"{BOLD}ALL MODELS{RESET}",
+        "",
+        f"{BOLD}{fmt_tokens(total_in)}{RESET}",
+        f"{BOLD}{fmt_tokens(total_out)}{RESET}",
+        f"{BOLD}{fmt_cost(total_cost)}{RESET}",
+    ])
+
+    w = calc_table_width(headers, rows)
+    print(f"\n{'─' * w}")
+    print(f"{BOLD} COST BY MODEL{RESET}")
+    print(f"{'─' * w}")
+    print_table(headers, rows, aligns)
+
+    # ─── 4. Speed analysis ──────────────────────────────────────────────
+    speed_records = scan_speed_claude_code() + scan_speed_codex() + scan_speed_gemini()
+    if speed_records:
+        # Group by model
+        speed_by_model = defaultdict(list)
+        for sr in speed_records:
+            speed_by_model[(sr["model"], sr["tool"])].append(sr)
+
+        headers = ["Model", "Tool", "Samples", "Median", "Avg", "P10", "P90"]
+        aligns  = ["<",     "<",    ">",       ">",      ">",   ">",   ">"]
+        rows = []
+
+        for (model, tool), samples in sorted(speed_by_model.items(), key=lambda x: -len(x[1])):
+            speeds = sorted(s["speed"] for s in samples)
+            n = len(speeds)
+            median = speeds[n // 2]
+            avg = sum(speeds) / n
+            p10 = speeds[max(0, n // 10)]
+            p90 = speeds[min(n - 1, n * 9 // 10)]
+            color = TOOL_COLORS.get(tool, "")
+            rows.append([
+                model,
+                f"{color}{tool}{RESET}",
+                str(n),
+                f"{median:.0f} t/s",
+                f"{avg:.0f} t/s",
+                f"{p10:.0f} t/s",
+                f"{p90:.0f} t/s",
+            ])
+
+        w = calc_table_width(headers, rows)
+        print(f"\n{'─' * w}")
+        print(f"{BOLD} OUTPUT SPEED (tokens/sec){RESET}")
+        print(f"{'─' * w}")
+        print_table(headers, rows, aligns)
+
+    # ─── Grand total ─────────────────────────────────────────────────────
+    total_all_tokens = sum(r["input"] + r["output"] + r["cache_read"] + r["cache_write"] for r in all_records)
+    print(f"\n  {BOLD}Grand total:{RESET} {fmt_tokens(total_all_tokens)} tokens across {len(all_records)} API calls")
+    print(f"  {BOLD}Estimated cost:{RESET} {fmt_cost(total_cost)}")
+    print(f"  {DIM}Period: {all_records[0]['ts'].strftime('%Y-%m-%d')} to {max(r['ts'] for r in all_records).strftime('%Y-%m-%d')}{RESET}")
+    print()
+
+
+def scan_claude_sessions() -> list[dict]:
+    """Scan Claude Code JSONL transcripts and return per-prompt breakdowns.
+
+    Returns a list of session dicts, each containing:
+    - project, slug, session_id, prompts: list of prompt dicts
+    Each prompt dict: text, ts, model, tokens (input/output/cache_read/cache_write),
+                      cost, tools (Counter of tool names), num_turns
+    """
+    sessions = []
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return sessions
+
+    for proj_dir in base.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        project = decode_project_dir(proj_dir.name)
+        for jsonl_file in proj_dir.glob("*.jsonl"):
+            # Skip subagent files
+            if "/subagents/" in str(jsonl_file):
+                continue
+            try:
+                with open(jsonl_file, "r", errors="replace") as f:
+                    lines = []
+                    for raw in f:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            lines.append(json.loads(raw))
+                        except json.JSONDecodeError:
+                            continue
+            except (OSError, IOError):
+                continue
+
+            if not lines:
+                continue
+
+            # Extract session metadata
+            session_id = None
+            slug = None
+            cwd = None
+            for rec in lines:
+                if not session_id:
+                    session_id = rec.get("sessionId")
+                if not slug:
+                    slug = rec.get("slug")
+                if not cwd:
+                    cwd = rec.get("cwd")
+
+            # Group messages by promptId to form prompt exchanges
+            # A "prompt" = user message + all assistant turns until next user message
+            prompts = []
+            current_prompt = None
+
+            for rec in lines:
+                rec_type = rec.get("type")
+                msg = rec.get("message", {})
+                if not isinstance(msg, dict):
+                    msg = {}
+                content = msg.get("content", "")
+
+                # Detect user prompt (not tool result)
+                if rec_type == "user":
+                    is_tool_result = False
+                    if isinstance(content, list):
+                        is_tool_result = any(
+                            isinstance(c, dict) and c.get("type") == "tool_result"
+                            for c in content
+                        )
+                    if not is_tool_result:
+                        # Save previous prompt
+                        if current_prompt:
+                            prompts.append(current_prompt)
+                        # Extract text
+                        text = ""
+                        if isinstance(content, str):
+                            text = content.strip()
+                        elif isinstance(content, list):
+                            for c in content:
+                                if isinstance(c, dict) and c.get("type") == "text":
+                                    text = c.get("text", "").strip()
+                                    break
+                        ts_str = rec.get("timestamp")
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
+                        except (ValueError, AttributeError):
+                            ts = None
+                        current_prompt = {
+                            "text": text,
+                            "ts": ts,
+                            "model": None,
+                            "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                            "cost": 0.0,
+                            "tools": defaultdict(int),
+                            "num_turns": 0,
+                        }
+
+                # Accumulate assistant data into current prompt
+                elif rec_type == "assistant" and current_prompt is not None:
+                    usage = msg.get("usage")
+                    if usage:
+                        current_prompt["num_turns"] += 1
+                        model = msg.get("model", "unknown")
+                        if not current_prompt["model"]:
+                            current_prompt["model"] = model
+                        tokens = {
+                            "input":       usage.get("input_tokens", 0),
+                            "output":      usage.get("output_tokens", 0),
+                            "cache_read":  usage.get("cache_read_input_tokens", 0),
+                            "cache_write": usage.get("cache_creation_input_tokens", 0),
+                        }
+                        for k in tokens:
+                            current_prompt["tokens"][k] += tokens[k]
+                        current_prompt["cost"] += compute_cost(tokens, model)
+
+                    # Count tool uses
+                    if isinstance(content, list):
+                        for c in content:
+                            if isinstance(c, dict) and c.get("type") == "tool_use":
+                                tool_name = c.get("name", "unknown")
+                                current_prompt["tools"][tool_name] += 1
+
+            # Don't forget last prompt
+            if current_prompt:
+                prompts.append(current_prompt)
+
+            if prompts:
+                sessions.append({
+                    "project": cwd or project,
+                    "slug": slug,
+                    "session_id": session_id or jsonl_file.stem,
+                    "file": str(jsonl_file),
+                    "prompts": prompts,
+                })
+
+    return sessions
+
+
+def show_prompts(period_name: str | None = None):
+    """Show per-prompt token usage for Claude Code sessions."""
+    print(f"\n{BOLD} Claude Code — Prompt-level Usage{RESET}")
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    if PRICING:
+        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{DIM}  Scanning Claude Code sessions...{RESET}\n")
+
+    sessions = scan_claude_sessions()
+    if not sessions:
+        print(f"  {YELLOW}No Claude Code session data found.{RESET}\n")
+        return
+
+    # Determine time filter
+    boundaries = period_boundaries()
+    if period_name:
+        # Match partial name case-insensitive
+        matched = None
+        for name in boundaries:
+            if period_name.lower() in name.lower():
+                matched = name
+                break
+        if not matched:
+            print(f"  {RED}Unknown period '{period_name}'. Available: {', '.join(boundaries.keys())}{RESET}\n")
+            return
+        cutoff = boundaries[matched]
+        print(f"  Filtering: {BOLD}{matched}{RESET}\n")
+    else:
+        cutoff = boundaries["Last 7 days"]
+        print(f"  Filtering: {BOLD}Last 7 days{RESET} (use --period to change)\n")
+
+    # Filter sessions and prompts
+    filtered = []
+    for sess in sessions:
+        matching_prompts = [p for p in sess["prompts"] if p["ts"] and p["ts"] >= cutoff]
+        if matching_prompts:
+            filtered.append({**sess, "prompts": matching_prompts})
+
+    if not filtered:
+        print(f"  {YELLOW}No prompts found in this period.{RESET}\n")
+        return
+
+    # Sort sessions by most recent prompt
+    filtered.sort(key=lambda s: max(p["ts"] for p in s["prompts"]), reverse=True)
+
+    for sess in filtered:
+        proj = shorten_path(normalize_project(sess["project"]), 50)
+        slug = sess.get("slug") or sess["session_id"][:12]
+        sess_cost = sum(p["cost"] for p in sess["prompts"])
+        sess_turns = sum(p["num_turns"] for p in sess["prompts"])
+
+        print(f"  {BOLD}{proj}{RESET}  {DIM}{slug}{RESET}  {CYAN}{len(sess['prompts'])} prompts{RESET}  {sess_turns} turns  {BOLD}{fmt_cost(sess_cost)}{RESET}")
+
+        headers = ["#", "Time", "Prompt", "Model", "Turns", "Input", "Output", "Cache R", "Cache W", "Tools", "Cost"]
+        aligns  = [">", "<",    "<",      "<",     ">",     ">",     ">",      ">",       ">",       "<",     ">"]
+        rows = []
+
+        for i, p in enumerate(sess["prompts"], 1):
+            # Truncate prompt text
+            text = p["text"].replace("\n", " ")
+            if len(text) > 50:
+                text = text[:47] + "..."
+            if not text:
+                text = DIM + "(empty)" + RESET
+
+            ts_str = p["ts"].strftime("%H:%M") if p["ts"] else "?"
+            model_short = (p["model"] or "?").split("/")[-1]
+            if len(model_short) > 20:
+                model_short = model_short[:17] + "..."
+
+            # Format tools summary
+            tools = p["tools"]
+            if tools:
+                tool_parts = []
+                for tname in sorted(tools, key=lambda t: -tools[t]):
+                    tool_parts.append(f"{tname}:{tools[tname]}" if tools[tname] > 1 else tname)
+                tools_str = " ".join(tool_parts[:4])
+                if len(tools) > 4:
+                    tools_str += f" +{len(tools)-4}"
+            else:
+                tools_str = DIM + "-" + RESET
+
+            tok = p["tokens"]
+            rows.append([
+                str(i),
+                ts_str,
+                text,
+                DIM + model_short + RESET,
+                str(p["num_turns"]),
+                fmt_tokens(tok["input"]),
+                fmt_tokens(tok["output"]),
+                fmt_tokens(tok["cache_read"]),
+                fmt_tokens(tok["cache_write"]),
+                tools_str,
+                fmt_cost(p["cost"]),
+            ])
+
+        print_table(headers, rows, aligns)
+        print()
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if "--prompts" in args or "-p" in args:
+        period = None
+        for flag in ("--period", "--since"):
+            if flag in args:
+                idx = args.index(flag)
+                if idx + 1 < len(args):
+                    period = args[idx + 1]
+        show_prompts(period)
+    else:
+        main()
