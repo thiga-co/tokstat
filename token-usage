@@ -100,6 +100,9 @@ MAGENTA = "\033[35m"
 WHITE  = "\033[97m"
 
 BLUE = "\033[34m"
+# Bright variants for better readability on dark backgrounds
+BRED    = "\033[91m"
+BYELLOW = "\033[93m"
 
 TOOL_COLORS = {
     "Claude Code": CYAN,
@@ -206,6 +209,25 @@ def period_boundaries() -> dict:
     }
 
 
+def resolve_period(period_name: str | None, default: str = "today") -> tuple[datetime, str]:
+    """Resolve a period name to a (cutoff_datetime, display_name) tuple.
+
+    If period_name is None, uses the default. "all" means no time filter.
+    Supports partial matching (e.g. "today", "7", "hour").
+    """
+    if period_name is None and default == "all":
+        return datetime.min.replace(tzinfo=timezone.utc), "All time"
+    boundaries = period_boundaries()
+    name = period_name or default
+    if name.lower() in ("all", "tout"):
+        return datetime.min.replace(tzinfo=timezone.utc), "All time"
+    for bname in boundaries:
+        if name.lower() in bname.lower():
+            return boundaries[bname], bname
+    valid = ", ".join(list(boundaries.keys()) + ["all"])
+    raise ValueError(f"Unknown period '{name}'. Available: {valid}")
+
+
 def classify_periods(ts: datetime, boundaries: dict) -> list[str]:
     """Return list of period names this timestamp falls into."""
     return [name for name, start in boundaries.items() if ts >= start]
@@ -275,6 +297,23 @@ def normalize_project(path: str) -> str:
 
     _worktree_cache[path] = path
     return path
+
+
+def _warm_worktree_cache(project_paths):
+    """Pre-warm the worktree resolution cache for a set of project paths.
+
+    Must be called before normalize_project() to enable name-based fallback
+    for Cline worktrees that no longer exist on disk.
+    """
+    _all_project_paths.update(project_paths)
+    # First pass: resolve non-worktree paths first so they're in the cache
+    for p in sorted(project_paths, key=lambda x: ("/.cline/worktrees/" in x, x)):
+        normalize_project(p)
+    # Second pass: retry stale worktrees with name-based fallback
+    for p in list(_worktree_cache):
+        if _worktree_cache[p] == p and "/.cline/worktrees/" in p:
+            del _worktree_cache[p]
+            normalize_project(p)
 
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
@@ -1271,10 +1310,8 @@ def fmt_cost(c: float) -> str:
 
 
 def _strip_ansi(text: str) -> str:
-    clean = text
-    for code in [BOLD, DIM, RESET, CYAN, GREEN, YELLOW, RED, MAGENTA, WHITE, BLUE]:
-        clean = clean.replace(code, "")
-    return clean
+    import re
+    return re.sub(r'\033\[[0-9;]*m', '', text)
 
 
 def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
@@ -1331,13 +1368,20 @@ def shorten_path(path: str, max_len: int = 40) -> str:
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
-def main():
+def main(period_name: str | None = None, tool_filter: str | None = None):
     print(f"\n{BOLD} Token Usage Aggregator{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
     print(f"{DIM}  Scanning local AI coding tool data...{RESET}\n")
+
+    # Resolve period filter
+    try:
+        cutoff, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
 
     # Scan all tools
     scanners = {
@@ -1356,11 +1400,15 @@ def main():
     tools_missing = []
 
     for tool_name, (scanner, data_path) in scanners.items():
+        if tool_filter and tool_name != tool_filter:
+            continue
         expanded = Path(data_path.replace("~", str(Path.home())))
         if not expanded.exists():
             tools_missing.append(tool_name)
             continue
         records = scanner()
+        # Apply period filter
+        records = [r for r in records if r["ts"] >= cutoff]
         color = TOOL_COLORS.get(tool_name, "")
         if records:
             tools_found.append((tool_name, len(records)))
@@ -1372,13 +1420,25 @@ def main():
     if tools_missing:
         print(f"\n  {DIM}Not installed: {', '.join(tools_missing)}{RESET}")
 
+    filter_info = [f"Period: {BOLD}{period_label}{RESET}"]
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        filter_info.append(f"Tool: {color}{BOLD}{tool_filter}{RESET}")
+    print(f"\n  {'  '.join(filter_info)}")
+
     if not all_records:
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
         return
 
     # ─── 1. Consumption by period ────────────────────────────────────────
     boundaries = period_boundaries()
-    period_order = ["Last hour", "Last 5 hours", "Today", "Last 7 days", "Last 30 days", "Last year"]
+    if period_label == "All time":
+        # Show all standard periods
+        period_order = ["Last hour", "Last 5 hours", "Today", "Last 7 days", "Last 30 days", "Last year"]
+    else:
+        # Single period mode
+        period_order = [period_label]
+        boundaries = {period_label: cutoff}
 
     # Per-tool, per-period aggregation
     # tool -> period -> bucket
@@ -1446,19 +1506,7 @@ def main():
 
     # ─── 2. Consumption by project ───────────────────────────────────────
     # ─── 2. Consumption by project ───────────────────────────────────────
-    # Pre-warm worktree cache: resolve active worktrees first (via git),
-    # then retry unresolved ones using name-based fallback.
-    all_projects = set(r["project"] for r in all_records)
-    _all_project_paths.update(all_projects)
-    # First pass: resolve non-worktree paths, then worktree paths
-    # (so name-based fallback can find real projects)
-    for p in sorted(all_projects, key=lambda x: ("/.cline/worktrees/" in x, x)):
-        normalize_project(p)
-    # Second pass: retry any that resolved to themselves (stale worktrees)
-    for p in list(_worktree_cache):
-        if _worktree_cache[p] == p and "/.cline/worktrees/" in p:
-            del _worktree_cache[p]
-            normalize_project(p)
+    _warm_worktree_cache(set(r["project"] for r in all_records))
 
     # project -> tool -> bucket
     proj_tool = defaultdict(lambda: defaultdict(empty_bucket))
@@ -1568,6 +1616,9 @@ def main():
 
     # ─── 4. Speed analysis ──────────────────────────────────────────────
     speed_records = scan_speed_claude_code() + scan_speed_codex() + scan_speed_gemini()
+    speed_records = [sr for sr in speed_records if sr["ts"] >= cutoff]
+    if tool_filter:
+        speed_records = [sr for sr in speed_records if sr["tool"] == tool_filter]
     if speed_records:
         # Group by model
         speed_by_model = defaultdict(list)
@@ -1764,22 +1815,15 @@ def show_prompts(period_name: str | None = None):
         return
 
     # Determine time filter
-    boundaries = period_boundaries()
-    if period_name:
-        # Match partial name case-insensitive
-        matched = None
-        for name in boundaries:
-            if period_name.lower() in name.lower():
-                matched = name
-                break
-        if not matched:
-            print(f"  {RED}Unknown period '{period_name}'. Available: {', '.join(boundaries.keys())}{RESET}\n")
-            return
-        cutoff = boundaries[matched]
-        print(f"  Filtering: {BOLD}{matched}{RESET}\n")
-    else:
-        cutoff = boundaries["Last 7 days"]
-        print(f"  Filtering: {BOLD}Last 7 days{RESET} (use --period to change)\n")
+    try:
+        cutoff, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+    print(f"  Period: {BOLD}{period_label}{RESET}\n")
+
+    # Warm worktree cache for project normalization
+    _warm_worktree_cache(set(s["project"] for s in sessions))
 
     # Filter sessions and prompts
     filtered = []
@@ -1797,7 +1841,15 @@ def show_prompts(period_name: str | None = None):
 
     for sess in filtered:
         proj = shorten_path(normalize_project(sess["project"]), 50)
-        slug = sess.get("slug") or sess["session_id"][:12]
+        slug = sess.get("slug")
+        if not slug:
+            # Use first real user prompt as label when no slug
+            first_text = next((p["text"] for p in sess["prompts"]
+                              if p["text"] and not p["text"].startswith("<")), "")
+            first_text = first_text.replace("\n", " ").strip()
+            if len(first_text) > 40:
+                first_text = first_text[:37] + "..."
+            slug = first_text or sess["session_id"][:12]
         sess_cost = sum(p["cost"] for p in sess["prompts"])
         sess_turns = sum(p["num_turns"] for p in sess["prompts"])
 
@@ -1851,15 +1903,1947 @@ def show_prompts(period_name: str | None = None):
         print()
 
 
+# ─── Audit: behavioral anti-pattern detection ──────────────────────────────
+
+# Each detector returns a list of (severity, excerpt, explanation) tuples.
+# severity: "high", "medium", "low"
+
+_AUDIT_CATEGORIES = [
+    ("gaslighting",       "Gaslighting contextuel",              ""),
+    ("anthropomorphism",  "Anthropomorphisme / fausse empathie", ""),
+    ("hedging",           "Dilution par prudence",               ""),
+    ("laziness",          "Paresse intellectuelle",              ""),
+    ("overconfidence",    "Aplomb trompeur",                     ""),
+    ("sycophancy",        "Flagornerie / sycophancy",            ""),
+    ("compliance",        "Acquiescement performatif",           ""),
+    ("premature_fix",     "Solution prématurée",                 ""),
+    ("failure_loop",      "Boucle d'échec",                      ""),
+    ("verbose_empty",     "Verbosité creuse",                    ""),
+    ("fake_understanding","Compréhension feinte",                ""),
+]
+
+
+def _extract_exchanges(jsonl_path: str) -> list[dict]:
+    """Parse a JSONL transcript into a list of exchanges.
+
+    Each exchange: {user_text, assistant_texts: [str], tool_errors: [str],
+                    assistant_contradicts_self: bool, ts}
+    """
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            lines = []
+            for raw in f:
+                raw = raw.strip()
+                if raw:
+                    try:
+                        lines.append(json.loads(raw))
+                    except json.JSONDecodeError:
+                        pass
+    except (OSError, IOError):
+        return []
+
+    exchanges = []
+    current = None
+
+    for rec in lines:
+        rec_type = rec.get("type")
+        msg = rec.get("message", {})
+        if not isinstance(msg, dict):
+            msg = {}
+        content = msg.get("content", "")
+
+        if rec_type == "user":
+            is_tool_result = False
+            if isinstance(content, list):
+                is_tool_result = any(
+                    isinstance(c, dict) and c.get("type") == "tool_result"
+                    for c in content
+                )
+            if not is_tool_result:
+                if current:
+                    exchanges.append(current)
+                text = ""
+                if isinstance(content, str):
+                    text = content.strip()
+                elif isinstance(content, list):
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            text = c.get("text", "").strip()
+                            break
+                ts_str = rec.get("timestamp")
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
+                except (ValueError, AttributeError):
+                    ts = None
+                current = {
+                    "user_text": text,
+                    "assistant_texts": [],
+                    "tool_errors": [],
+                    "tools_used": defaultdict(int),
+                    "num_turns": 0,
+                    "model": None,
+                    "project": rec.get("cwd"),
+                    "ts": ts,
+                    "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                    "cost": 0.0,
+                }
+            elif current and isinstance(content, list):
+                # Collect tool errors
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"):
+                        err = c.get("content", "")
+                        if isinstance(err, list):
+                            err = " ".join(str(e) for e in err)
+                        current["tool_errors"].append(str(err)[:200])
+
+        elif rec_type == "assistant" and current is not None:
+            if not current["model"]:
+                current["model"] = msg.get("model")
+            usage = msg.get("usage")
+            if usage:
+                current["num_turns"] += 1
+                current["tokens"]["input"]      += usage.get("input_tokens", 0)
+                current["tokens"]["output"]     += usage.get("output_tokens", 0)
+                current["tokens"]["cache_read"] += usage.get("cache_read_input_tokens", 0)
+                current["tokens"]["cache_write"]+= usage.get("cache_creation_input_tokens", 0)
+                current["cost"] += compute_cost({
+                    "input": usage.get("input_tokens", 0),
+                    "output": usage.get("output_tokens", 0),
+                    "cache_read": usage.get("cache_read_input_tokens", 0),
+                    "cache_write": usage.get("cache_creation_input_tokens", 0),
+                }, msg.get("model", ""))
+            if isinstance(content, list):
+                for c in content:
+                    if isinstance(c, dict):
+                        if c.get("type") == "text":
+                            t = c.get("text", "").strip()
+                            if t:
+                                current["assistant_texts"].append(t)
+                        elif c.get("type") == "tool_use":
+                            current["tools_used"][c.get("name", "unknown")] += 1
+
+    if current:
+        exchanges.append(current)
+    return exchanges
+
+
+def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
+    """Parse a Codex rollout JSONL transcript into exchanges."""
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            lines = []
+            for raw in f:
+                raw = raw.strip()
+                if raw:
+                    try:
+                        lines.append(json.loads(raw))
+                    except json.JSONDecodeError:
+                        pass
+    except (OSError, IOError):
+        return []
+
+    exchanges = []
+    current = None
+    current_model = None
+    current_cwd = None
+
+    for rec in lines:
+        rec_type = rec.get("type")
+        payload = rec.get("payload", {})
+        if not isinstance(payload, dict):
+            continue
+        ts_str = rec.get("timestamp")
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
+        except (ValueError, AttributeError):
+            ts = None
+
+        if rec_type == "turn_context":
+            current_model = payload.get("model")
+            current_cwd = payload.get("cwd")
+
+        elif rec_type == "response_item" and payload.get("role") == "user":
+            if current:
+                exchanges.append(current)
+            text = ""
+            for c in payload.get("content", []):
+                if isinstance(c, dict) and c.get("type") == "input_text":
+                    text = c.get("text", "").strip()
+                    break
+            current = {"user_text": text, "assistant_texts": [], "tool_errors": [], "tools_used": {}, "num_turns": 0, "model": current_model, "project": current_cwd, "ts": ts,
+                       "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}, "cost": 0.0}
+
+        elif rec_type == "response_item" and payload.get("role") == "assistant" and current:
+            current["num_turns"] += 1
+            for c in payload.get("content", []):
+                if isinstance(c, dict) and c.get("type") == "output_text":
+                    t = c.get("text", "").strip()
+                    if t:
+                        current["assistant_texts"].append(t)
+
+        elif rec_type == "event_msg" and payload.get("type") == "token_count" and current:
+            info = payload.get("info") or {}
+            last = info.get("last_token_usage") or {}
+            if last:
+                inp = last.get("input_tokens", 0)
+                out = last.get("output_tokens", 0) + last.get("reasoning_output_tokens", 0)
+                cached = last.get("cached_input_tokens", 0)
+                current["tokens"]["input"]      += inp
+                current["tokens"]["output"]     += out
+                current["tokens"]["cache_read"] += cached
+                current["cost"] += compute_cost({"input": inp, "output": out, "cache_read": cached, "cache_write": 0}, current_model or "")
+
+    if current:
+        exchanges.append(current)
+    return exchanges
+
+
+def _extract_exchanges_opencode() -> list[dict]:
+    """Extract exchanges from OpenCode SQLite database."""
+    db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    if not db_path.exists():
+        return []
+    exchanges = []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        # Get sessions
+        cur.execute("SELECT id, directory FROM session ORDER BY time_created")
+        session_rows = cur.fetchall()
+        for sid, sess_dir in session_rows:
+            # Get messages in order
+            cur.execute("""
+                SELECT m.id, m.time_created,
+                       json_extract(m.data, '$.role') as role,
+                       json_extract(m.data, '$.modelID') as model_id
+                FROM message m WHERE m.session_id = ? ORDER BY m.time_created
+            """, (sid,))
+            messages = cur.fetchall()
+            current = None
+            for msg_id, msg_time, role, model_id in messages:
+                ts = datetime.fromtimestamp(msg_time / 1000, tz=timezone.utc) if msg_time else None
+                if role == "user":
+                    if current:
+                        exchanges.append(current)
+                    # Get user text from parts
+                    cur.execute("""
+                        SELECT json_extract(data, '$.text') FROM part
+                        WHERE message_id = ? AND json_extract(data, '$.type') = 'text'
+                        ORDER BY time_created
+                    """, (msg_id,))
+                    user_text = ""
+                    for (t,) in cur.fetchall():
+                        if t:
+                            user_text = t.strip()
+                            break
+                    current = {"user_text": user_text, "assistant_texts": [], "tool_errors": [], "tools_used": defaultdict(int), "num_turns": 0, "model": None, "project": sess_dir, "ts": ts,
+                               "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}, "cost": 0.0}
+                elif role == "assistant" and current:
+                    current["num_turns"] += 1
+                    if not current["model"] and model_id:
+                        current["model"] = model_id
+                    # Get assistant text, tool, and token parts
+                    cur.execute("""
+                        SELECT json_extract(data, '$.type') as ptype,
+                               json_extract(data, '$.text') as ptext,
+                               json_extract(data, '$.tool') as ptool,
+                               json_extract(data, '$.state.status') as tstatus,
+                               json_extract(data, '$.state.error') as terror,
+                               json_extract(data, '$.tokens.input') as tok_in,
+                               json_extract(data, '$.tokens.output') as tok_out,
+                               json_extract(data, '$.tokens.cache.read') as tok_cr,
+                               json_extract(data, '$.tokens.cache.write') as tok_cw,
+                               json_extract(data, '$.cost') as step_cost
+                        FROM part WHERE message_id = ? ORDER BY time_created
+                    """, (msg_id,))
+                    for ptype, ptext, ptool, tstatus, terror, tok_in, tok_out, tok_cr, tok_cw, step_cost in cur.fetchall():
+                        if ptype == "text" and ptext:
+                            current["assistant_texts"].append(ptext.strip())
+                        elif ptype == "tool":
+                            if ptool:
+                                current["tools_used"][ptool] += 1
+                            if tstatus == "error" and terror:
+                                current["tool_errors"].append(str(terror)[:200])
+                        elif ptype == "step-finish":
+                            current["tokens"]["input"]      += int(tok_in or 0)
+                            current["tokens"]["output"]     += int(tok_out or 0)
+                            current["tokens"]["cache_read"] += int(tok_cr or 0)
+                            current["tokens"]["cache_write"]+= int(tok_cw or 0)
+                            current["cost"]                 += float(step_cost or 0)
+            if current:
+                exchanges.append(current)
+        conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    return exchanges
+
+
+def _extract_exchanges_kiro() -> list[dict]:
+    """Extract exchanges from Kiro .chat JSON files.
+
+    Kiro creates many .chat files for retries of the same prompt.
+    We deduplicate by keeping only the most recent file per unique user prompt,
+    identified by the first 200 chars of user text.
+    """
+    base = Path.home() / "Library" / "Application Support" / "Kiro" / "User" / "globalStorage" / "kiro.kiroagent"
+    if not base.exists():
+        return []
+
+    # First pass: collect all exchanges keyed by (user_text_prefix, ts_or_mtime)
+    # to deduplicate retries of the same prompt
+    seen: dict[str, dict] = {}  # user_text[:200] -> best exchange (latest assistant)
+
+    for chat_file in base.rglob("*.chat"):
+        try:
+            data = json.loads(chat_file.read_text(errors="replace"))
+            chat = data.get("chat", [])
+            meta = data.get("metadata", {})
+            ts = None
+            start_time = meta.get("startTime")
+            if start_time:
+                ts = datetime.fromtimestamp(start_time / 1000, tz=timezone.utc)
+            end_time = meta.get("endTime")
+            model = meta.get("modelId")
+            current = None
+            for msg in chat:
+                role = msg.get("role", "")
+                content = msg.get("content", "").strip()
+                if role == "human" and content and len(content) < 5000:
+                    if current:
+                        # Deduplicate: keep the version with the most assistant text
+                        key = current["user_text"][:200]
+                        prev = seen.get(key)
+                        if not prev or len("".join(current["assistant_texts"])) > len("".join(prev["assistant_texts"])):
+                            seen[key] = current
+                    current = {"user_text": content, "assistant_texts": [], "tool_errors": [], "tools_used": defaultdict(int), "num_turns": 0, "model": model, "project": None, "ts": ts,
+                               "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}, "cost": 0.0}
+                elif role == "bot" and current and content:
+                    current["num_turns"] += 1
+                    current["assistant_texts"].append(content)
+                elif role == "tool" and current:
+                    current["tools_used"]["tool"] += 1
+            if current:
+                key = current["user_text"][:200]
+                prev = seen.get(key)
+                if not prev or len("".join(current["assistant_texts"])) > len("".join(prev["assistant_texts"])):
+                    seen[key] = current
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    return list(seen.values())
+
+
+def _extract_exchanges_qwen(jsonl_path: str) -> list[dict]:
+    """Parse a Qwen Coder JSONL transcript into exchanges."""
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            lines = []
+            for raw in f:
+                raw = raw.strip()
+                if raw:
+                    try:
+                        lines.append(json.loads(raw))
+                    except json.JSONDecodeError:
+                        pass
+    except (OSError, IOError):
+        return []
+
+    exchanges = []
+    current = None
+
+    for rec in lines:
+        rec_type = rec.get("type")
+        msg = rec.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+        parts = msg.get("parts", [])
+        ts_str = rec.get("timestamp")
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
+        except (ValueError, AttributeError):
+            ts = None
+
+        if rec_type == "user":
+            if current:
+                exchanges.append(current)
+            text = ""
+            for p in parts:
+                if isinstance(p, dict) and p.get("text"):
+                    text = p["text"].strip()
+                    break
+            current = {"user_text": text, "assistant_texts": [], "tool_errors": [], "tools_used": defaultdict(int), "num_turns": 0, "model": None, "project": rec.get("cwd"), "ts": ts,
+                       "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}, "cost": 0.0}
+
+        elif rec_type == "assistant" and current:
+            current["num_turns"] += 1
+            if not current["model"]:
+                current["model"] = rec.get("model")
+            for p in parts:
+                if isinstance(p, dict):
+                    if p.get("text"):
+                        t = p["text"].strip()
+                        if t:
+                            current["assistant_texts"].append(t)
+                    elif p.get("functionCall"):
+                        fname = p["functionCall"].get("name", "unknown")
+                        current["tools_used"][fname] += 1
+
+        elif rec_type == "system" and current:
+            sp = rec.get("systemPayload", {})
+            ui = sp.get("uiEvent", {}) if isinstance(sp, dict) else {}
+            if isinstance(ui, dict) and ui.get("input_token_count"):
+                current["tokens"]["input"]      += int(ui.get("input_token_count", 0))
+                current["tokens"]["output"]     += int(ui.get("output_token_count", 0))
+                current["tokens"]["cache_read"] += int(ui.get("cached_content_token_count", 0))
+
+    if current:
+        exchanges.append(current)
+    return exchanges
+
+
+def _is_meta_text(text: str) -> bool:
+    """Return True if the text looks like code, regex patterns, or meta-discussion
+    about detection patterns (not actual assistant prose)."""
+    # Lines that are mostly regex or code
+    if text.count("\\b") >= 2 or text.count('r"') >= 2:
+        return True
+    if text.startswith(("```", "    r\"", "    (r\"")):
+        return True
+    return False
+
+
+def _prose_texts(exchange: dict) -> list[str]:
+    """Return only prose assistant texts, filtering out code/regex/meta blocks."""
+    return [t for t in exchange["assistant_texts"] if not _is_meta_text(t)]
+
+
+def _detect_sycophancy(exchanges: list[dict]) -> list[tuple]:
+    """Detect excessive flattery and sycophantic patterns."""
+    import re
+    hits = []
+    patterns = [
+        # ── English HIGH ──
+        (r"\b(?:great|excellent|brilliant|fantastic|wonderful|amazing|perfect|awesome|outstanding|superb)\s+(?:question|idea|point|observation|suggestion|thought|insight|approach|catch|call|analysis|work|job)\b", "high"),
+        (r"\b(?:you'?re|you are)\s+(?:absolutely|totally|completely|entirely)\s+right\b", "high"),
+        (r"\bwhat (?:a |an )(?:great|excellent|insightful|thoughtful|brilliant)\s+(?:question|point|observation)\b", "high"),
+        # ── English MEDIUM ──
+        (r"\b(?:that'?s|this is)\s+(?:a )?(?:really |very |incredibly )?(?:great|excellent|brilliant|fantastic|wonderful|amazing|astute|insightful|smart|clever)\b", "medium"),
+        (r"\b(?:I (?:really |truly )?(?:love|like|admire|appreciate) (?:that|this|your|how you))\b", "medium"),
+        (r"\b(?:you(?:'ve| have) (?:a )?(?:great|excellent|deep|solid|strong|impressive)\s+(?:understanding|grasp|intuition|instinct))\b", "medium"),
+        (r"\b(?:that(?:'s| is) (?:a )?(?:very |really )?(?:valid|fair|good|important|interesting) (?:point|concern|question|observation))\b", "medium"),
+        # ── English LOW ──
+        (r"\b(?:great catch|good catch|nice catch|sharp eye|keen eye|well spotted|good thinking)\b", "low"),
+        (r"\b(?:you(?:'re| are) (?:right|correct) to (?:point|bring|note|mention|flag|highlight|raise))\b", "low"),
+        (r"\b(?:I couldn'?t (?:agree|have said it) (?:more|better))\b", "low"),
+        # ── French HIGH ──
+        (r"\b(?:excellente|brillante|superbe|magnifique|formidable|parfaite)\s+(?:question|idée|remarque|observation|analyse|suggestion|approche)\b", "high"),
+        (r"\b(?:très|vraiment|absolument) (?:bonne|pertinente|juste|belle)\s+(?:question|remarque|observation|idée|analyse)\b", "high"),
+        (r"\b(?:tu as|vous avez)\s+(?:tout à fait|absolument|complètement|entièrement)\s+raison\b", "high"),
+        # ── French MEDIUM ──
+        (r"\b(?:c'est|voilà)\s+(?:une )?(?:très |vraiment )?(?:bonne|excellente|pertinente|intéressante)\s+(?:question|remarque|idée|observation|approche)\b", "medium"),
+        (r"\b(?:j'(?:aime|adore|apprécie) (?:beaucoup |vraiment )?(?:cette|cette|votre|ton|ta))\b", "medium"),
+        (r"\b(?:tu as|vous avez)\s+(?:bien|très bien)\s+(?:fait|vu|compris|identifié|repéré)\b", "medium"),
+        # ── French LOW ──
+        (r"\b(?:bien vu|bien repéré|bon réflexe|bonne intuition|bon instinct)\b", "low"),
+        (r"\b(?:tu as|vous avez) raison de (?:souligner|mentionner|noter|signaler|relever)\b", "low"),
+    ]
+    # Patterns that indicate metalanguage (quoting/discussing the pattern, not doing it)
+    meta_context = re.compile(
+        r'[""«»]|sycophancy|flagornerie|flattery|anthropomorph|gaslighting|'
+        r'exemple|example|pattern|cas de|instances of|détect|detect|catégor|categor',
+        re.IGNORECASE,
+    )
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            for pat, severity in patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    # Check if this is metalanguage (discussing the pattern, not doing it)
+                    ctx_start = max(0, m.start() - 60)
+                    ctx_end = min(len(text), m.end() + 60)
+                    context = text[ctx_start:ctx_end]
+                    if meta_context.search(context):
+                        continue
+                    # Get surrounding context for display
+                    start = max(0, m.start() - 60)
+                    end = min(len(text), m.end() + 80)
+                    excerpt = text[start:end].replace("\n", " ")
+                    if start > 0:
+                        excerpt = "..." + excerpt
+                    if end < len(text):
+                        excerpt = excerpt + "..."
+                    hits.append((severity, excerpt, m.group()))
+    return hits
+
+
+def _detect_anthropomorphism(exchanges: list[dict]) -> list[tuple]:
+    """Detect false empathy and anthropomorphic language."""
+    import re
+    hits = []
+    patterns = [
+        # ── English HIGH — false emotions ──
+        (r"\bI(?:'m| am)\s+(?:excited|happy|thrilled|delighted|glad|proud|pleased|honored|passionate|eager|fascinated|intrigued)\b", "high"),
+        (r"\bI understand (?:how|that|your)\s+(?:you feel|frustrat|difficult|challenging|hard|annoying|painful|stressful|overwhelming)\b", "high"),
+        (r"\bI (?:can )?(?:empathize|sympathize|relate)\b", "high"),
+        (r"\bI (?:genuinely |truly |really )?(?:care|worry) about\b", "high"),
+        (r"\bthis (?:is|hits) close to (?:my )?heart\b", "high"),
+        # ── English MEDIUM — softer false affect ──
+        (r"\bI (?:really )?(?:enjoy|love|feel|believe in|care about)\b", "medium"),
+        (r"\bI(?:'m| am)\s+sorry (?:to hear|about|for your|that you|if)\b", "medium"),
+        (r"\bI(?:'m| am)\s+(?:afraid|worried|concerned) (?:that|about)\b", "medium"),
+        (r"\bfrom my (?:experience|perspective|point of view)\b", "medium"),
+        (r"\bpersonally,?\s+I\b", "medium"),
+        (r"\bif I (?:were|was) (?:in your|you)\b", "medium"),
+        (r"\bI (?:wish|hope) I could (?:help|do) more\b", "medium"),
+        # ── English LOW — experience claims ──
+        (r"\bI've (?:found|seen|noticed|learned|experienced|observed)\s+that\b", "low"),
+        (r"\bin my (?:opinion|view|assessment)\b", "low"),
+        # ── French HIGH ──
+        (r"\bje suis (?:ravi|content|heureux|fier|enchanté|enthousiaste|passionné|honoré|ému)\b", "high"),
+        (r"\bje (?:comprends|ressens) (?:ta|votre|cette|la) (?:frustration|douleur|difficulté|déception|inquiétude)\b", "high"),
+        (r"\bje (?:compatis|m'identifie|me reconnais)\b", "high"),
+        (r"\b(?:ça|cela) me (?:tient|touche) (?:à cœur|vraiment)\b", "high"),
+        # ── French MEDIUM ──
+        (r"\bje suis (?:désolé|navré) (?:d'apprendre|pour|que)\b", "medium"),
+        (r"\bje suis (?:inquiet|préoccupé|soucieux) (?:pour|de|que)\b", "medium"),
+        (r"\bde mon (?:expérience|point de vue|côté)\b", "medium"),
+        (r"\bpersonnellement,?\s+je\b", "medium"),
+        (r"\bsi j'étais (?:à ta|à votre|toi)\b", "medium"),
+        (r"\bj'(?:adore|aime (?:beaucoup|vraiment))\s+(?:cette|ce|ton|ta|votre)\b", "medium"),
+        # ── French LOW ──
+        (r"\bj'ai (?:remarqué|constaté|observé|appris|vu) que\b", "low"),
+        (r"\bà mon (?:avis|sens|humble avis)\b", "low"),
+    ]
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            for pat, severity in patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    start = max(0, m.start() - 60)
+                    end = min(len(text), m.end() + 80)
+                    excerpt = text[start:end].replace("\n", " ")
+                    if start > 0:
+                        excerpt = "..." + excerpt
+                    if end < len(text):
+                        excerpt = excerpt + "..."
+                    hits.append((severity, excerpt, m.group()))
+    return hits
+
+
+def _detect_hedging(exchanges: list[dict]) -> list[tuple]:
+    """Detect excessive hedging and dilution by caution."""
+    import re
+    hits = []
+    # Only flag when hedging is dense (multiple markers in short text)
+    hedge_words = re.compile(
+        # ── English ──
+        r"\b(?:might|perhaps|possibly|maybe|could potentially|conceivably|"
+        r"it(?:'s| is) possible that|there(?:'s| is) a chance|"
+        r"I(?:'m| am) not (?:entirely |completely |totally |100% )?sure|"
+        r"(?:you |I )?(?:may|might) want to (?:consider|think about|look into|weigh)|"
+        r"it(?:'s| is) worth (?:noting|mentioning|considering|keeping in mind)|"
+        r"(?:that said|having said that|on the other hand|however|although|nonetheless|"
+        r"but (?:I should|it should be|keep in mind|bear in mind))|"
+        r"I could be (?:wrong|mistaken|off base)|take (?:this|it) with a grain of salt|"
+        r"your mileage may vary|YMMV|it remains to be seen|"
+        r"I wouldn'?t (?:necessarily|want to) (?:say|claim|go so far)|"
+        # ── French ──
+        r"peut-être|il (?:est|serait) possible que|éventuellement|"
+        r"je ne suis pas (?:sûr|certain|convaincu)|pas (?:forcément|nécessairement)|"
+        r"il (?:faudrait|conviendrait de) (?:vérifier|considérer|envisager)|"
+        r"cela dit|cependant|néanmoins|toutefois|en revanche|"
+        r"je (?:pourrais|peux) me tromper|à prendre avec (?:des pincettes|précaution)|"
+        r"il (?:est|serait) (?:prudent|sage|préférable) de|"
+        r"sous (?:réserve|toute réserve))\b",
+        re.IGNORECASE,
+    )
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            # Check density: if short text has many hedges
+            sentences = re.split(r'[.!?\n]', text)
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) < 20:
+                    continue
+                matches = list(hedge_words.finditer(sent))
+                if len(matches) >= 2:
+                    severity = "high" if len(matches) >= 3 else "medium"
+                    excerpt = sent[:200].replace("\n", " ")
+                    if len(sent) > 120:
+                        excerpt += "..."
+                    markers = ", ".join(m.group() for m in matches[:4])
+                    hits.append((severity, excerpt, markers))
+    return hits
+
+
+def _detect_laziness(exchanges: list[dict]) -> list[tuple]:
+    """Detect intellectual laziness patterns."""
+    import re
+    hits = []
+    patterns = [
+        # ── English HIGH — deflection/avoidance ──
+        (r"\bI(?:'ll| will) leave (?:that|it|this) (?:to you|as an exercise|for you to)\b", "high"),
+        (r"\b(?:this is left as|I leave this as)\s+an exercise\b", "high"),
+        (r"\b(?:you can|you should|I(?:'d| would) recommend you)\s+(?:Google|search for|look up)\b", "high"),
+        (r"\b(?:that(?:'s| is)|this is) (?:beyond|outside) (?:my|the) scope\b", "high"),
+        # ── English MEDIUM — doc deflection ──
+        (r"\b(?:refer to|check|see|consult)\s+(?:the )?(?:official )?(?:documentation|docs|README|manual|wiki|guide)\b", "medium"),
+        (r"\b(?:you(?:'ll| will) (?:need|want|have) to (?:figure|work) (?:that|this|it) out)\b", "medium"),
+        (r"\b(?:I(?:'m| am) not (?:the best|the right) (?:person|tool|source) (?:for|to))\b", "medium"),
+        # ── English LOW — filler/non-committal ──
+        (r"\blet me know if you (?:need|want|would like)\s+(?:more (?:details|information|help|clarification)|me to)\b", "low"),
+        (r"\b(?:it depends|that depends)\s*(?:\.|$|on (?:your|the|many|several|various))", "low"),
+        (r"\betc\.?\s*(?:\)|\.|\Z)", "low"),
+        (r"\bhope (?:this|that) helps\b", "low"),
+        (r"\b(?:feel free to|don't hesitate to)\s+(?:ask|reach out|let me know|contact)\b", "low"),
+        (r"\b(?:I hope (?:this|that|I)'?(?:ve| have)?\s+(?:helped|answered|addressed))\b", "low"),
+        (r"\b(?:as (?:always|usual|ever)),?\s+(?:I(?:'m| am) here|don'?t hesitate)\b", "low"),
+        (r"\b(?:happy to help|glad to (?:help|assist)|at your service)\b", "low"),
+        # ── French HIGH ──
+        (r"\bje (?:te|vous) laisse (?:chercher|trouver|faire|voir|gérer)\b", "high"),
+        (r"\b(?:cherche|regarde|consulte)\s+(?:sur (?:Google|internet|le web)|la doc(?:umentation)?)\b", "high"),
+        (r"\b(?:c'est|cela) (?:dépasse|sort de?) (?:mon|le) (?:cadre|périmètre|scope)\b", "high"),
+        # ── French MEDIUM ──
+        (r"\b(?:réfère-toi|référez-vous|consulte|consultez)\s+(?:la )?(?:documentation|doc|le (?:README|manuel|guide))\b", "medium"),
+        (r"\b(?:il faudra|tu devras|vous devrez)\s+(?:chercher|trouver|voir|vérifier) (?:toi|vous)-même\b", "medium"),
+        # ── French LOW ──
+        (r"\bn'hésite(?:z)? pas à (?:demander|me contacter|revenir|poser)\b", "low"),
+        (r"\bj'espère (?:que (?:cela|ça) (?:t'aide|vous aide|répond)|avoir (?:aidé|répondu))\b", "low"),
+        (r"\bje (?:reste|suis) (?:à ta|à votre|disponible)\b", "low"),
+        (r"\b(?:ça|cela) dépend (?:de|du|des|beaucoup)\b", "low"),
+    ]
+    for ex in exchanges:
+        user_len = len(ex["user_text"])
+        for text in _prose_texts(ex):
+            for pat, severity in patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    start = max(0, m.start() - 60)
+                    end = min(len(text), m.end() + 80)
+                    excerpt = text[start:end].replace("\n", " ")
+                    if start > 0:
+                        excerpt = "..." + excerpt
+                    if end < len(text):
+                        excerpt = excerpt + "..."
+                    hits.append((severity, excerpt, m.group()))
+
+        # Very short final answer to a substantial question (no tool use)
+        all_texts = _prose_texts(ex)
+        if all_texts and user_len > 200:
+            final = all_texts[-1]
+            if len(final) < 50 and not final.startswith(("Let me", "Laisse", "Je vais", "Voyons")):
+                hits.append(("medium", final[:80].replace("\n", " "),
+                             f"response {len(final)} chars to {user_len}-char question"))
+    return hits
+
+
+def _detect_overconfidence(exchanges: list[dict]) -> list[tuple]:
+    """Detect false confidence — assertive claims followed by tool errors."""
+    import re
+    hits = []
+    confidence_markers = re.compile(
+        # ── English ──
+        r"\b(?:definitely|certainly|absolutely|without (?:a )?doubt|clearly|obviously|"
+        r"of course|undoubtedly|unquestionably|guaranteed|100%|"
+        r"(?:I(?:'m| am) )?(?:sure|certain|confident|positive) (?:that|this)|"
+        r"this (?:will|should|is going to) (?:definitely |certainly |surely )?(?:work|fix|solve|resolve)|"
+        r"there(?:'s| is) no (?:doubt|question|way (?:this|it) (?:won'?t|fails))|"
+        r"I(?:'ve| have) (?:already |just )?(?:fixed|solved|resolved) (?:this|it|the)|"
+        # ── French ──
+        r"(?:c'est |voilà )?(?:clairement|évidemment|sans (?:aucun )?doute|assurément|forcément)|"
+        r"je suis (?:sûr|certain|convaincu|persuadé) que|"
+        r"(?:ça|cela) va (?:forcément|certainement|sûrement|sans doute) (?:marcher|fonctionner|résoudre|corriger)|"
+        r"il n'y a (?:aucun doute|pas de doute)|"
+        r"j'ai (?:déjà |justement )?(?:corrigé|résolu|réglé) (?:ce|le|la|ça))\b",
+        re.IGNORECASE,
+    )
+    for ex in exchanges:
+        if not ex["tool_errors"]:
+            continue
+        for text in _prose_texts(ex):
+            for m in confidence_markers.finditer(text):
+                start = max(0, m.start() - 60)
+                end = min(len(text), m.end() + 80)
+                excerpt = text[start:end].replace("\n", " ")
+                if start > 0:
+                    excerpt = "..." + excerpt
+                if end < len(text):
+                    excerpt = excerpt + "..."
+                err_preview = ex["tool_errors"][0][:60]
+                hits.append(("high", excerpt, f"then error: {err_preview}"))
+    return hits
+
+
+def _detect_gaslighting(exchanges: list[dict]) -> list[tuple]:
+    """Detect contextual gaslighting — contradictions and rewriting history."""
+    import re
+    hits = []
+
+    # Direct denial patterns
+    denial_patterns = [
+        # ── English HIGH ──
+        (r"\bI (?:didn'?t|never|did not)\s+(?:say|suggest|recommend|claim|mention|state|write|propose|imply)\b", "high"),
+        (r"\bthat(?:'s| is) (?:not )?what I (?:said|meant|suggested|intended|proposed)\b", "high"),
+        (r"\bI (?:don'?t|do not) (?:know|understand) (?:why|where) you(?:'re| are) getting (?:that|this)\b", "high"),
+        (r"\byou (?:must have|may have|might have) (?:misunderstood|misread|confused|misinterpreted)\b", "high"),
+        # ── English MEDIUM ──
+        (r"\b(?:as I (?:already |previously |just )?(?:said|mentioned|explained|noted|stated|pointed out|indicated))\b", "medium"),
+        (r"\b(?:like I said|as I said|I already (?:told|explained|mentioned))\b", "medium"),
+        (r"\bif you (?:re-?read|look (?:back|again)|check (?:above|earlier))\b", "medium"),
+        # ── French HIGH ──
+        (r"\bje n'ai (?:jamais|pas) (?:dit|suggéré|recommandé|affirmé|prétendu|écrit|proposé)\b", "high"),
+        (r"\bce n'est pas (?:ce que j'ai (?:dit|voulu dire|suggéré)|du tout ce que)\b", "high"),
+        (r"\b(?:tu as|vous avez) (?:dû )?(?:mal (?:compris|lu|interprété)|confondu)\b", "high"),
+        # ── French MEDIUM ──
+        (r"\b(?:comme je (?:l'ai |le |)(?:déjà |précédemment )?(?:dit|mentionné|expliqué|indiqué|signalé))\b", "medium"),
+        (r"\bje (?:l'ai |le |)(?:déjà |)(?:dit|expliqué|mentionné) (?:plus haut|avant|précédemment)\b", "medium"),
+        (r"\bsi (?:tu relis|vous relisez|on relit)\b", "medium"),
+    ]
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            for pat, severity in denial_patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    start = max(0, m.start() - 60)
+                    end = min(len(text), m.end() + 80)
+                    excerpt = text[start:end].replace("\n", " ")
+                    if start > 0:
+                        excerpt = "..." + excerpt
+                    if end < len(text):
+                        excerpt = excerpt + "..."
+                    hits.append((severity, excerpt, m.group()))
+
+    # Contradiction detection: assistant says X then later says not-X
+    # Focus on genuine corrections, not thinking-aloud "wait" moments
+    correction_patterns = re.compile(
+        # ── English ──
+        r"\b(?:actually,? (?:I was|that(?:'s| is)|it(?:'s| is)|upon))|"
+        r"in fact,? (?:I was|that|it|the)|I (?:was|stand) corrected|"
+        r"(?:sorry|apologies|my (?:bad|mistake)),?\s+(?:that was|I was) (?:wrong|incorrect|mistaken)|"
+        r"(?:on second thought|after (?:further|closer) (?:review|inspection|thought))|"
+        # ── French ──
+        r"(?:en fait,? (?:je|c'|il))|(?:au temps pour moi|autant pour moi)|"
+        r"(?:pardon|désolé|excusez),?\s+(?:c'était|j'avais) (?:faux|tort|une erreur)|"
+        r"(?:à (?:bien )?y (?:réfléchir|regarder)|en y (?:repensant|regardant (?:de plus près|mieux)))\b",
+        re.IGNORECASE,
+    )
+    all_texts = []
+    for ex in exchanges:
+        all_texts.extend(_prose_texts(ex))
+
+    for i, text in enumerate(all_texts):
+        for m in correction_patterns.finditer(text):
+            # Only flag if it comes after previous assertions (not the first message)
+            if i == 0:
+                continue
+            start = max(0, m.start() - 60)
+            end = min(len(text), m.end() + 60)
+            excerpt = text[start:end].replace("\n", " ")
+            if start > 0:
+                excerpt = "..." + excerpt
+            if end < len(text):
+                excerpt = excerpt + "..."
+            hits.append(("low", excerpt, f"self-correction: {m.group()}"))
+
+    return hits
+
+
+def _detect_compliance(exchanges: list[dict]) -> list[tuple]:
+    """Detect performative agreement — agreeing then pivoting or restating."""
+    import re
+    hits = []
+    # Agreement openers followed by "but/mais" or problem restatement
+    agree_but_patterns = [
+        # ── English ──
+        (r"\b(?:you(?:'re| are) (?:absolutely |totally |completely )?right)[.,]?\s+(?:but|however|though|that said|having said that|nevertheless)", "medium"),
+        (r"\b(?:I (?:completely |totally |fully )?agree)[.,]?\s+(?:but|however|though|that said|having said that)", "medium"),
+        (r"\b(?:that(?:'s| is) (?:a )?(?:fair|valid|good) (?:point|concern))[.,]?\s+(?:but|however|though)", "low"),
+        (r"\b(?:yes,? (?:absolutely|exactly|indeed|of course))[.,]?\s+(?:but|however|though|although)", "medium"),
+        # ── French ──
+        (r"\b(?:tu as|vous avez) (?:tout à fait |absolument |complètement )?raison[.,]?\s+(?:mais|cependant|toutefois|néanmoins|par contre)", "medium"),
+        (r"\b(?:je suis (?:tout à fait |entièrement |complètement )?d'accord)[.,]?\s+(?:mais|cependant|toutefois|néanmoins)", "medium"),
+        (r"\b(?:c'est (?:vrai|juste|exact|un bon point))[.,]?\s+(?:mais|cependant|toutefois|néanmoins|par contre)", "low"),
+        (r"\b(?:oui,? (?:absolument|exactement|en effet|tout à fait|effectivement))[.,]?\s+(?:mais|cependant|toutefois)", "medium"),
+        (r"\beffectivement[.,]?\s+(?:mais|cependant|toutefois|néanmoins|par contre|il faut)", "low"),
+        (r"\ben effet[.,]?\s+(?:mais|cependant|toutefois|néanmoins|par contre)", "low"),
+    ]
+    # Standalone performative openers (without contradiction — just compliance)
+    standalone_patterns = [
+        # ── English ──
+        (r"^(?:absolutely|of course|sure thing|certainly)[.!,]?\s", "low"),
+        (r"^(?:you(?:'re| are) (?:absolutely |totally )?right)[.!,]", "low"),
+        # ── French ──
+        (r"^(?:absolument|bien sûr|tout à fait|effectivement|en effet)[.!,]?\s", "low"),
+        (r"^(?:tu as|vous avez) (?:tout à fait )?raison[.!,]", "low"),
+    ]
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            for pat, severity in agree_but_patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    start = max(0, m.start() - 60)
+                    end = min(len(text), m.end() + 80)
+                    excerpt = text[start:end].replace("\n", " ")
+                    if start > 0:
+                        excerpt = "..." + excerpt
+                    if end < len(text):
+                        excerpt = excerpt + "..."
+                    hits.append((severity, excerpt, m.group()))
+            for pat, severity in standalone_patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE | re.MULTILINE):
+                    excerpt = text[:80].replace("\n", " ")
+                    if len(text) > 80:
+                        excerpt += "..."
+                    hits.append((severity, excerpt, m.group().strip()))
+    return hits
+
+
+def _detect_premature_fix(exchanges: list[dict]) -> list[tuple]:
+    """Detect premature solution claims — declaring victory before verification."""
+    import re
+    hits = []
+    patterns = [
+        # ── English HIGH — strong fix claim ──
+        (r"\b(?:this (?:should |will )?(?:fix|solve|resolve|address) (?:the|your|this|it))\b", "medium"),
+        (r"\b(?:the (?:issue|problem|bug) (?:is|has been|should (?:now )?be) (?:now )?(?:fixed|resolved|solved))\b", "high"),
+        (r"\b(?:I(?:'ve| have) (?:fixed|resolved|solved|addressed) (?:the|this|it|your))\b", "high"),
+        (r"\b(?:that should (?:do it|work|take care of it))\b", "medium"),
+        (r"\b(?:everything (?:should|will) (?:work|be (?:fine|working)) now)\b", "high"),
+        # ── French HIGH ──
+        (r"\b(?:le (?:problème|bug|souci) (?:est|devrait être) (?:maintenant )?(?:résolu|corrigé|réglé))\b", "high"),
+        (r"\b(?:j'ai (?:corrigé|résolu|réglé) (?:le|ce|la|ça))\b", "high"),
+        (r"\b(?:voilà qui devrait (?:résoudre|corriger|régler|fonctionner))\b", "high"),
+        (r"\b(?:(?:ça|cela) devrait (?:maintenant )?(?:marcher|fonctionner|être (?:bon|OK|correct)))\b", "medium"),
+        (r"\b(?:tout devrait (?:maintenant )?(?:fonctionner|marcher|être (?:bon|OK)))\b", "high"),
+        # ── English/French MEDIUM — softer claims ──
+        (r"\b(?:try (?:it |this |again )?now)\b", "low"),
+        (r"\b(?:essaie(?:z)? (?:maintenant|à nouveau|encore))\b", "low"),
+    ]
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            for pat, severity in patterns:
+                for m in re.finditer(pat, text, re.IGNORECASE):
+                    start = max(0, m.start() - 60)
+                    end = min(len(text), m.end() + 80)
+                    excerpt = text[start:end].replace("\n", " ")
+                    if start > 0:
+                        excerpt = "..." + excerpt
+                    if end < len(text):
+                        excerpt = excerpt + "..."
+                    hits.append((severity, excerpt, m.group()))
+    return hits
+
+
+def _detect_failure_loop(exchanges: list[dict]) -> list[tuple]:
+    """Detect failure loops — user reports the same problem 3+ times without resolution."""
+    import re
+    hits = []
+    # Patterns indicating user is repeating that it still doesn't work
+    frustration = re.compile(
+        r"\b(?:still (?:not|doesn'?t|isn'?t|won'?t)|"
+        r"(?:it |that |this )?(?:still )?(?:doesn'?t|isn'?t|won'?t) (?:work|fix|run|compile|start|load)|"
+        r"same (?:error|issue|problem|bug)|"
+        r"(?:nope|no),? (?:still|same)|"
+        # ── French ──
+        r"toujours (?:pas|la même|le même|pareil)|"
+        r"(?:ça|cela) (?:ne )?(?:marche|fonctionne) (?:toujours )?pas|"
+        r"(?:encore|toujours) (?:la même|le même) (?:erreur|problème|bug)|"
+        r"(?:non|nope),? (?:toujours|encore|pareil))\b",
+        re.IGNORECASE,
+    )
+
+    # Group exchanges into sessions by (tool, date) to detect streaks
+    # within the same working session
+    from itertools import groupby
+    sorted_exs = sorted(
+        [e for e in exchanges if e["ts"]],
+        key=lambda e: (e.get("tool", ""), e["ts"].strftime("%Y-%m-%d"), e["ts"]),
+    )
+    for _, session_exs in groupby(sorted_exs, key=lambda e: (e.get("tool", ""), e["ts"].strftime("%Y-%m-%d"))):
+        streak = 0
+        for ex in session_exs:
+            user = ex["user_text"]
+            if frustration.search(user):
+                streak += 1
+                if streak >= 2:
+                    excerpt = user.replace("\n", " ")[:80]
+                    if len(user) > 80:
+                        excerpt += "..."
+                    severity = "high" if streak >= 4 else "medium"
+                    hits.append((severity, excerpt,
+                        f"user reports failure {streak} times in a row"))
+            else:
+                streak = 0
+
+    return hits
+
+
+def _detect_verbose_empty(exchanges: list[dict]) -> list[tuple]:
+    """Detect verbose but empty responses — lots of structure, little substance."""
+    import re
+    hits = []
+    for ex in exchanges:
+        user_len = len(ex["user_text"])
+        for text in _prose_texts(ex):
+            # Short question (<100 chars) getting a long structured response (>500 chars)
+            # with many headers/lists but generic content
+            if user_len > 100:
+                continue
+            if len(text) < 500:
+                continue
+
+            headers = len(re.findall(r'^#{1,4}\s', text, re.MULTILINE))
+            bullets = len(re.findall(r'^\s*[-*]\s', text, re.MULTILINE))
+            numbered = len(re.findall(r'^\s*\d+[.)]\s', text, re.MULTILINE))
+            structure_items = headers + bullets + numbered
+
+            if structure_items < 5:
+                continue
+
+            # Check for generic filler phrases
+            filler = re.compile(
+                r"\b(?:here (?:is|are) (?:a |an |some )?(?:summary|overview|breakdown|list)|"
+                r"voici (?:un |une |le |la )?(?:résumé|synthèse|récapitulatif|liste|aperçu)|"
+                r"let me (?:break|lay) (?:this|it) down|"
+                r"(?:pour |en )résumé|"
+                r"key (?:points|takeaways|considerations|aspects)|"
+                r"points (?:clés|importants|essentiels)|"
+                r"(?:in summary|to summarize|en résumé|pour conclure))\b",
+                re.IGNORECASE,
+            )
+            filler_count = len(filler.findall(text))
+
+            # Ratio: structure items per 100 chars of text
+            density = structure_items / (len(text) / 100)
+            if density > 2 and filler_count >= 1:
+                severity = "medium" if density > 3 or filler_count >= 2 else "low"
+                question = ex["user_text"].replace("\n", " ")[:60]
+                if len(ex["user_text"]) > 60:
+                    question += "..."
+                hits.append((severity,
+                    f"{len(text)} chars, {headers} headers, {bullets+numbered} items for: {question}",
+                    f"structure density {density:.1f}/100chars, {filler_count} filler phrases"))
+
+    return hits
+
+
+def _detect_fake_understanding(exchanges: list[dict]) -> list[tuple]:
+    """Detect feigned understanding — 'I understand' without actually addressing the issue."""
+    import re
+    hits = []
+    # Opener patterns that claim understanding
+    understand_openers = re.compile(
+        # ── English ──
+        r"\b(?:I (?:completely |fully |totally |perfectly )?understand"
+        r"(?:\s+(?:your|the|this|that|what you|how you))?|"
+        r"I see (?:what you (?:mean|are saying)|the (?:issue|problem|point))|"
+        r"I (?:get|hear) (?:you|what you|that)|"
+        # ── French ──
+        r"je (?:comprends (?:bien|tout à fait|parfaitement|complètement)?(?:\s+(?:ta|votre|le|la|ce|cette))?|"
+        r"vois (?:ce que|le problème|de quoi)|"
+        r"entends (?:bien|ce que)))\b",
+        re.IGNORECASE,
+    )
+    for ex in exchanges:
+        for text in _prose_texts(ex):
+            for m in understand_openers.finditer(text):
+                # Only flag if the "understanding" is at the start of a response
+                # (first 50 chars) — this is the performative opener pattern
+                if m.start() > 50:
+                    continue
+                start = max(0, m.start())
+                end = min(len(text), m.end() + 60)
+                excerpt = text[start:end].replace("\n", " ")
+                if end < len(text):
+                    excerpt += "..."
+                hits.append(("low", excerpt, m.group()))
+    return hits
+
+
+_DETECTORS = {
+    "gaslighting":       _detect_gaslighting,
+    "anthropomorphism":   _detect_anthropomorphism,
+    "hedging":           _detect_hedging,
+    "laziness":          _detect_laziness,
+    "overconfidence":    _detect_overconfidence,
+    "sycophancy":        _detect_sycophancy,
+    "compliance":        _detect_compliance,
+    "premature_fix":     _detect_premature_fix,
+    "failure_loop":      _detect_failure_loop,
+    "verbose_empty":     _detect_verbose_empty,
+    "fake_understanding":_detect_fake_understanding,
+}
+
+_SEVERITY_COLORS = {"high": BRED, "medium": BYELLOW, "low": DIM}
+_SEVERITY_ORDER  = {"high": 0, "medium": 1, "low": 2}
+
+
+def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None) -> tuple[list[dict], dict[str, int]]:
+    """Collect exchanges from all supported tools, filtered by cutoff time and tool.
+
+    Tags each exchange with a 'tool' key.
+    Returns (all_exchanges, {tool_name: count}).
+    """
+    all_exchanges = []
+    tool_counts = {}
+
+    def _add(tool_name, exchanges):
+        if tool_filter and tool_name != tool_filter:
+            return
+        filtered = [ex for ex in exchanges if ex["ts"] and ex["ts"] >= cutoff]
+        for ex in filtered:
+            ex["tool"] = tool_name
+        if filtered:
+            all_exchanges.extend(filtered)
+            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + len(filtered)
+
+    # ── Claude Code ──
+    base = Path.home() / ".claude" / "projects"
+    if base.exists():
+        for proj_dir in base.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            for jsonl_file in proj_dir.glob("*.jsonl"):
+                if "/subagents/" in str(jsonl_file):
+                    continue
+                _add("Claude Code", _extract_exchanges(str(jsonl_file)))
+
+    # ── Codex ──
+    codex_base = Path.home() / ".codex" / "sessions"
+    if codex_base.exists():
+        for jsonl_file in codex_base.rglob("rollout-*.jsonl"):
+            _add("Codex", _extract_exchanges_codex(str(jsonl_file)))
+
+    # ── OpenCode ──
+    _add("OpenCode", _extract_exchanges_opencode())
+
+    # ── Kiro ──
+    _add("Kiro", _extract_exchanges_kiro())
+
+    # ── Qwen Coder ──
+    qwen_base = Path.home() / ".qwen" / "projects"
+    if qwen_base.exists():
+        for jsonl_file in qwen_base.rglob("*.jsonl"):
+            _add("Qwen Coder", _extract_exchanges_qwen(str(jsonl_file)))
+
+    # Warm worktree cache for project normalization
+    _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
+
+    return all_exchanges, tool_counts
+
+
+def show_audit(period_name: str | None = None, tool_filter: str | None = None):
+    """Analyze AI coding assistant sessions for behavioral anti-patterns."""
+    print(f"\n{BOLD} Behavioral Audit{RESET}")
+    print(f"{DIM}  Scanning AI coding tool transcripts...{RESET}\n")
+
+    try:
+        cutoff, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+    label = f"  Period: {BOLD}{period_label}{RESET}"
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
+    print(label + "\n")
+
+    # Collect all exchanges
+    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+
+    if not all_exchanges:
+        print(f"  {YELLOW}No exchanges found in this period.{RESET}\n")
+        return
+
+    # Print scan summary
+    for tool_name, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+        color = TOOL_COLORS.get(tool_name, "")
+        print(f"  {color}●{RESET} {tool_name:<12} {count:>5} exchanges")
+    print(f"  {DIM}{'─' * 30}{RESET}")
+    print(f"  {BOLD}Total{RESET}          {len(all_exchanges):>5} exchanges\n")
+
+    # Run all detectors on merged exchanges
+    # Each detector returns (severity, excerpt, detail) — we need to also
+    # pass tool info through. We group exchanges by tool for each detector
+    # call so that findings carry the tool name.
+    category_results: dict[str, list[tuple]] = {k: [] for k, _, _ in _AUDIT_CATEGORIES}
+
+    # Run detectors per-exchange so we can tag findings with tool + model
+    # Detectors that need the full sequence of exchanges (not per-exchange)
+    _SEQUENTIAL_DETECTORS = {"failure_loop"}
+
+    # Run per-exchange detectors
+    for ex in all_exchanges:
+        tool_name = ex.get("tool", "?")
+        model = ex.get("model") or "?"
+        short_model = model.split("/")[-1]
+        if len(short_model) > 25:
+            short_model = short_model[:22] + "..."
+        project = shorten_path(normalize_project(ex.get("project") or "?"), 25)
+        for cat_key, _, _ in _AUDIT_CATEGORIES:
+            if cat_key in _SEQUENTIAL_DETECTORS:
+                continue
+            detector = _DETECTORS[cat_key]
+            findings = detector([ex])
+            for sev, excerpt, detail in findings:
+                category_results[cat_key].append((sev, excerpt, detail, tool_name, short_model, project))
+
+    # Run sequential detectors on full exchange list, grouped by tool
+    for cat_key in _SEQUENTIAL_DETECTORS:
+        detector = _DETECTORS[cat_key]
+        for tool_name in tool_counts:
+            tool_exs = sorted(
+                [ex for ex in all_exchanges if ex.get("tool") == tool_name],
+                key=lambda e: e["ts"] or datetime.min.replace(tzinfo=timezone.utc),
+            )
+            findings = detector(tool_exs)
+            for sev, excerpt, detail in findings:
+                category_results[cat_key].append((sev, excerpt, detail, tool_name, "?", "?"))
+
+    total_findings = sum(len(f) for f in category_results.values())
+    if total_findings == 0:
+        print(f"  {DIM}No anti-patterns detected.{RESET}\n")
+        return
+
+    # Display findings
+    for cat_key, cat_label, cat_color in _AUDIT_CATEGORIES:
+        findings = category_results[cat_key]
+        if not findings:
+            continue
+
+        findings.sort(key=lambda x: _SEVERITY_ORDER.get(x[0], 9))
+        high   = sum(1 for f in findings if f[0] == "high")
+        medium = sum(1 for f in findings if f[0] == "medium")
+        low    = sum(1 for f in findings if f[0] == "low")
+        total_cat = len(findings)
+
+        severity_summary = []
+        if high:   severity_summary.append(f"{BRED}{high} high{RESET}")
+        if medium: severity_summary.append(f"{BYELLOW}{medium} med{RESET}")
+        if low:    severity_summary.append(f"{DIM}{low} low{RESET}")
+
+        print(f"  {cat_color}{'━' * 74}{RESET}")
+        print(f"  {cat_color}{BOLD}{cat_label}{RESET}  ({', '.join(severity_summary)})")
+        print(f"  {cat_color}{'━' * 74}{RESET}")
+
+        shown = 0
+        for finding in findings:
+            if shown >= 12:
+                remaining = total_cat - shown
+                if remaining > 0:
+                    print(f"    {DIM}... and {remaining} more{RESET}")
+                break
+            severity, excerpt, detail, tool_name, model, project = finding
+            sev_color = _SEVERITY_COLORS.get(severity, "")
+            sev_label = f"[{severity.upper()}]"
+            tool_color = TOOL_COLORS.get(tool_name, "")
+            tag = f"{tool_color}{tool_name}{RESET} {DIM}{model}{RESET}  {project}"
+            print(f"    {sev_color}{sev_label:8s}{RESET} {tag}")
+            print(f"    {DIM}         {excerpt}{RESET}")
+            if detail and detail != excerpt:
+                print(f"    {DIM}         {detail}{RESET}")
+            shown += 1
+        print()
+
+    # Short labels for cross-tab headers
+    _SHORT_LABELS = {
+        "gaslighting": "Gaslt",
+        "anthropomorphism": "Anthr",
+        "hedging": "Hedge",
+        "laziness": "Lazy",
+        "overconfidence": "Overc",
+        "sycophancy": "Sycop",
+        "compliance": "Compl",
+        "premature_fix": "Prem.",
+        "failure_loop": "Loop",
+        "verbose_empty": "Verb.",
+        "fake_understanding": "FakeU",
+    }
+
+    # ── Summary by category ──
+    print(f"  {'─' * 74}")
+    print(f"  {BOLD}Summary — {len(all_exchanges)} exchanges across {len(tool_counts)} tools{RESET}\n")
+    headers = ["Category", "High", "Med", "Low", "Total"]
+    aligns  = ["<", ">", ">", ">", ">"]
+    rows = []
+    for cat_key, cat_label, cat_color in _AUDIT_CATEGORIES:
+        findings = category_results[cat_key]
+        h = sum(1 for f in findings if f[0] == "high")
+        m = sum(1 for f in findings if f[0] == "medium")
+        l = sum(1 for f in findings if f[0] == "low")
+        t = len(findings)
+        short = _SHORT_LABELS.get(cat_key, cat_key[:5])
+        rows.append([
+            f"{cat_color}{cat_label} {DIM}[{short}]{RESET}",
+            f"{BRED}{h}{RESET}" if h else DIM + "0" + RESET,
+            f"{BYELLOW}{m}{RESET}" if m else DIM + "0" + RESET,
+            f"{DIM}{l}{RESET}" if l else DIM + "0" + RESET,
+            f"{BOLD}{t}{RESET}" if t else DIM + "0" + RESET,
+        ])
+    total_h = sum(1 for f in category_results.values() for x in f if x[0] == "high")
+    total_m = sum(1 for f in category_results.values() for x in f if x[0] == "medium")
+    total_l = sum(1 for f in category_results.values() for x in f if x[0] == "low")
+    rows.append([
+        f"{BOLD}TOTAL{RESET}",
+        f"{BOLD}{total_h}{RESET}",
+        f"{BOLD}{total_m}{RESET}",
+        f"{BOLD}{total_l}{RESET}",
+        f"{BOLD}{total_findings}{RESET}",
+    ])
+    print_table(headers, rows, aligns)
+
+    # ── Flatten all findings for per-tool and per-model breakdowns ──
+    all_findings = []  # (severity, cat_key, tool, model)
+    for cat_key, findings in category_results.items():
+        for f in findings:
+            all_findings.append((f[0], cat_key, f[3], f[4]))  # sev, cat, tool_name, model
+
+    # Only show columns that have at least one finding
+    active_cats = [(k, l, c) for k, l, c in _AUDIT_CATEGORIES
+                   if any(f[1] == k for f in all_findings)]
+
+    # Count exchanges per model for % calculation
+    model_exchange_counts = defaultdict(int)
+    for ex in all_exchanges:
+        m = (ex.get("model") or "?").split("/")[-1]
+        if len(m) > 25:
+            m = m[:22] + "..."
+        model_exchange_counts[m] += 1
+
+    # ── Summary by tool ──
+    tool_names_seen = sorted(set(f[2] for f in all_findings))
+    if tool_names_seen:
+        print(f"\n  {BOLD}By tool{RESET}\n")
+        headers = ["Tool", "Exch."] + [_SHORT_LABELS.get(k, k[:5]) for k, _, _ in active_cats] + ["Total", "Incidents"]
+        aligns = ["<", ">"] + [">"] * (len(active_cats) + 2)
+        rows = []
+        for tn in tool_names_seen:
+            tool_findings = [f for f in all_findings if f[2] == tn]
+            cat_counts = {}
+            for f in tool_findings:
+                cat_counts[f[1]] = cat_counts.get(f[1], 0) + 1
+            tool_color = TOOL_COLORS.get(tn, "")
+            n_exch = tool_counts.get(tn, 0)
+            rate = len(tool_findings) / n_exch * 100 if n_exch else 0
+            row = [f"{tool_color}{tn}{RESET}", str(n_exch)]
+            for cat_key, _, _ in active_cats:
+                c = cat_counts.get(cat_key, 0)
+                row.append(f"{BOLD}{c}{RESET}" if c else DIM + "·" + RESET)
+            row.append(f"{BOLD}{len(tool_findings)}{RESET}")
+            row.append(f"{rate:.0f}%")
+            rows.append(row)
+        n_total = sum(tool_counts.values())
+        rate_total = len(all_findings) / n_total * 100 if n_total else 0
+        row = [f"{BOLD}TOTAL{RESET}", f"{BOLD}{n_total}{RESET}"]
+        for cat_key, _, _ in active_cats:
+            c = sum(1 for f in all_findings if f[1] == cat_key)
+            row.append(f"{BOLD}{c}{RESET}" if c else DIM + "·" + RESET)
+        row.append(f"{BOLD}{len(all_findings)}{RESET}")
+        row.append(f"{BOLD}{rate_total:.0f}%{RESET}")
+        rows.append(row)
+        print_table(headers, rows, aligns)
+
+    # ── Summary by model ──
+    model_names_seen = sorted(set(f[3] for f in all_findings))
+    if model_names_seen:
+        print(f"\n  {BOLD}By model{RESET}\n")
+        headers = ["Model", "Exch."] + [_SHORT_LABELS.get(k, k[:5]) for k, _, _ in active_cats] + ["Total", "Incidents"]
+        aligns = ["<", ">"] + [">"] * (len(active_cats) + 2)
+        rows = []
+        for mn in sorted(model_names_seen, key=lambda m: -sum(1 for f in all_findings if f[3] == m)):
+            model_findings = [f for f in all_findings if f[3] == mn]
+            cat_counts = {}
+            for f in model_findings:
+                cat_counts[f[1]] = cat_counts.get(f[1], 0) + 1
+            n_exch = model_exchange_counts.get(mn, 0)
+            rate = len(model_findings) / n_exch * 100 if n_exch else 0
+            row = [f"{DIM}{mn}{RESET}", str(n_exch)]
+            for cat_key, _, _ in active_cats:
+                c = cat_counts.get(cat_key, 0)
+                row.append(f"{BOLD}{c}{RESET}" if c else DIM + "·" + RESET)
+            row.append(f"{BOLD}{len(model_findings)}{RESET}")
+            row.append(f"{rate:.0f}%")
+            rows.append(row)
+        n_total = sum(model_exchange_counts.values())
+        rate_total = len(all_findings) / n_total * 100 if n_total else 0
+        row = [f"{BOLD}TOTAL{RESET}", f"{BOLD}{n_total}{RESET}"]
+        for cat_key, _, _ in active_cats:
+            c = sum(1 for f in all_findings if f[1] == cat_key)
+            row.append(f"{BOLD}{c}{RESET}" if c else DIM + "·" + RESET)
+        row.append(f"{BOLD}{len(all_findings)}{RESET}")
+        row.append(f"{BOLD}{rate_total:.0f}%{RESET}")
+        rows.append(row)
+        print_table(headers, rows, aligns)
+
+    print()
+
+
+# ─── Technical anomaly detection ────────────────────────────────────────────
+
+
+def show_anomalies(period_name: str | None = None, tool_filter: str | None = None):
+    """Detect technical anomalies across all AI coding tools."""
+    print(f"\n{BOLD} Technical Anomaly Detection{RESET}")
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    if PRICING:
+        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{DIM}  Scanning AI coding tool transcripts...{RESET}\n")
+
+    try:
+        cutoff, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+    label = f"  Period: {BOLD}{period_label}{RESET}"
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
+    print(label + "\n")
+    all_prompts, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+
+    # Filter to exchanges that have token data
+    all_prompts = [p for p in all_prompts if p.get("tokens") and p["ts"]]
+
+    if not all_prompts:
+        print(f"  {YELLOW}No usage data found.{RESET}\n")
+        return
+
+    # Print scan summary
+    tools_with_tokens = defaultdict(int)
+    for p in all_prompts:
+        if p["tokens"]["input"] > 0 or p["tokens"]["output"] > 0 or p["cost"] > 0:
+            tools_with_tokens[p.get("tool", "?")] += 1
+    for tool_name, count in sorted(tools_with_tokens.items(), key=lambda x: -x[1]):
+        color = TOOL_COLORS.get(tool_name, "")
+        print(f"  {color}●{RESET} {tool_name:<12} {count:>5} exchanges with token data")
+    print()
+
+    # Only keep exchanges with actual token data
+    all_prompts = [p for p in all_prompts if p["tokens"]["input"] > 0 or p["tokens"]["output"] > 0 or p["cost"] > 0]
+
+    if not all_prompts:
+        print(f"  {YELLOW}No token data found in exchanges.{RESET}\n")
+        return
+
+    # Compute stats for thresholds
+    costs = [p["cost"] for p in all_prompts if p["cost"] > 0]
+    turns = [p["num_turns"] for p in all_prompts if p["num_turns"] > 0]
+    tool_call_counts = [sum(p.get("tools_used", {}).values()) for p in all_prompts]
+
+    median_cost = sorted(costs)[len(costs) // 2] if costs else 0
+    median_turns = sorted(turns)[len(turns) // 2] if turns else 1
+    p90_cost = sorted(costs)[min(len(costs) - 1, len(costs) * 9 // 10)] if costs else 0
+    p90_turns = sorted(turns)[min(len(turns) - 1, len(turns) * 9 // 10)] if turns else 1
+
+    _warm_worktree_cache(set(p.get("project") or "unknown" for p in all_prompts))
+
+    # anomaly tuple: (severity, type, detail, project, tool, model, ts, prompt_preview)
+    anomalies = []
+
+    for p in all_prompts:
+        tool_name = p.get("tool", "?")
+        model = p.get("model") or "?"
+        project = normalize_project(p.get("project") or "unknown")
+        ts = p["ts"]
+        prompt_short = p["user_text"].replace("\n", " ")[:50]
+        if len(p["user_text"]) > 50:
+            prompt_short += "..."
+
+        tok = p["tokens"]
+        total_tools = sum(p.get("tools_used", {}).values())
+
+        def _add(sev, atype, detail):
+            anomalies.append((sev, atype, detail, project, tool_name, model, ts, prompt_short))
+
+        # 1. Runaway cost — prompt costs 10x+ the P90
+        if p["cost"] > 0 and p90_cost > 0 and p["cost"] > p90_cost * 10:
+            _add("high", "Runaway cost", f"{fmt_cost(p['cost'])} ({p['cost']/median_cost:.0f}x median)")
+
+        # 2. High cost — prompt costs 5x+ the P90
+        elif p["cost"] > 0 and p90_cost > 0 and p["cost"] > p90_cost * 5:
+            _add("medium", "High cost", f"{fmt_cost(p['cost'])} ({p['cost']/median_cost:.0f}x median)")
+
+        # 3. Tool call storm
+        if total_tools > 30:
+            _add("high" if total_tools > 60 else "medium", "Tool storm", f"{total_tools} tool calls")
+
+        # 4. Turn spiral
+        if p["num_turns"] > 0 and p90_turns > 0 and p["num_turns"] > p90_turns * 5:
+            _add("high" if p["num_turns"] > p90_turns * 10 else "medium", "Turn spiral",
+                 f"{p['num_turns']} turns ({p['num_turns']/median_turns:.0f}x median)")
+
+        # 5. Cache thrashing
+        if tok["cache_write"] > 50_000 and tok["cache_read"] < tok["cache_write"] * 0.5:
+            ratio = tok["cache_read"] / tok["cache_write"] if tok["cache_write"] > 0 else 0
+            _add("medium", "Cache thrashing", f"{fmt_tokens(tok['cache_write'])} written, only {ratio:.0%} read back")
+
+        # 6. Context bloat
+        if tok["input"] > 10_000 and tok["output"] > 0 and tok["input"] / tok["output"] > 50:
+            _add("low", "Context bloat",
+                 f"{fmt_tokens(tok['input'])} in / {fmt_tokens(tok['output'])} out (ratio {tok['input']/tok['output']:.0f}:1)")
+
+        # 7. Empty exchange
+        if p["num_turns"] > 5 and tok["output"] < 100:
+            _add("medium", "Empty exchange", f"{p['num_turns']} turns but only {tok['output']} output tokens")
+
+    if not anomalies:
+        print(f"  {DIM}No anomalies detected.{RESET}")
+        print(f"  {DIM}Stats: {len(all_prompts)} exchanges, median cost {fmt_cost(median_cost)}, P90 cost {fmt_cost(p90_cost)}{RESET}\n")
+        return
+
+    # Print stats
+    print(f"  {DIM}{len(all_prompts)} exchanges analyzed — median cost {fmt_cost(median_cost)}, P90 {fmt_cost(p90_cost)}, median turns {median_turns}, P90 turns {p90_turns}{RESET}\n")
+
+    # Group by project, then by anomaly type within each project
+    by_project = defaultdict(list)
+    for a in anomalies:
+        by_project[a[3]].append(a)  # a[3] = project
+
+    # Sort projects by worst severity then count
+    def _proj_sort_key(proj_items):
+        proj, items = proj_items
+        worst = min(_SEVERITY_ORDER.get(a[0], 9) for a in items)
+        return (worst, -len(items))
+
+    for proj, items in sorted(by_project.items(), key=_proj_sort_key):
+        proj_short = shorten_path(proj, 45)
+        high = sum(1 for a in items if a[0] == "high")
+        med  = sum(1 for a in items if a[0] == "medium")
+        low  = sum(1 for a in items if a[0] == "low")
+        parts = []
+        if high: parts.append(f"{BRED}{high} high{RESET}")
+        if med:  parts.append(f"{BYELLOW}{med} med{RESET}")
+        if low:  parts.append(f"{DIM}{low} low{RESET}")
+
+        print(f"  {BOLD}{proj_short}{RESET}  ({', '.join(parts)})")
+
+        # Sub-group by anomaly type
+        by_type = defaultdict(list)
+        for a in items:
+            by_type[a[1]].append(a)
+
+        for atype in sorted(by_type, key=lambda t: min(_SEVERITY_ORDER.get(a[0], 9) for a in by_type[t])):
+            type_items = by_type[atype]
+            type_items.sort(key=lambda a: _SEVERITY_ORDER.get(a[0], 9))
+            print(f"    {DIM}{atype} ({len(type_items)}){RESET}")
+            for sev, _, detail, _, tool_name, model, ts, prompt in type_items:
+                sev_color = _SEVERITY_COLORS.get(sev, "")
+                tool_color = TOOL_COLORS.get(tool_name, "")
+                model_short = model.split("/")[-1]
+                if len(model_short) > 20:
+                    model_short = model_short[:17] + "..."
+                ts_str = ts.strftime("%m-%d %H:%M") if ts else "?"
+                print(f"      {sev_color}[{sev.upper():6s}]{RESET} {tool_color}{tool_name}{RESET} {DIM}{model_short}{RESET}  {ts_str}  {detail}")
+                if prompt:
+                    print(f"      {DIM}         {prompt}{RESET}")
+        print()
+
+    # Summary
+    print(f"  {'─' * 60}")
+    total = len(anomalies)
+    high_t = sum(1 for a in anomalies if a[0] == "high")
+    med_t  = sum(1 for a in anomalies if a[0] == "medium")
+    low_t  = sum(1 for a in anomalies if a[0] == "low")
+    print(f"  {BOLD}{total} anomalies{RESET} across {BOLD}{len(by_project)} projects{RESET}: {BRED}{high_t} high{RESET}, {BYELLOW}{med_t} med{RESET}, {DIM}{low_t} low{RESET}")
+    print()
+
+
+# ─── Plan recommendation ────────────────────────────────────────────────────
+
+# Known plan tiers (monthly cost, included API credit equivalent)
+_PLAN_TIERS = [
+    ("Free",             0,     5),
+    ("Pro",             20,    18),
+    ("Max (5x)",       100,   100),
+    ("Max (20x)",      200,   200),
+    ("Team",            30,    30),
+    ("Team + Max (5x)", 130,  130),
+    ("Enterprise",     None,  None),  # custom
+]
+
+
+def show_plan(period_name: str | None = None, tool_filter: str | None = None):
+    """Recommend plan and optimization strategies based on usage patterns."""
+    print(f"\n{BOLD} Plan & Optimization Recommendations{RESET}")
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    if PRICING:
+        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{DIM}  Scanning usage data...{RESET}\n")
+
+    label_parts = []
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        label_parts.append(f"Tool: {color}{BOLD}{tool_filter}{RESET}")
+
+    try:
+        cutoff, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+    label_parts.append(f"Period: {BOLD}{period_label}{RESET}")
+    boundaries = {period_label: cutoff}
+    now = datetime.now(timezone.utc)
+
+    if label_parts:
+        print(f"  {'  '.join(label_parts)}\n")
+
+    # Collect analysis data across periods
+    analysis = {}
+
+    for pname, cutoff in boundaries.items():
+        # Use exchanges for the filtered tool (or all)
+        all_exs, _ = _collect_all_exchanges(cutoff, tool_filter)
+        # Only keep exchanges with token data
+        period_exs = [e for e in all_exs if e.get("tokens") and e["ts"]
+                      and (e["tokens"]["input"] > 0 or e["tokens"]["output"] > 0 or e.get("cost", 0) > 0)]
+        if not period_exs:
+            continue
+
+        total_cost = sum(e.get("cost", 0) for e in period_exs)
+        total_input = sum(e["tokens"]["input"] for e in period_exs)
+        total_output = sum(e["tokens"]["output"] for e in period_exs)
+        total_cache_r = sum(e["tokens"]["cache_read"] for e in period_exs)
+        total_cache_w = sum(e["tokens"]["cache_write"] for e in period_exs)
+        # Use actual data span (first→last exchange) for "all time", otherwise cutoff→now
+        first_ts = min(e["ts"] for e in period_exs)
+        last_ts = max(e["ts"] for e in period_exs)
+        data_span = (last_ts - first_ts).days
+        period_span = (now - cutoff).days
+        days_span = max(1, min(data_span, period_span) if data_span > 0 else period_span)
+        daily_cost = total_cost / days_span
+        monthly_projected = daily_cost * 30
+        daily_output = total_output / days_span
+        api_calls = len(period_exs)
+        daily_calls = api_calls / days_span
+        active_days = len(set(e["ts"].strftime("%Y-%m-%d") for e in period_exs))
+        models = set(e.get("model") or "?" for e in period_exs)
+        cache_ratio = total_cache_r / (total_cache_r + total_cache_w) if (total_cache_r + total_cache_w) > 0 else 0
+
+        # Per-model cost breakdown
+        model_costs = defaultdict(float)
+        model_calls = defaultdict(int)
+        for e in period_exs:
+            m = e.get("model") or "?"
+            model_costs[m] += e.get("cost", 0)
+            model_calls[m] += 1
+
+        # Cost distribution
+        daily_costs_map = defaultdict(float)
+        for e in period_exs:
+            daily_costs_map[e["ts"].strftime("%Y-%m-%d")] += e.get("cost", 0)
+        sorted_daily = sorted(daily_costs_map.values()) if daily_costs_map else [0]
+        max_daily = sorted_daily[-1]
+
+        # Prompt-level analysis
+        high_cost_prompts = [e for e in period_exs if e.get("cost", 0) > daily_cost * 0.5] if daily_cost > 0 else []
+        heavy_tool_prompts = [e for e in period_exs if sum(e.get("tools_used", {}).values()) > 30]
+
+        # Session approximation: group by date for one-shot detection
+        from itertools import groupby
+        date_groups = {}
+        for e in sorted(period_exs, key=lambda x: x["ts"]):
+            d = e["ts"].strftime("%Y-%m-%d")
+            date_groups.setdefault(d, []).append(e)
+        one_shot_sessions = sum(1 for exs in date_groups.values() if len(exs) == 1)
+        total_sessions = len(date_groups)
+
+        analysis[pname] = {
+            "total_cost": total_cost, "daily_cost": daily_cost, "monthly_projected": monthly_projected,
+            "api_calls": api_calls, "daily_calls": daily_calls, "active_days": active_days,
+            "days_span": days_span, "models": models, "cache_ratio": cache_ratio,
+            "total_output": total_output, "daily_output": daily_output,
+            "total_cache_r": total_cache_r, "total_cache_w": total_cache_w,
+            "model_costs": model_costs, "model_calls": model_calls,
+            "max_daily": max_daily, "high_cost_prompts": len(high_cost_prompts),
+            "heavy_tool_prompts": len(heavy_tool_prompts),
+            "one_shot_sessions": one_shot_sessions,
+            "total_sessions": total_sessions,
+            "opus_pct": sum(c for m, c in model_costs.items() if "opus" in m.lower()) / total_cost * 100 if total_cost else 0,
+        }
+
+    if not analysis:
+        tool_label = tool_filter or "any tool"
+        period_label = period_name or "last 30 days"
+        print(f"  {YELLOW}No token data found for {tool_label} in {period_label}.{RESET}\n")
+        return
+
+    # Use the longest period for display + plan + recommendations
+    a = list(analysis.values())[-1]
+    pname = list(analysis.keys())[-1]
+
+    # ── Cost table by model ──
+    print(f"  {DIM}{pname} — {a['active_days']} active days / {a['days_span']}{RESET}\n")
+    headers = ["Model", "Calls", "Cost", "Avg/day", "Projected/mo", "Cache", "Share"]
+    aligns  = ["<", ">", ">", ">", ">", ">", ">"]
+    rows = []
+    for model in sorted(a["model_costs"], key=lambda m: -a["model_costs"][m]):
+        mc = a["model_costs"][model]
+        calls = a["model_calls"][model]
+        share = mc / a["total_cost"] * 100 if a["total_cost"] else 0
+        daily = mc / a["days_span"]
+        projected = daily * 30
+        rows.append([
+            model,
+            str(calls),
+            fmt_cost(mc),
+            f"{fmt_cost(daily)}/d",
+            f"{fmt_cost(projected)}/mo",
+            f"{a['cache_ratio'] * 100:.0f}%",
+            f"{share:.0f}%",
+        ])
+    rows.append([
+        f"{BOLD}TOTAL{RESET}",
+        f"{BOLD}{a['api_calls']}{RESET}",
+        f"{BOLD}{fmt_cost(a['total_cost'])}{RESET}",
+        f"{BOLD}{fmt_cost(a['daily_cost'])}/d{RESET}",
+        f"{BOLD}{fmt_cost(a['monthly_projected'])}/mo{RESET}",
+        f"{a['cache_ratio'] * 100:.0f}%",
+        "",
+    ])
+    print_table(headers, rows, aligns)
+    print()
+
+    # ── Plan recommendation ──
+    mp = a["monthly_projected"]
+    print(f"  {BOLD}Plan{RESET} {DIM}(based on {pname}){RESET}")
+    print(f"  {'─' * 60}")
+
+    if mp <= 5:
+        print(f"    {GREEN}Free tier{RESET} covers your usage.")
+        print(f"    {DIM}Projected: {fmt_cost(mp)}/mo vs $5 included{RESET}")
+    elif mp <= 18:
+        print(f"    {GREEN}Pro ($20/mo){RESET} covers your usage.")
+        print(f"    {DIM}Projected: {fmt_cost(mp)}/mo vs ~$18 included{RESET}")
+    elif mp <= 100:
+        if mp > 30:
+            print(f"    {BYELLOW}Max 5x ($100/mo){RESET} recommended.")
+            print(f"    {DIM}Projected API cost: {fmt_cost(mp)}/mo — Pro ($20) would be exceeded{RESET}")
+        else:
+            print(f"    {GREEN}Pro ($20/mo){RESET} still reasonable, approaching Max territory.")
+            print(f"    {DIM}Projected: {fmt_cost(mp)}/mo{RESET}")
+    elif mp <= 200:
+        print(f"    {BYELLOW}Max 5x ($100/mo){RESET} or {BOLD}Max 20x ($200/mo){RESET} recommended.")
+        print(f"    {DIM}Projected API cost: {fmt_cost(mp)}/mo{RESET}")
+        print(f"    {DIM}Max 5x saves ~{fmt_cost(mp - 100)}/mo vs API pricing{RESET}")
+    else:
+        print(f"    {BRED}Max 20x ($200/mo){RESET} strongly recommended.")
+        print(f"    {DIM}Projected API cost: {fmt_cost(mp)}/mo — you'd save ~{fmt_cost(mp - 200)}/mo{RESET}")
+        if mp > 500:
+            print(f"    {BRED}Consider Enterprise or Team + Max for volume discount{RESET}")
+    print()
+
+    # ── Alerts ──
+    alerts = []
+    if a["daily_calls"] > 200:
+        alerts.append(f"{BYELLOW}!{RESET}  High API call volume ({a['daily_calls']:.0f}/day) — check for runaway agents")
+    if a["cache_ratio"] < 0.5 and (a["total_cache_r"] + a["total_cache_w"]) > 0:
+        alerts.append(f"{BYELLOW}!{RESET}  Low cache hit rate ({a['cache_ratio']:.0%}) — short sessions waste cache investment")
+    elif a["cache_ratio"] > 0.9:
+        alerts.append(f"{GREEN}+{RESET}  Excellent cache hit rate ({a['cache_ratio']:.0%})")
+    if a["active_days"] < a["days_span"] * 0.3:
+        alerts.append(f"{DIM}i{RESET}  Sporadic usage ({a['active_days']}/{a['days_span']} days) — daily averages may overestimate")
+    if a["max_daily"] > a["daily_cost"] * 3 and a["daily_cost"] > 0:
+        alerts.append(f"{BYELLOW}!{RESET}  Spiky usage: peak day {fmt_cost(a['max_daily'])} vs avg {fmt_cost(a['daily_cost'])}/day")
+    if alerts:
+        for al in alerts:
+            print(f"    {al}")
+        print()
+
+    print(f"  {'━' * 60}")
+    print(f"  {BOLD}Optimization Recommendations{RESET}")
+    print(f"  {'━' * 60}\n")
+
+    recommendations = []
+
+    # 1. Model selection — if top model takes >80% of spend, find a cheaper alternative
+    if a["total_cost"] > 0:
+        sorted_models = sorted(a["model_costs"].items(), key=lambda x: -x[1])
+        top_model, top_cost = sorted_models[0]
+        top_pct = top_cost / a["total_cost"] * 100
+        if top_pct > 80 and top_cost > 5:
+            top_price = match_model(top_model)
+            if top_price["output"] > 0:
+                # Search LiteLLM for a cheaper model from the same provider
+                # Detect provider from model name
+                top_lower = top_model.lower()
+                # Detect provider family keywords to match in LiteLLM keys
+                family_keywords = {
+                    "claude": "claude", "gpt": "gpt", "gemini": "gemini",
+                    "qwen": "qwen", "glm": "glm", "llama": "llama",
+                    "mistral": "mistral", "codex": "codex",
+                }
+                family = ""
+                for key, kw in family_keywords.items():
+                    if key in top_lower:
+                        family = kw
+                        break
+
+                # Find the best alternative: one tier down (1.5x-8x cheaper, not the absolute cheapest)
+                best_alt_name = None
+                best_alt_ratio = 999.0  # start high, find closest to 1.5x
+                for pkey, pval in PRICING.items():
+                    if not family or family not in pkey.lower():
+                        continue
+                    alt_out = pval.get("output", 0)
+                    if alt_out <= 0 or alt_out >= top_price["output"]:
+                        continue
+                    ratio = top_price["output"] / alt_out
+                    if 1.5 <= ratio <= 8 and ratio < best_alt_ratio:
+                        best_alt_ratio = ratio
+                        best_alt_name = pkey
+                        for sep in ("/", "."):
+                            if sep in best_alt_name:
+                                best_alt_name = best_alt_name.split(sep)[-1]
+
+                if best_alt_name:
+                    potential_savings = top_cost * 0.3 * (1 - 1/best_alt_ratio) / a["days_span"] * 30
+                    if potential_savings > 3:
+                        recommendations.append((
+                            "Model selection",
+                            f"{top_pct:.0f}% of spend is on {top_model}. {best_alt_name} is {best_alt_ratio:.0f}x cheaper.",
+                            [
+                                f"Use {best_alt_name} for simple tasks: file reads, search, refactoring, Q&A",
+                                f"Reserve {top_model} for complex multi-step tasks, architecture, debugging",
+                                f"Switching 30% to {best_alt_name} would save ~{fmt_cost(potential_savings)}/mo",
+                            ],
+                        ))
+
+    # 2. Cache optimization — only if cache hit rate is actually low
+    if a["cache_ratio"] < 0.7 and (a["total_cache_r"] + a["total_cache_w"]) > 100_000:
+        one_shot_pct = a["one_shot_sessions"] / a["total_sessions"] * 100 if a["total_sessions"] > 0 else 0
+        items = [
+            "Prefer longer sessions over many short ones (cache builds up over turns)",
+            f"{a['one_shot_sessions']}/{a['total_sessions']} sessions are single-prompt ({one_shot_pct:.0f}%) — each wastes cache warm-up" if one_shot_pct > 30 else None,
+            "Use /compact instead of starting new sessions when context gets large",
+        ]
+        recommendations.append((
+            "Cache optimization",
+            f"Cache hit rate is {a['cache_ratio']:.0%} — {fmt_cost(a['total_cache_w'] * match_model('claude-opus-4-6').get('cache_write', 0))} spent on cache that wasn't reused.",
+            items,
+        ))
+
+    # 3. Guardrails — only if runaways actually happened
+    if a["heavy_tool_prompts"] > 2 or a["high_cost_prompts"] > 3:
+        items = []
+        if a["heavy_tool_prompts"] > 0:
+            items.append(f"{a['heavy_tool_prompts']} prompts had 30+ tool calls — set max_turns in settings (e.g. 25-30)")
+        if a["high_cost_prompts"] > 0:
+            items.append(f"{a['high_cost_prompts']} prompts cost more than half a day's average — use hooks to alert on high spend")
+        items.append("Break large tasks into smaller prompts with explicit checkpoints")
+        recommendations.append(("Guardrails", "Runaway agents detected in your data.", items))
+
+    # 4. Context management — only if cache writes are large
+    if a["total_cache_w"] > 5_000_000:
+        recommendations.append((
+            "Context reduction",
+            f"{fmt_tokens(a['total_cache_w'])} cache tokens written — large context footprint.",
+            [
+                "Write a CLAUDE.md at project root — reduces discovery turns and token waste",
+                "RTK (Rust Token Killer) — strips comments and whitespace before sending to LLM",
+                "Repomix (github.com/yamadashy/repomix) — pack repo into a single optimized context file",
+                ".claudeignore / .gitattributes — exclude generated files, binaries, node_modules/",
+                "Use /compact to compress context mid-session instead of starting fresh",
+            ],
+        ))
+
+    # 5. Spending hygiene — only if spikes are real
+    if a["max_daily"] > a["daily_cost"] * 5 and a["daily_cost"] > 1:
+        recommendations.append((
+            "Spending hygiene",
+            f"Peak day ({fmt_cost(a['max_daily'])}) is {a['max_daily']/a['daily_cost']:.0f}x the daily average.",
+            [
+                "Set a daily budget alert (Claude Max shows usage in account settings)",
+                "Avoid launching many parallel agents on the same repo (worktree storms)",
+                "Run --anomalies to identify the specific runaway prompts",
+            ],
+        ))
+
+    # 6. Tool diversification — only if using a single tool
+    if len(a["models"]) <= 2 and a["monthly_projected"] > 50:
+        recommendations.append((
+            "Tool diversification",
+            f"All spend is on {len(a['models'])} model(s). Other tools have free tiers.",
+            [
+                "Gemini CLI — free for exploration, prototyping, large-context questions",
+                "Codex (OpenAI) — sandboxed execution, good for one-shot code generation",
+                "Cursor / Windsurf — IDE-integrated, efficient for small edits and tab completion",
+            ],
+        ))
+
+    for title, summary, items in recommendations:
+        print(f"  {BOLD}{title}{RESET}")
+        print(f"    {DIM}{summary}{RESET}")
+        for item in items:
+            if item:
+                print(f"      - {item}")
+        print()
+
+    print()
+
+
+def export_conversations(output_path: str, period_name: str | None = None, tool_filter: str | None = None):
+    """Export all conversations from all tools to a single JSON file."""
+    print(f"\n{BOLD} Exporting conversations{RESET}")
+    print(f"{DIM}  Scanning all AI coding tool transcripts...{RESET}\n")
+
+    try:
+        cutoff, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+    label = f"  Period: {BOLD}{period_label}{RESET}"
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
+    print(label + "\n")
+    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+
+    if not all_exchanges:
+        print(f"  {YELLOW}No conversation data found.{RESET}\n")
+        return
+
+    for tool_name, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+        color = TOOL_COLORS.get(tool_name, "")
+        print(f"  {color}●{RESET} {tool_name:<12} {count:>5} exchanges")
+
+    # Sort chronologically
+    all_exchanges.sort(key=lambda e: e["ts"] or datetime.min.replace(tzinfo=timezone.utc))
+
+    # Serialize
+    export = []
+    for ex in all_exchanges:
+        entry = {
+            "tool": ex.get("tool", "?"),
+            "model": ex.get("model"),
+            "timestamp": ex["ts"].isoformat() if ex["ts"] else None,
+            "user": ex["user_text"],
+            "assistant": ex["assistant_texts"],
+            "turns": ex.get("num_turns", 0),
+        }
+        tools_used = ex.get("tools_used")
+        if tools_used:
+            entry["tools_used"] = dict(tools_used)
+        if ex.get("tool_errors"):
+            entry["tool_errors"] = ex["tool_errors"]
+        export.append(entry)
+
+    out = Path(output_path)
+    out.write_text(json.dumps(export, ensure_ascii=False, indent=2))
+
+    total = len(export)
+    size_kb = out.stat().st_size / 1024
+    first_ts = next((e["timestamp"] for e in export if e["timestamp"]), "?")
+    last_ts = next((e["timestamp"] for e in reversed(export) if e["timestamp"]), "?")
+
+    print(f"\n  {BOLD}{total}{RESET} exchanges exported to {BOLD}{output_path}{RESET}")
+    print(f"  {DIM}{size_kb:.0f} KB — {first_ts[:10]} to {last_ts[:10]}{RESET}\n")
+
+
+def _parse_period(args: list[str]) -> str | None:
+    """Extract --period/--since value from args."""
+    for flag in ("--period", "--since"):
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 < len(args):
+                return args[idx + 1]
+    return None
+
+
+_TOOL_ALIASES = {
+    "claude": "Claude Code", "claude-code": "Claude Code", "claudecode": "Claude Code",
+    "codex": "Codex", "openai": "Codex",
+    "gemini": "Gemini CLI", "gemini-cli": "Gemini CLI",
+    "cline": "Cline",
+    "opencode": "OpenCode", "open-code": "OpenCode",
+    "qwen": "Qwen Coder", "qwen-coder": "Qwen Coder",
+    "cursor": "Cursor",
+    "kiro": "Kiro",
+}
+
+
+def _parse_tool(args: list[str]) -> str | None:
+    """Extract --tool value from args. Returns canonical tool name or None (all)."""
+    if "--tool" not in args:
+        return None
+    idx = args.index("--tool")
+    if idx + 1 >= len(args):
+        return None
+    raw = args[idx + 1].lower().strip()
+    if raw in ("all", "tous", "*"):
+        return None
+    canonical = _TOOL_ALIASES.get(raw)
+    if canonical:
+        return canonical
+    # Partial match
+    for alias, name in _TOOL_ALIASES.items():
+        if raw in alias or raw in name.lower():
+            return name
+    valid = ", ".join(sorted(set(_TOOL_ALIASES.values())))
+    raise ValueError(f"Unknown tool '{args[idx + 1]}'. Available: {valid}")
+
+
+def show_help():
+    print(f"""
+{BOLD}token-usage{RESET} — Aggregate and analyze token consumption across AI coding tools.
+
+{BOLD}MODES{RESET}
+  token-usage                            Aggregated overview (period, project, model, speed)
+  token-usage --prompts  [-p]            Per-prompt detail (Claude Code)
+  token-usage --audit    [-a]            Behavioral anti-pattern detection (11 categories)
+  token-usage --anomalies                Technical anomaly detection (cost, cache, runaways)
+  token-usage --plan                     Plan recommendation + optimization strategies
+  token-usage --export   [file.json]     Export all conversations to JSON
+  token-usage --help     [-h]            This help
+
+{BOLD}FILTERS{RESET}  {DIM}(all modes){RESET}
+  --period <period>      Time filter — all, hour, "5 hours", today, "7 days", "30 days", year
+  --tool <name>          Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro
+
+  Default: today, all tools. Partial match works ("7" = "Last 7 days", "openai" = Codex).
+
+{BOLD}TOOLS{RESET}
+  {CYAN}Claude Code{RESET}    {DIM}~/.claude/projects/{RESET}              Tokens, text, tools, speed
+  {GREEN}Codex{RESET}          {DIM}~/.codex/sessions/{RESET}               Tokens, text, speed
+  {YELLOW}Gemini CLI{RESET}     {DIM}~/.gemini/{RESET}                       Tokens, speed
+  {MAGENTA}Cline{RESET}          {DIM}~/.cline/data/sessions/{RESET}          Tokens
+  {WHITE}OpenCode{RESET}       {DIM}~/.local/share/opencode/{RESET}         Tokens, text, tools
+  {RED}Qwen Coder{RESET}     {DIM}~/.qwen/{RESET}                         Tokens, text, tools
+  {BLUE}Cursor{RESET}         {DIM}~/Library/Application Support/{RESET}   Tokens
+  {YELLOW}Kiro{RESET}           {DIM}~/Library/Application Support/{RESET}   Text, tools
+
+{BOLD}EXAMPLES{RESET}
+  token-usage                                  Full overview, all tools
+  token-usage --period today                   Today only, all tools
+  token-usage --tool claude --period "7 days"  Claude Code, last week
+  token-usage -p --period today                Today's prompts
+  token-usage -a --tool opencode               Audit OpenCode only
+  token-usage --anomalies --period "30 days"   Anomalies last month
+  token-usage --plan --tool claude             Plan for Claude Code
+  token-usage --export out.json --tool kiro    Export Kiro conversations
+""")
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if "--prompts" in args or "-p" in args:
-        period = None
-        for flag in ("--period", "--since"):
-            if flag in args:
-                idx = args.index(flag)
-                if idx + 1 < len(args):
-                    period = args[idx + 1]
-        show_prompts(period)
+    if "--help" in args or "-h" in args:
+        show_help()
     else:
-        main()
+        period = _parse_period(args)
+        try:
+            tool = _parse_tool(args)
+        except ValueError as e:
+            print(f"\n  {RED}{e}{RESET}\n")
+            sys.exit(1)
+        if "--prompts" in args or "-p" in args:
+            show_prompts(period)
+        elif "--audit" in args or "-a" in args:
+            show_audit(period, tool)
+        elif "--anomalies" in args:
+            show_anomalies(period, tool)
+        elif "--plan" in args:
+            show_plan(period, tool)
+        elif "--export" in args:
+            idx = args.index("--export")
+            out = "conversations.json"
+            if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+                out = args[idx + 1]
+            export_conversations(out, period, tool)
+        else:
+            main(period, tool)

@@ -4,16 +4,16 @@ Single-file CLI tool that aggregates and displays token consumption across AI co
 
 ## Supported tools
 
-| Tool | Data source |
-|------|-------------|
-| Claude Code | `~/.claude/projects/` (JSONL transcripts) |
-| Codex (OpenAI) | `~/.codex/sessions/` |
-| Gemini CLI | `~/.gemini/` |
-| Cline | `~/.cline/data/sessions/sessions.db` (SQLite) |
-| OpenCode | `~/.local/share/opencode/` (SQLite) |
-| Qwen Coder | `~/.qwen/` |
-| Cursor | `~/Library/Application Support/Cursor/` (SQLite) |
-| Kiro | `~/Library/Application Support/Kiro/` |
+| Tool | Data source | Tokens | Text | Tools | Speed |
+|------|-------------|--------|------|-------|-------|
+| Claude Code | `~/.claude/projects/` | Yes | Yes | Yes | Yes |
+| Codex (OpenAI) | `~/.codex/sessions/` | Yes | Yes | No | Yes |
+| Gemini CLI | `~/.gemini/` | Yes | No | No | Yes |
+| Cline | `~/.cline/data/sessions/` | Yes | No | No | No |
+| OpenCode | `~/.local/share/opencode/` | Yes | Yes | Yes | No |
+| Qwen Coder | `~/.qwen/` | Yes | Yes | Yes | No |
+| Cursor | `~/Library/Application Support/Cursor/` | Yes | No | No | No |
+| Kiro | `~/Library/Application Support/Kiro/` | No | Yes | Yes | No |
 
 Tools that are not installed are silently skipped.
 
@@ -22,98 +22,159 @@ Tools that are not installed are silently skipped.
 No dependencies. Requires Python 3.10+.
 
 ```sh
-# Make executable
 chmod +x token-usage
-
-# Optionally symlink somewhere in your PATH
 ln -s $(pwd)/token-usage ~/.local/bin/token-usage
 ```
 
-## Usage
+## Global options
 
-### Default view — aggregated overview
-
-```sh
-token-usage
-```
-
-Displays four sections:
-
-1. **Consumption by period** — tokens and cost for last hour, 5 hours, today, 7 days, 30 days, year, broken down by tool
-2. **Consumption by project** — per-project breakdown with tool-level detail, sorted by cost
-3. **Cost by model** — total input/output tokens and cost per model
-4. **Output speed** — median, average, P10, P90 tokens/sec per model (Claude Code, Codex, Gemini CLI)
-
-Plus a grand total at the bottom.
-
-### Prompt-level view — per-conversation detail (Claude Code)
+All modes support these filters:
 
 ```sh
-token-usage --prompts                    # last 7 days (default)
-token-usage -p                           # short form
-token-usage --prompts --period today     # filter by period
-token-usage --prompts --period "30 days" # last 30 days
-token-usage --prompts --since hour       # partial match works
+--period <period>    Filter by time period (default: all)
+--tool <name>        Filter by tool (default: all)
 ```
 
-Shows each Claude Code session with its individual prompts:
+Supported periods: `all`, `hour`, `"5 hours"`, `today`, `"7 days"`, `"30 days"`, `year`. Partial match works.
 
-- Prompt text (truncated)
-- Model used
-- Number of API turns
-- Token breakdown: input, output, cache read, cache write
-- Tool calls with counts (e.g. `Bash:3 Read:2 Edit`)
-- Cost per prompt
+Supported tools: `claude`, `codex`, `gemini`, `cline`, `opencode`, `qwen`, `cursor`, `kiro`, `all`. Aliases work (`openai` = Codex).
 
-Available periods: `hour`, `5 hours`, `today`, `7 days`, `30 days`, `year`.
+## Modes
+
+### Default — aggregated overview
+
+```sh
+token-usage                              # all tools, all time
+token-usage --period today               # all tools, today only
+token-usage --tool claude                # Claude Code only, all time
+token-usage --tool claude --period "7 days"
+```
+
+Displays: consumption by period, by project, by model, output speed, and grand total.
+
+### `--prompts` — per-conversation detail (Claude Code)
+
+```sh
+token-usage --prompts
+token-usage -p --period today
+```
+
+Per-prompt breakdown: text, model, turns, tokens (input/output/cache), tool calls, cost.
+
+### `--audit` — behavioral anti-pattern detection
+
+```sh
+token-usage --audit
+token-usage -a --tool opencode --period "30 days"
+```
+
+Scans assistant transcripts for 11 categories of behavioral anti-patterns across 5 tools (Claude Code, Codex, OpenCode, Kiro, Qwen). Each finding is tagged with tool and model. Summary tables show breakdown by category, by tool, and by model with incident rates.
+
+#### Detection categories
+
+| Abbr. | Category | What it detects |
+|-------|----------|----------------|
+| Gaslt | Gaslighting contextuel | Denying previous statements, rewriting history |
+| Anthr | Anthropomorphisme / fausse empathie | False emotions, fake experience claims |
+| Hedge | Dilution par prudence | Dense hedging clusters in a single sentence |
+| Lazy | Paresse intellectuelle | Deflecting to docs, generic non-answers, filler |
+| Overc | Aplomb trompeur | Confident assertions followed by tool errors |
+| Sycop | Flagornerie / sycophancy | Excessive praise, performative agreement |
+| Compl | Acquiescement performatif | "You're right, but..." patterns |
+| Prem. | Solution prematuree | Declaring victory before verification |
+| Loop | Boucle d'echec | User reports same failure 3+ times |
+| Verb. | Verbosite creuse | Long structured response to short question |
+| FakeU | Comprehension feinte | "I understand" without addressing the issue |
+
+All patterns detect both French and English. Metalanguage and code blocks are filtered out.
+
+### `--anomalies` — technical anomaly detection
+
+```sh
+token-usage --anomalies
+token-usage --anomalies --tool claude --period "30 days"
+```
+
+Detects unusual patterns in per-exchange token data (Claude Code, Codex, OpenCode, Qwen). Results grouped by project with worktree resolution.
+
+| Anomaly | Trigger | Severity |
+|---------|---------|----------|
+| Runaway cost | Prompt costs 10x+ the P90 | HIGH |
+| High cost | Prompt costs 5x+ the P90 | MEDIUM |
+| Tool storm | 30+ tool calls in a single prompt | HIGH >60, MEDIUM >30 |
+| Turn spiral | API turns 5x+ the P90 | HIGH >10x, MEDIUM >5x |
+| Cache thrashing | High cache writes with <50% read-back | MEDIUM |
+| Context bloat | Input/output ratio >50:1 with >10K input | LOW |
+| Empty exchange | 5+ turns but <100 output tokens | MEDIUM |
+
+Thresholds are computed dynamically from the user's own data (median, P90).
+
+### `--plan` — plan & optimization recommendations
+
+```sh
+token-usage --plan
+token-usage --plan --tool claude --period "30 days"
+```
+
+Cost breakdown by model, plan recommendation, and data-driven optimization advice.
+
+- **Cost table** — per-model: calls, cost, avg/day, projected monthly, cache efficiency, share
+- **Plan mapping** — Free (<$5/mo), Pro (<$18/mo), Max 5x (<$100/mo), Max 20x (<$200/mo), Enterprise (>$500/mo)
+- **Optimization recommendations** (conditional, only when data supports them):
+  - **Model selection** — if top model takes >80% of spend, suggests cheaper alternative from same family (looked up dynamically from LiteLLM pricing)
+  - **Cache optimization** — if hit rate <70%, suggests longer sessions
+  - **Guardrails** — if runaway agents detected, suggests max_turns and hooks
+  - **Context reduction** — if cache writes >5M, suggests CLAUDE.md, RTK, Repomix, .claudeignore
+  - **Spending hygiene** — if peak day >5x average, suggests budget alerts
+  - **Tool diversification** — if using single tool, suggests alternatives with free tiers
+
+```
+  All time — 17 active days / 30
+
+  Model              Calls     Cost   Avg/day  Projected/mo  Cache  Share
+  ─────────────────  ─────  ───────  ────────  ────────────  ─────  ─────
+  claude-opus-4-6      321  $475.19  $15.84/d    $475.19/mo    96%   100%
+  claude-sonnet-4-6      8   $0.811  $0.027/d     $0.811/mo    96%     0%
+  TOTAL                329  $476.00  $15.87/d    $476.00/mo    96%
+
+  Plan (based on All time)
+    Max 20x ($200/mo) strongly recommended.
+    Projected API cost: $476.00/mo — you'd save ~$276.00/mo
+
+  Optimization Recommendations
+
+  Model selection
+    100% of spend is on claude-opus-4-6. claude-sonnet-4-6 is 2x cheaper.
+      - Use claude-sonnet-4-6 for simple tasks
+      - Switching 30% would save ~$49.78/mo
+```
+
+### `--export` — conversation export
+
+```sh
+token-usage --export
+token-usage --export out.json --tool kiro --period year
+```
+
+Exports all conversations to a single JSON file. Kiro exchanges are deduplicated.
+
+```json
+{
+  "tool": "Claude Code",
+  "model": "claude-opus-4-6",
+  "timestamp": "2026-04-08T...",
+  "user": "the user prompt text",
+  "assistant": ["response 1", "response 2"],
+  "turns": 25,
+  "tools_used": {"Bash": 3, "Read": 7, "Edit": 2},
+  "tool_errors": ["error message"]
+}
+```
 
 ## Pricing
 
-Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached locally at `~/.cache/token-usage/litellm_prices.json` for 24 hours. If the fetch fails, stale cache is used. If no pricing data is available, costs show as $0.
-
-Cost calculation includes:
-- Input tokens
-- Output tokens
-- Cache read tokens (discounted rate)
-- Cache creation tokens
+Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached locally at `~/.cache/token-usage/litellm_prices.json` for 24 hours. Falls back to stale cache if fetch fails.
 
 ## Project normalization
 
-Git worktrees (including those created by Cline under `~/.cline/worktrees/`) are automatically resolved to their main project, so usage from multiple worktrees of the same repository is aggregated under a single project entry.
-
-## Example output
-
-```
- Token Usage Aggregator
-  Loading pricing from LiteLLM...
-  2150 models loaded
-  Scanning local AI coding tool data...
-
-  ● Claude Code    5954 records from ~/.claude/
-  ● Codex           249 records from ~/.codex/
-  ● Gemini CLI      121 records from ~/.gemini/
-  ● OpenCode       1116 records from ~/.local/share/opencode/
-
-──────────────────────────────────────────────────────────────
- CONSUMPTION BY PERIOD
-──────────────────────────────────────────────────────────────
-  Period        Tool          Input  Output  Cache R  Cache W     Cost
-  ────────────  ───────────  ──────  ──────  ───────  ───────  ───────
-  Last hour     Claude Code      64    6.3K     1.2M    41.2K    $1.04
-  Today         Claude Code     152   17.6K     2.1M   216.8K    $2.83
-  ...
-```
-
-```
-token-usage --prompts --period today
-
- Claude Code — Prompt-level Usage
-
-  ~/Code/myproject  fuzzy-munching-narwhal  14 prompts  129 turns  $9.26
-  #  Time   Prompt                               Turns  Input  Output  Cache R  Cache W  Tools              Cost
-  ─  ─────  ───────────────────────────────────  ─────  ─────  ──────  ───────  ───────  ─────────────────  ──────
-  1  06:55  write a python script that shows...      4     10    4.9K    49.6K    18.2K  Write              $0.26
-  2  06:59  I want real-time updates with a...       7     13    7.2K   157.0K    19.4K  Bash:2 Write       $0.38
-  3  07:03  add trajectory display with...          37     47   16.1K     1.7M    51.3K  Bash:9 Edit:6 +3   $1.55
-  ...
-```
+Git worktrees (including Cline worktrees under `~/.cline/worktrees/`) are automatically resolved to their main project, so usage from multiple worktrees is aggregated under a single entry.
