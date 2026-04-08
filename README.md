@@ -4,18 +4,20 @@ Single-file CLI tool that aggregates and displays token consumption across AI co
 
 ## Supported tools
 
+All 8 tools are supported in all modes (default, --prompts, --audit, --anomalies, --plan, --export). The table below shows what data is available from each tool's data sources:
+
 | Tool | Data source | Tokens | Text | Tools | Speed |
 |------|-------------|--------|------|-------|-------|
-| Claude Code | `~/.claude/projects/` | Yes | Yes | Yes | Yes |
-| Codex (OpenAI) | `~/.codex/sessions/` | Yes | Yes | No | Yes |
-| Gemini CLI | `~/.gemini/` | Yes | No | No | Yes |
-| Cline | `~/.cline/data/sessions/` | Yes | No | No | No |
-| OpenCode | `~/.local/share/opencode/` | Yes | Yes | Yes | No |
-| Qwen Coder | `~/.qwen/` | Yes | Yes | Yes | No |
-| Cursor | `~/Library/Application Support/Cursor/` | Yes | No | No | No |
-| Kiro | `~/Library/Application Support/Kiro/` | No | Yes | Yes | No |
+| Claude Code | `~/.claude/projects/` | ✓ | ✓ | ✓ | ✓ |
+| Codex (OpenAI) | `~/.codex/sessions/` | ✓ | ✓ | — | ✓ |
+| Gemini CLI | `~/.gemini/` | ✓ | — | — | ✓ |
+| Cline | `~/.cline/data/sessions/` | ✓ | — | — | — |
+| OpenCode | `~/.local/share/opencode/` | ✓ | ✓ | ✓ | — |
+| Qwen Coder | `~/.qwen/` | ✓ | ✓ | ✓ | — |
+| Cursor | `~/Library/Application Support/Cursor/` | ✓ | — | — | — |
+| Kiro | `~/Library/Application Support/Kiro/` | — | ✓ | ✓ | — |
 
-Tools that are not installed are silently skipped.
+Tools not installed are silently skipped. Missing data is handled gracefully (e.g., tool calls default to empty, text exchanges with no tokens work fine).
 
 ## Installation
 
@@ -31,13 +33,13 @@ ln -s $(pwd)/token-usage ~/.local/bin/token-usage
 All modes support these filters:
 
 ```sh
---period <period>    Filter by time period (default: all)
---tool <name>        Filter by tool (default: all)
+--period <period>    Time filter — all, hour, "5 hours", today, "7 days", "30 days", year (default: today)
+--tool <name>        Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro (default: all)
 ```
 
-Supported periods: `all`, `hour`, `"5 hours"`, `today`, `"7 days"`, `"30 days"`, `year`. Partial match works.
+**Periods**: Partial match works (`"7"` = `"Last 7 days"`).
 
-Supported tools: `claude`, `codex`, `gemini`, `cline`, `opencode`, `qwen`, `cursor`, `kiro`, `all`. Aliases work (`openai` = Codex).
+**Tools**: Aliases work (`openai` = Codex, `claude-code` = Claude Code). All tools work in all modes (all 6 modes support all 8 tools).
 
 ## Modes
 
@@ -52,14 +54,15 @@ token-usage --tool claude --period "7 days"
 
 Displays: consumption by period, by project, by model, output speed, and grand total.
 
-### `--prompts` — per-conversation detail (Claude Code)
+### `--prompts` — per-exchange detail (all tools)
 
 ```sh
 token-usage --prompts
 token-usage -p --period today
+token-usage --prompts --tool cursor --period "7 days"
 ```
 
-Per-prompt breakdown: text, model, turns, tokens (input/output/cache), tool calls, cost.
+Per-exchange breakdown: user text, model, turns, tokens (input/output/cache), tool calls, cost. Works for all 8 tools.
 
 ### `--audit` — behavioral anti-pattern detection
 
@@ -68,7 +71,7 @@ token-usage --audit
 token-usage -a --tool opencode --period "30 days"
 ```
 
-Scans assistant transcripts for 11 categories of behavioral anti-patterns across 5 tools (Claude Code, Codex, OpenCode, Kiro, Qwen). Each finding is tagged with tool and model. Summary tables show breakdown by category, by tool, and by model with incident rates.
+Scans assistant transcripts for 11 categories of behavioral anti-patterns across all 8 tools (Claude Code, Codex, Gemini CLI, Cline, OpenCode, Qwen Coder, Cursor, Kiro). Each finding is tagged with tool and model. Summary tables show breakdown by category, by tool, and by model with incident rates.
 
 #### Detection categories
 
@@ -95,7 +98,7 @@ token-usage --anomalies
 token-usage --anomalies --tool claude --period "30 days"
 ```
 
-Detects unusual patterns in per-exchange token data (Claude Code, Codex, OpenCode, Qwen). Results grouped by project with worktree resolution.
+Detects unusual patterns in per-exchange token data across all 8 tools (Claude Code, Codex, Gemini CLI, Cline, OpenCode, Qwen Coder, Cursor, Kiro). Results grouped by project with worktree resolution.
 
 | Anomaly | Trigger | Severity |
 |---------|---------|----------|
@@ -156,7 +159,7 @@ token-usage --export
 token-usage --export out.json --tool kiro --period year
 ```
 
-Exports all conversations to a single JSON file. Kiro exchanges are deduplicated.
+Exports all exchanges to a single JSON file. Works for all 8 tools. Applies all filters (--period, --tool).
 
 ```json
 {

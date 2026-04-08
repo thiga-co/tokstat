@@ -2,7 +2,7 @@
 """
 token-usage — Aggregate and display token consumption from AI coding tools.
 
-Supported tools: Claude Code, Codex (OpenAI), Gemini CLI, Cline, OpenCode, Qwen Coder.
+Supported tools: Claude Code, Codex (OpenAI), Gemini CLI, Cline, OpenCode, Qwen Coder, Cursor, Kiro.
 Scans local log/history files to extract token usage data and estimates costs.
 """
 
@@ -1800,19 +1800,14 @@ def scan_claude_sessions() -> list[dict]:
     return sessions
 
 
-def show_prompts(period_name: str | None = None):
-    """Show per-prompt token usage for Claude Code sessions."""
-    print(f"\n{BOLD} Claude Code — Prompt-level Usage{RESET}")
+def show_prompts(period_name: str | None = None, tool_filter: str | None = None):
+    """Show per-prompt/exchange token usage across all tools."""
+    print(f"\n{BOLD} Exchanges — Prompt-level Usage (All Tools){RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
-    print(f"{DIM}  Scanning Claude Code sessions...{RESET}\n")
-
-    sessions = scan_claude_sessions()
-    if not sessions:
-        print(f"  {YELLOW}No Claude Code session data found.{RESET}\n")
-        return
+    print(f"{DIM}  Scanning all tools for exchanges...{RESET}\n")
 
     # Determine time filter
     try:
@@ -1822,58 +1817,55 @@ def show_prompts(period_name: str | None = None):
         return
     print(f"  Period: {BOLD}{period_label}{RESET}\n")
 
-    # Warm worktree cache for project normalization
-    _warm_worktree_cache(set(s["project"] for s in sessions))
-
-    # Filter sessions and prompts
-    filtered = []
-    for sess in sessions:
-        matching_prompts = [p for p in sess["prompts"] if p["ts"] and p["ts"] >= cutoff]
-        if matching_prompts:
-            filtered.append({**sess, "prompts": matching_prompts})
-
-    if not filtered:
-        print(f"  {YELLOW}No prompts found in this period.{RESET}\n")
+    # Collect exchanges from all tools
+    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+    if not all_exchanges:
+        print(f"  {YELLOW}No exchanges found.{RESET}\n")
         return
 
-    # Sort sessions by most recent prompt
-    filtered.sort(key=lambda s: max(p["ts"] for p in s["prompts"]), reverse=True)
+    # Warm worktree cache for project normalization
+    _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
 
-    for sess in filtered:
-        proj = shorten_path(normalize_project(sess["project"]), 50)
-        slug = sess.get("slug")
-        if not slug:
-            # Use first real user prompt as label when no slug
-            first_text = next((p["text"] for p in sess["prompts"]
-                              if p["text"] and not p["text"].startswith("<")), "")
-            first_text = first_text.replace("\n", " ").strip()
-            if len(first_text) > 40:
-                first_text = first_text[:37] + "..."
-            slug = first_text or sess["session_id"][:12]
-        sess_cost = sum(p["cost"] for p in sess["prompts"])
-        sess_turns = sum(p["num_turns"] for p in sess["prompts"])
+    # Group exchanges by (tool, project)
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for ex in all_exchanges:
+        key = (ex.get("tool", "Unknown"), ex.get("project", "unknown"))
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append(ex)
 
-        print(f"  {BOLD}{proj}{RESET}  {DIM}{slug}{RESET}  {CYAN}{len(sess['prompts'])} prompts{RESET}  {sess_turns} turns  {BOLD}{fmt_cost(sess_cost)}{RESET}")
+    # Sort by total cost per group descending
+    sorted_groups = sorted(grouped.items(),
+                          key=lambda x: sum(e.get("cost", 0) for e in x[1]),
+                          reverse=True)
 
-        headers = ["#", "Time", "Prompt", "Model", "Turns", "Input", "Output", "Cache R", "Cache W", "Tools", "Cost"]
-        aligns  = [">", "<",    "<",      "<",     ">",     ">",     ">",      ">",       ">",       "<",     ">"]
+    for (tool, project), exchanges in sorted_groups:
+        proj_display = shorten_path(normalize_project(project), 50)
+        tool_color = TOOL_COLORS.get(tool, "")
+        total_cost = sum(e["cost"] for e in exchanges)
+        total_turns = sum(e.get("num_turns", 0) for e in exchanges)
+
+        print(f"  {tool_color}{BOLD}{tool}{RESET} {DIM}{proj_display}{RESET}  {CYAN}{len(exchanges)} exchanges{RESET}  {total_turns} turns  {BOLD}{fmt_cost(total_cost)}{RESET}")
+
+        headers = ["#", "Time", "Input text", "Model", "Turns", "Input", "Output", "Cache R", "Cache W", "Tools", "Cost"]
+        aligns  = [">", "<",    "<",          "<",     ">",     ">",     ">",      ">",       ">",       "<",     ">"]
         rows = []
 
-        for i, p in enumerate(sess["prompts"], 1):
-            # Truncate prompt text
-            text = p["text"].replace("\n", " ")
-            if len(text) > 50:
-                text = text[:47] + "..."
-            if not text:
-                text = DIM + "(empty)" + RESET
+        for i, ex in enumerate(sorted(exchanges, key=lambda e: e.get("ts") or datetime.min.replace(tzinfo=timezone.utc)), 1):
+            # Truncate user text
+            user_text = ex.get("user_text", "").replace("\n", " ")
+            if len(user_text) > 50:
+                user_text = user_text[:47] + "..."
+            if not user_text:
+                user_text = DIM + "(no text)" + RESET
 
-            ts_str = p["ts"].strftime("%H:%M") if p["ts"] else "?"
-            model_short = (p["model"] or "?").split("/")[-1]
+            ts_str = ex["ts"].strftime("%H:%M") if ex.get("ts") else "?"
+            model_short = (ex.get("model") or "?").split("/")[-1]
             if len(model_short) > 20:
                 model_short = model_short[:17] + "..."
 
             # Format tools summary
-            tools = p["tools"]
+            tools = ex.get("tools_used", {})
             if tools:
                 tool_parts = []
                 for tname in sorted(tools, key=lambda t: -tools[t]):
@@ -1884,19 +1876,19 @@ def show_prompts(period_name: str | None = None):
             else:
                 tools_str = DIM + "-" + RESET
 
-            tok = p["tokens"]
+            tok = ex.get("tokens", {})
             rows.append([
                 str(i),
                 ts_str,
-                text,
+                user_text,
                 DIM + model_short + RESET,
-                str(p["num_turns"]),
-                fmt_tokens(tok["input"]),
-                fmt_tokens(tok["output"]),
-                fmt_tokens(tok["cache_read"]),
-                fmt_tokens(tok["cache_write"]),
+                str(ex.get("num_turns", 0)),
+                fmt_tokens(tok.get("input", 0)),
+                fmt_tokens(tok.get("output", 0)),
+                fmt_tokens(tok.get("cache_read", 0)),
+                fmt_tokens(tok.get("cache_write", 0)),
                 tools_str,
-                fmt_cost(p["cost"]),
+                fmt_cost(ex.get("cost", 0)),
             ])
 
         print_table(headers, rows, aligns)
@@ -2298,6 +2290,261 @@ def _extract_exchanges_qwen(jsonl_path: str) -> list[dict]:
 
     if current:
         exchanges.append(current)
+    return exchanges
+
+
+def _extract_exchanges_gemini() -> list[dict]:
+    """Extract exchanges from Gemini CLI session JSON files."""
+    base = Path.home() / ".gemini"
+    if not base.exists():
+        return []
+
+    exchanges = []
+    for session_file in base.rglob("session-*.json"):
+        try:
+            with open(session_file, "r", errors="replace") as f:
+                data = json.load(f)
+            messages = data if isinstance(data, list) else data.get("messages", [])
+
+            current = None
+            for entry in messages:
+                if not isinstance(entry, dict):
+                    continue
+
+                role = entry.get("role", "")
+                content = entry.get("content", "").strip()
+                ts_str = entry.get("timestamp") or entry.get("time", "")
+                ts = None
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        pass
+
+                model = entry.get("model", "gemini-unknown")
+
+                if role in ("user", "human"):
+                    if current:
+                        exchanges.append(current)
+                    current = {"user_text": content, "assistant_texts": [], "tool_errors": [],
+                              "tools_used": defaultdict(int), "num_turns": 0, "model": model,
+                              "project": None, "ts": ts,
+                              "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                              "cost": 0.0}
+
+                elif role in ("assistant", "bot") and current:
+                    current["num_turns"] += 1
+                    if content:
+                        current["assistant_texts"].append(content)
+
+                    tok = entry.get("tokens")
+                    if tok and isinstance(tok, dict):
+                        inp = tok.get("input", 0)
+                        out = tok.get("output", 0)
+                        cached = tok.get("cached", 0)
+                        if inp > 0 or out > 0:
+                            current["tokens"]["input"]      += inp
+                            current["tokens"]["output"]     += out
+                            current["tokens"]["cache_read"] += cached
+                            current["cost"] += compute_cost({"input": inp, "output": out,
+                                                            "cache_read": cached, "cache_write": 0},
+                                                           model)
+
+            if current:
+                exchanges.append(current)
+
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    return exchanges
+
+
+def _extract_exchanges_cursor() -> list[dict]:
+    """Extract exchanges from Cursor SQLite database."""
+    db_path = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+    if not db_path.exists():
+        return []
+
+    exchanges = []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+
+        # Build composerId -> (project, model) lookup from composerData
+        composer_projects = {}
+        composer_models = {}
+        cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE ?", ("composerData:%",))
+        for key, val in cur.fetchall():
+            try:
+                cdata = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            cid = cdata.get("composerId", "")
+            if not cid:
+                continue
+            project = ""
+            all_dirs = []
+            for src_key in ("originalFileStates", "newlyCreatedFiles", "newlyCreatedFolders"):
+                src = cdata.get(src_key)
+                items = []
+                if isinstance(src, dict):
+                    items = list(src.keys())
+                elif isinstance(src, list):
+                    items = src
+                for item in items:
+                    fp = ""
+                    if isinstance(item, str):
+                        fp = item
+                    elif isinstance(item, dict):
+                        uri = item.get("uri") or item
+                        fp = uri.get("path", "") if isinstance(uri, dict) else ""
+                    if fp.startswith("file://"):
+                        fp = fp[7:]
+                    if not fp:
+                        continue
+                    if src_key == "newlyCreatedFolders":
+                        all_dirs.append(fp)
+                    else:
+                        all_dirs.append(str(Path(fp).parent))
+            if all_dirs:
+                project = os.path.commonpath(all_dirs)
+            composer_projects[cid] = project
+            mc = cdata.get("modelConfig") or {}
+            composer_models[cid] = mc.get("modelName", "")
+
+        # Extract bubbles grouped by composer
+        composer_bubbles = {}
+        cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE ?", ("bubbleId:%",))
+        for (key, val) in cur.fetchall():
+            try:
+                data = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            key_parts = key.split(":")
+            composer_id = key_parts[1] if len(key_parts) >= 3 else ""
+            if composer_id not in composer_bubbles:
+                composer_bubbles[composer_id] = []
+            composer_bubbles[composer_id].append(data)
+
+        # Create exchanges per composer
+        for composer_id, bubbles in composer_bubbles.items():
+            project = composer_projects.get(composer_id, "") or "unknown"
+            comp_model = composer_models.get(composer_id, "") or "cursor-default"
+
+            # Sort bubbles by createdAt
+            sorted_bubbles = sorted(bubbles, key=lambda b: b.get("createdAt", 0))
+
+            current = None
+            for data in sorted_bubbles:
+                btype = data.get("type", 0)
+                text = data.get("text", "").strip()
+                ts_str = data.get("createdAt", "")
+                ts = None
+
+                if ts_str:
+                    try:
+                        if isinstance(ts_str, (int, float)):
+                            ts = datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
+                        else:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError, OSError):
+                        pass
+
+                if btype == 1:  # user message
+                    if current:
+                        exchanges.append(current)
+                    current = {"user_text": text, "assistant_texts": [], "tool_errors": [],
+                              "tools_used": defaultdict(int), "num_turns": 0, "model": comp_model,
+                              "project": project, "ts": ts,
+                              "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                              "cost": 0.0}
+
+                elif btype == 2 and current:  # assistant message
+                    current["num_turns"] += 1
+                    if text:
+                        current["assistant_texts"].append(text)
+
+                    tc = data.get("tokenCount") or {}
+                    inp = tc.get("inputTokens", 0)
+                    out = tc.get("outputTokens", 0)
+                    if inp > 0 or out > 0:
+                        current["tokens"]["input"]  += inp
+                        current["tokens"]["output"] += out
+                        current["cost"] += compute_cost({"input": inp, "output": out,
+                                                        "cache_read": 0, "cache_write": 0},
+                                                       comp_model)
+
+            if current:
+                exchanges.append(current)
+
+        conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+
+    return exchanges
+
+
+def _extract_exchanges_cline() -> list[dict]:
+    """Extract exchanges from Cline SQLite database.
+
+    Cline doesn't store full conversation transcripts like Claude Code,
+    but we can extract aggregated exchange data from sessions.
+    """
+    db_path = Path.home() / ".cline" / "data" / "sessions" / "sessions.db"
+    if not db_path.exists():
+        return []
+
+    exchanges = []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        try:
+            cur.execute("""
+                SELECT session_id, model, cwd, started_at, metadata_json
+                FROM sessions WHERE metadata_json IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+                usage = meta.get("usage") or meta.get("tokenUsage") or {}
+                if not usage:
+                    continue
+
+                ts_str = row["started_at"]
+                ts = None
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    continue
+
+                tokens = {
+                    "input":  usage.get("input_tokens", 0) or usage.get("totalTokensIn", 0),
+                    "output": usage.get("output_tokens", 0) or usage.get("totalTokensOut", 0),
+                    "cache_read": 0,
+                    "cache_write": 0,
+                }
+
+                cost = compute_cost(tokens, row["model"])
+                exchanges.append({
+                    "user_text": "",
+                    "assistant_texts": [],
+                    "tool_errors": [],
+                    "tools_used": defaultdict(int),
+                    "num_turns": 0,
+                    "model": row["model"] or "cline-unknown",
+                    "project": row["cwd"] or "unknown",
+                    "ts": ts,
+                    "tokens": tokens,
+                    "cost": cost,
+                })
+        except sqlite3.OperationalError:
+            pass
+
+        conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+
     return exchanges
 
 
@@ -2909,17 +3156,26 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None) -> 
         for jsonl_file in codex_base.rglob("rollout-*.jsonl"):
             _add("Codex", _extract_exchanges_codex(str(jsonl_file)))
 
+    # ── Gemini CLI ──
+    _add("Gemini CLI", _extract_exchanges_gemini())
+
+    # ── Cline ──
+    _add("Cline", _extract_exchanges_cline())
+
     # ── OpenCode ──
     _add("OpenCode", _extract_exchanges_opencode())
-
-    # ── Kiro ──
-    _add("Kiro", _extract_exchanges_kiro())
 
     # ── Qwen Coder ──
     qwen_base = Path.home() / ".qwen" / "projects"
     if qwen_base.exists():
         for jsonl_file in qwen_base.rglob("*.jsonl"):
             _add("Qwen Coder", _extract_exchanges_qwen(str(jsonl_file)))
+
+    # ── Cursor ──
+    _add("Cursor", _extract_exchanges_cursor())
+
+    # ── Kiro ──
+    _add("Kiro", _extract_exchanges_kiro())
 
     # Warm worktree cache for project normalization
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
@@ -3783,40 +4039,62 @@ def show_help():
     print(f"""
 {BOLD}token-usage{RESET} — Aggregate and analyze token consumption across AI coding tools.
 
-{BOLD}MODES{RESET}
+{BOLD}MODES{RESET}  {DIM}(all modes support all 8 tools + filters){RESET}
   token-usage                            Aggregated overview (period, project, model, speed)
-  token-usage --prompts  [-p]            Per-prompt detail (Claude Code)
-  token-usage --audit    [-a]            Behavioral anti-pattern detection (11 categories)
-  token-usage --anomalies                Technical anomaly detection (cost, cache, runaways)
-  token-usage --plan                     Plan recommendation + optimization strategies
-  token-usage --export   [file.json]     Export all conversations to JSON
+  token-usage --prompts  [-p]            Per-exchange detail (text, model, turns, tokens, tools)
+  token-usage --audit    [-a]            Behavioral anti-pattern detection (11 patterns, FR+EN)
+  token-usage --anomalies                Technical anomaly detection (cost, cache, tool storms)
+  token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
+  token-usage --export   [file.json]     Export all exchanges to JSON
   token-usage --help     [-h]            This help
 
-{BOLD}FILTERS{RESET}  {DIM}(all modes){RESET}
+{BOLD}FILTERS{RESET}  {DIM}(apply to all modes){RESET}
   --period <period>      Time filter — all, hour, "5 hours", today, "7 days", "30 days", year
   --tool <name>          Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro
 
-  Default: today, all tools. Partial match works ("7" = "Last 7 days", "openai" = Codex).
+  Defaults: today, all tools. Partial match works ("7" → "Last 7 days", "openai" → Codex).
 
-{BOLD}TOOLS{RESET}
-  {CYAN}Claude Code{RESET}    {DIM}~/.claude/projects/{RESET}              Tokens, text, tools, speed
-  {GREEN}Codex{RESET}          {DIM}~/.codex/sessions/{RESET}               Tokens, text, speed
-  {YELLOW}Gemini CLI{RESET}     {DIM}~/.gemini/{RESET}                       Tokens, speed
-  {MAGENTA}Cline{RESET}          {DIM}~/.cline/data/sessions/{RESET}          Tokens
-  {WHITE}OpenCode{RESET}       {DIM}~/.local/share/opencode/{RESET}         Tokens, text, tools
-  {RED}Qwen Coder{RESET}     {DIM}~/.qwen/{RESET}                         Tokens, text, tools
-  {BLUE}Cursor{RESET}         {DIM}~/Library/Application Support/{RESET}   Tokens
-  {YELLOW}Kiro{RESET}           {DIM}~/Library/Application Support/{RESET}   Text, tools
+{BOLD}SUPPORTED TOOLS{RESET}  {DIM}(all tools work in all modes){RESET}
+  {CYAN}Claude Code{RESET}    {DIM}~/.claude/projects/{RESET}              ✓ Tokens ✓ Text ✓ Tools ✓ Speed
+  {GREEN}Codex{RESET}          {DIM}~/.codex/sessions/{RESET}               ✓ Tokens ✓ Text ✓ Speed
+  {YELLOW}Gemini CLI{RESET}     {DIM}~/.gemini/{RESET}                       ✓ Tokens ✓ Speed
+  {MAGENTA}Cline{RESET}          {DIM}~/.cline/data/sessions/{RESET}          ✓ Tokens
+  {WHITE}OpenCode{RESET}       {DIM}~/.local/share/opencode/{RESET}         ✓ Tokens ✓ Text ✓ Tools
+  {RED}Qwen Coder{RESET}     {DIM}~/.qwen/{RESET}                         ✓ Tokens ✓ Text ✓ Tools
+  {BLUE}Cursor{RESET}         {DIM}~/Library/Application Support/Cursor{RESET}  ✓ Tokens
+  {YELLOW}Kiro{RESET}           {DIM}~/Library/Application Support/Kiro{RESET}    ✓ Text ✓ Tools
 
-{BOLD}EXAMPLES{RESET}
-  token-usage                                  Full overview, all tools
-  token-usage --period today                   Today only, all tools
-  token-usage --tool claude --period "7 days"  Claude Code, last week
-  token-usage -p --period today                Today's prompts
-  token-usage -a --tool opencode               Audit OpenCode only
-  token-usage --anomalies --period "30 days"   Anomalies last month
-  token-usage --plan --tool claude             Plan for Claude Code
-  token-usage --export out.json --tool kiro    Export Kiro conversations
+{BOLD}QUICK START{RESET}
+  token-usage                              # Full overview, all tools, today
+  token-usage --period all                 # All time
+  token-usage --tool claude                # Claude Code only
+  token-usage --tool cursor --period "30 days"  # Cursor, last 30 days
+
+{BOLD}PER-EXCHANGE DETAIL{RESET}
+  token-usage --prompts                    # Today's exchanges across all tools
+  token-usage -p --tool opencode --period "7 days"  # OpenCode last week
+
+{BOLD}ANALYSIS MODES{RESET}
+  token-usage --audit                      # Behavioral patterns (gaslighting, hedging, etc.)
+  token-usage -a --tool claude             # Audit Claude Code only
+
+  token-usage --anomalies                  # Technical anomalies (high cost, tool storms)
+  token-usage --anomalies --period "30 days"  # Last 30 days
+
+  token-usage --plan                       # Cost breakdown + plan recommendation
+  token-usage --plan --period all          # Projection based on all-time usage
+
+{BOLD}EXPORT & INTEGRATION{RESET}
+  token-usage --export                     # Save to conversations.json
+  token-usage --export out.json --tool kiro --period "7 days"
+
+{BOLD}DETECTION CATEGORIES (--audit){RESET}
+  Gaslighting (denying past statements) | Anthropomorphism (false emotions)
+  Hedging (excessive qualifiers) | Laziness (doc deflection, filler)
+  Overconfidence (confident assertions followed by errors) | Sycophancy (excessive praise)
+  Compliance (agree-then-pivot) | Premature fix (victory before verification)
+  Failure loops (repeated failures) | Verbose empty (long response, no value)
+  Fake understanding (\"I understand\" without addressing issue)
 """)
 
 
@@ -3832,7 +4110,7 @@ if __name__ == "__main__":
             print(f"\n  {RED}{e}{RESET}\n")
             sys.exit(1)
         if "--prompts" in args or "-p" in args:
-            show_prompts(period)
+            show_prompts(period, tool)
         elif "--audit" in args or "-a" in args:
             show_audit(period, tool)
         elif "--anomalies" in args:
