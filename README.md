@@ -33,7 +33,7 @@ ln -s $(pwd)/token-usage ~/.local/bin/token-usage
 All modes support these filters:
 
 ```sh
---period <period>    Time filter — all, hour, "5 hours", today, "7 days", "30 days", year (default: today)
+--period <period>    Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", year (default: today)
 --tool <name>        Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro (default: all)
 ```
 

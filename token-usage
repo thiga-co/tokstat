@@ -88,6 +88,7 @@ def load_pricing():
             "cache_write": float(entry.get("cache_creation_input_token_cost") or 0),
         }
 
+
 # ─── ANSI colors ─────────────────────────────────────────────────────────────
 BOLD   = "\033[1m"
 DIM    = "\033[2m"
@@ -197,40 +198,54 @@ def compute_cost(tokens: dict, model: str) -> float:
 # ─── Period helpers ──────────────────────────────────────────────────────────
 
 def period_boundaries() -> dict:
-    """Return named periods with their start datetime (UTC)."""
+    """Return named periods as {name: (start, end)} tuples.
+
+    end is None for open-ended periods (up to now), or a datetime for
+    bounded periods like "Yesterday".
+    """
     now = datetime.now(timezone.utc)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return {
-        "Last hour":    now - timedelta(hours=1),
-        "Last 5 hours": now - timedelta(hours=5),
-        "Today":        now.replace(hour=0, minute=0, second=0, microsecond=0),
-        "Last 7 days":  now - timedelta(days=7),
-        "Last 30 days": now - timedelta(days=30),
-        "Last year":  now - timedelta(days=365),
+        "Last hour":    (now - timedelta(hours=1),           None),
+        "Last 5 hours": (now - timedelta(hours=5),           None),
+        "Today":        (today_midnight,                     None),
+        "Yesterday":    (today_midnight - timedelta(days=1), today_midnight),
+        "Last 7 days":  (now - timedelta(days=7),            None),
+        "Last 30 days": (now - timedelta(days=30),           None),
+        "Last year":    (now - timedelta(days=365),          None),
     }
 
 
-def resolve_period(period_name: str | None, default: str = "today") -> tuple[datetime, str]:
-    """Resolve a period name to a (cutoff_datetime, display_name) tuple.
+def resolve_period(period_name: str | None, default: str = "today") -> tuple[datetime, datetime | None, str]:
+    """Resolve a period name to a (cutoff_start, cutoff_end, display_name) tuple.
 
-    If period_name is None, uses the default. "all" means no time filter.
-    Supports partial matching (e.g. "today", "7", "hour").
+    cutoff_end is None for open-ended periods (up to now), or a datetime for
+    bounded periods like "Yesterday".
     """
     if period_name is None and default == "all":
-        return datetime.min.replace(tzinfo=timezone.utc), "All time"
+        return datetime.min.replace(tzinfo=timezone.utc), None, "All time"
     boundaries = period_boundaries()
     name = period_name or default
     if name.lower() in ("all", "tout"):
-        return datetime.min.replace(tzinfo=timezone.utc), "All time"
-    for bname in boundaries:
+        return datetime.min.replace(tzinfo=timezone.utc), None, "All time"
+    for bname, (start, end) in boundaries.items():
         if name.lower() in bname.lower():
-            return boundaries[bname], bname
+            return start, end, bname
     valid = ", ".join(list(boundaries.keys()) + ["all"])
     raise ValueError(f"Unknown period '{name}'. Available: {valid}")
 
 
 def classify_periods(ts: datetime, boundaries: dict) -> list[str]:
     """Return list of period names this timestamp falls into."""
-    return [name for name, start in boundaries.items() if ts >= start]
+    result = []
+    for name, bounds in boundaries.items():
+        if isinstance(bounds, tuple):
+            start, end = bounds
+        else:
+            start, end = bounds, None
+        if ts >= start and (end is None or ts < end):
+            result.append(name)
+    return result
 
 
 # ─── Project normalization ────────────────────────────────────────────────────
@@ -329,7 +344,13 @@ def decode_project_dir(dirname: str) -> str:
 
 
 def scan_claude_code() -> list[dict]:
-    """Scan Claude Code JSONL transcripts for token usage."""
+    """Scan Claude Code JSONL transcripts for token usage.
+
+    Claude Code writes one JSONL line per content block (thinking, text,
+    tool_use), each carrying the cumulative usage for the API call so far.
+    We deduplicate by message.id, keeping only the last record per API call
+    (which has the final token counts).
+    """
     records = []
     base = Path.home() / ".claude" / "projects"
     if not base.exists():
@@ -340,6 +361,8 @@ def scan_claude_code() -> list[dict]:
         project = decode_project_dir(proj_dir.name)
         for jsonl_file in proj_dir.glob("*.jsonl"):
             try:
+                prev_msg_id = None
+                pending = None
                 with open(jsonl_file, "r", errors="replace") as f:
                     for line in f:
                         line = line.strip()
@@ -362,27 +385,34 @@ def scan_claude_code() -> list[dict]:
                             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                         except (ValueError, AttributeError):
                             continue
+                        msg_id = msg.get("id", "")
                         model = msg.get("model", "unknown")
                         speed_mode = usage.get("speed", "")
                         if speed_mode and speed_mode != "standard":
                             model = f"{model} [{speed_mode}]"
-                        tokens = {
+                        rec_project = rec.get("cwd") or project
+                        entry = {
+                            "tool":    "Claude Code",
+                            "model":   model,
+                            "project": rec_project,
+                            "ts":      ts,
                             "input":       usage.get("input_tokens", 0),
                             "output":      usage.get("output_tokens", 0),
                             "cache_read":  usage.get("cache_read_input_tokens", 0),
                             "cache_write": usage.get("cache_creation_input_tokens", 0),
                         }
-                        cost = compute_cost(tokens, model)
-                        # Prefer cwd from the record itself, fall back to dir name
-                        rec_project = rec.get("cwd") or project
-                        records.append({
-                            "tool":    "Claude Code",
-                            "model":   model,
-                            "project": rec_project,
-                            "ts":      ts,
-                            **tokens,
-                            "cost":    cost,
-                        })
+                        if msg_id and msg_id == prev_msg_id:
+                            # Same API call: keep latest (highest output tokens)
+                            pending = entry
+                        else:
+                            if pending:
+                                pending["cost"] = compute_cost(pending, pending["model"])
+                                records.append(pending)
+                            pending = entry
+                        prev_msg_id = msg_id
+                if pending:
+                    pending["cost"] = compute_cost(pending, pending["model"])
+                    records.append(pending)
             except (OSError, IOError):
                 continue
     return records
@@ -1378,7 +1408,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     # Resolve period filter
     try:
-        cutoff, period_label = resolve_period(period_name)
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
@@ -1408,7 +1438,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
             continue
         records = scanner()
         # Apply period filter
-        records = [r for r in records if r["ts"] >= cutoff]
+        records = [r for r in records if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
         color = TOOL_COLORS.get(tool_name, "")
         if records:
             tools_found.append((tool_name, len(records)))
@@ -1434,11 +1464,11 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     boundaries = period_boundaries()
     if period_label == "All time":
         # Show all standard periods
-        period_order = ["Last hour", "Last 5 hours", "Today", "Last 7 days", "Last 30 days", "Last year"]
+        period_order = ["Last hour", "Last 5 hours", "Today", "Yesterday", "Last 7 days", "Last 30 days", "Last year"]
     else:
         # Single period mode
         period_order = [period_label]
-        boundaries = {period_label: cutoff}
+        boundaries = {period_label: (cutoff, cutoff_end)}
 
     # Per-tool, per-period aggregation
     # tool -> period -> bucket
@@ -1616,7 +1646,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     # ─── 4. Speed analysis ──────────────────────────────────────────────
     speed_records = scan_speed_claude_code() + scan_speed_codex() + scan_speed_gemini()
-    speed_records = [sr for sr in speed_records if sr["ts"] >= cutoff]
+    speed_records = [sr for sr in speed_records if sr["ts"] >= cutoff and (cutoff_end is None or sr["ts"] < cutoff_end)]
     if tool_filter:
         speed_records = [sr for sr in speed_records if sr["tool"] == tool_filter]
     if speed_records:
@@ -1811,14 +1841,14 @@ def show_prompts(period_name: str | None = None, tool_filter: str | None = None)
 
     # Determine time filter
     try:
-        cutoff, period_label = resolve_period(period_name)
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
     print(f"  Period: {BOLD}{period_label}{RESET}\n")
 
     # Collect exchanges from all tools
-    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     if not all_exchanges:
         print(f"  {YELLOW}No exchanges found.{RESET}\n")
         return
@@ -1993,17 +2023,39 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                 current["model"] = msg.get("model")
             usage = msg.get("usage")
             if usage:
-                current["num_turns"] += 1
-                current["tokens"]["input"]      += usage.get("input_tokens", 0)
-                current["tokens"]["output"]     += usage.get("output_tokens", 0)
-                current["tokens"]["cache_read"] += usage.get("cache_read_input_tokens", 0)
-                current["tokens"]["cache_write"]+= usage.get("cache_creation_input_tokens", 0)
-                current["cost"] += compute_cost({
-                    "input": usage.get("input_tokens", 0),
-                    "output": usage.get("output_tokens", 0),
-                    "cache_read": usage.get("cache_read_input_tokens", 0),
-                    "cache_write": usage.get("cache_creation_input_tokens", 0),
-                }, msg.get("model", ""))
+                # Deduplicate by message.id: Claude Code writes one JSONL line
+                # per content block, each with cumulative usage for the API call.
+                # Keep only the last record per message.id (final token counts).
+                msg_id = msg.get("id", "")
+                prev_id = current.get("_prev_msg_id")
+                if msg_id and msg_id == prev_id:
+                    # Same API call: update tokens to latest values (not additive)
+                    current["tokens"]["input"]       = current["_prev_tokens"]["input"]      + usage.get("input_tokens", 0)
+                    current["tokens"]["output"]      = current["_prev_tokens"]["output"]     + usage.get("output_tokens", 0)
+                    current["tokens"]["cache_read"]  = current["_prev_tokens"]["cache_read"] + usage.get("cache_read_input_tokens", 0)
+                    current["tokens"]["cache_write"] = current["_prev_tokens"]["cache_write"]+ usage.get("cache_creation_input_tokens", 0)
+                    current["cost"] = current["_prev_cost"] + compute_cost({
+                        "input": usage.get("input_tokens", 0),
+                        "output": usage.get("output_tokens", 0),
+                        "cache_read": usage.get("cache_read_input_tokens", 0),
+                        "cache_write": usage.get("cache_creation_input_tokens", 0),
+                    }, msg.get("model", ""))
+                else:
+                    # New API call: save checkpoint and add tokens
+                    current["_prev_msg_id"] = msg_id
+                    current["_prev_tokens"] = dict(current["tokens"])
+                    current["_prev_cost"] = current["cost"]
+                    current["num_turns"] += 1
+                    current["tokens"]["input"]      += usage.get("input_tokens", 0)
+                    current["tokens"]["output"]     += usage.get("output_tokens", 0)
+                    current["tokens"]["cache_read"] += usage.get("cache_read_input_tokens", 0)
+                    current["tokens"]["cache_write"]+= usage.get("cache_creation_input_tokens", 0)
+                    current["cost"] += compute_cost({
+                        "input": usage.get("input_tokens", 0),
+                        "output": usage.get("output_tokens", 0),
+                        "cache_read": usage.get("cache_read_input_tokens", 0),
+                        "cache_write": usage.get("cache_creation_input_tokens", 0),
+                    }, msg.get("model", ""))
             if isinstance(content, list):
                 for c in content:
                     if isinstance(c, dict):
@@ -2016,6 +2068,10 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
 
     if current:
         exchanges.append(current)
+    for ex in exchanges:
+        ex.pop("_prev_msg_id", None)
+        ex.pop("_prev_tokens", None)
+        ex.pop("_prev_cost", None)
     return exchanges
 
 
@@ -3120,7 +3176,7 @@ _SEVERITY_COLORS = {"high": BRED, "medium": BYELLOW, "low": DIM}
 _SEVERITY_ORDER  = {"high": 0, "medium": 1, "low": 2}
 
 
-def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None) -> tuple[list[dict], dict[str, int]]:
+def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None, cutoff_end: datetime | None = None) -> tuple[list[dict], dict[str, int]]:
     """Collect exchanges from all supported tools, filtered by cutoff time and tool.
 
     Tags each exchange with a 'tool' key.
@@ -3132,7 +3188,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None) -> 
     def _add(tool_name, exchanges):
         if tool_filter and tool_name != tool_filter:
             return
-        filtered = [ex for ex in exchanges if ex["ts"] and ex["ts"] >= cutoff]
+        filtered = [ex for ex in exchanges if ex["ts"] and ex["ts"] >= cutoff and (cutoff_end is None or ex["ts"] < cutoff_end)]
         for ex in filtered:
             ex["tool"] = tool_name
         if filtered:
@@ -3189,7 +3245,7 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None):
     print(f"{DIM}  Scanning AI coding tool transcripts...{RESET}\n")
 
     try:
-        cutoff, period_label = resolve_period(period_name)
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
@@ -3200,7 +3256,7 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None):
     print(label + "\n")
 
     # Collect all exchanges
-    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
 
     if not all_exchanges:
         print(f"  {YELLOW}No exchanges found in this period.{RESET}\n")
@@ -3442,7 +3498,7 @@ def show_anomalies(period_name: str | None = None, tool_filter: str | None = Non
     print(f"{DIM}  Scanning AI coding tool transcripts...{RESET}\n")
 
     try:
-        cutoff, period_label = resolve_period(period_name)
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
@@ -3451,7 +3507,7 @@ def show_anomalies(period_name: str | None = None, tool_filter: str | None = Non
         color = TOOL_COLORS.get(tool_filter, "")
         label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
     print(label + "\n")
-    all_prompts, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+    all_prompts, tool_counts = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
 
     # Filter to exchanges that have token data
     all_prompts = [p for p in all_prompts if p.get("tokens") and p["ts"]]
@@ -3629,12 +3685,12 @@ def show_plan(period_name: str | None = None, tool_filter: str | None = None):
         label_parts.append(f"Tool: {color}{BOLD}{tool_filter}{RESET}")
 
     try:
-        cutoff, period_label = resolve_period(period_name)
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
     label_parts.append(f"Period: {BOLD}{period_label}{RESET}")
-    boundaries = {period_label: cutoff}
+    boundaries = {period_label: (cutoff, cutoff_end)}
     now = datetime.now(timezone.utc)
 
     if label_parts:
@@ -3643,9 +3699,9 @@ def show_plan(period_name: str | None = None, tool_filter: str | None = None):
     # Collect analysis data across periods
     analysis = {}
 
-    for pname, cutoff in boundaries.items():
+    for pname, (p_cutoff, p_cutoff_end) in boundaries.items():
         # Use exchanges for the filtered tool (or all)
-        all_exs, _ = _collect_all_exchanges(cutoff, tool_filter)
+        all_exs, _ = _collect_all_exchanges(p_cutoff, tool_filter, p_cutoff_end)
         # Only keep exchanges with token data
         period_exs = [e for e in all_exs if e.get("tokens") and e["ts"]
                       and (e["tokens"]["input"] > 0 or e["tokens"]["output"] > 0 or e.get("cost", 0) > 0)]
@@ -3661,7 +3717,7 @@ def show_plan(period_name: str | None = None, tool_filter: str | None = None):
         first_ts = min(e["ts"] for e in period_exs)
         last_ts = max(e["ts"] for e in period_exs)
         data_span = (last_ts - first_ts).days
-        period_span = (now - cutoff).days
+        period_span = ((p_cutoff_end or now) - p_cutoff).days
         days_span = max(1, min(data_span, period_span) if data_span > 0 else period_span)
         daily_cost = total_cost / days_span
         monthly_projected = daily_cost * 30
@@ -3940,7 +3996,7 @@ def export_conversations(output_path: str, period_name: str | None = None, tool_
     print(f"{DIM}  Scanning all AI coding tool transcripts...{RESET}\n")
 
     try:
-        cutoff, period_label = resolve_period(period_name)
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
@@ -3949,7 +4005,7 @@ def export_conversations(output_path: str, period_name: str | None = None, tool_
         color = TOOL_COLORS.get(tool_filter, "")
         label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
     print(label + "\n")
-    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter)
+    all_exchanges, tool_counts = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
 
     if not all_exchanges:
         print(f"  {YELLOW}No conversation data found.{RESET}\n")
@@ -4049,7 +4105,7 @@ def show_help():
   token-usage --help     [-h]            This help
 
 {BOLD}FILTERS{RESET}  {DIM}(apply to all modes){RESET}
-  --period <period>      Time filter — all, hour, "5 hours", today, "7 days", "30 days", year
+  --period <period>      Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
   --tool <name>          Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro
 
   Defaults: today, all tools. Partial match works ("7" → "Last 7 days", "openai" → Codex).
