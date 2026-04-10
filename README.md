@@ -47,9 +47,9 @@ All modes support these filters:
 ### Default — aggregated overview
 
 ```sh
-token-usage                              # all tools, all time
-token-usage --period today               # all tools, today only
-token-usage --tool claude                # Claude Code only, all time
+token-usage                              # all tools, today (default period)
+token-usage --period all                 # all tools, all time
+token-usage --tool claude                # Claude Code only, today
 token-usage --tool claude --period "7 days"
 ```
 
