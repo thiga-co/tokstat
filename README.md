@@ -4,7 +4,7 @@ Single-file CLI tool that aggregates and displays token consumption across AI co
 
 ## Supported tools
 
-All 8 tools are supported in all modes (default, --prompts, --audit, --anomalies, --plan, --export). The table below shows what data is available from each tool's data sources:
+All 7 tools are supported in all modes (default, --prompts, --audit, --anomalies, --plan, --export). The table below shows what data is available from each tool's data sources:
 
 | Tool | Data source | Tokens | Text | Tools | Speed |
 |------|-------------|--------|------|-------|-------|
@@ -14,10 +14,11 @@ All 8 tools are supported in all modes (default, --prompts, --audit, --anomalies
 | Cline | `~/.cline/data/sessions/` | ✓ | — | — | — |
 | OpenCode | `~/.local/share/opencode/` | ✓ | ✓ | ✓ | — |
 | Qwen Coder | `~/.qwen/` | ✓ | ✓ | ✓ | — |
-| Cursor | `~/Library/Application Support/Cursor/` | ✓ | — | — | — |
 | Kiro | `~/Library/Application Support/Kiro/` | — | ✓ | ✓ | — |
 
-Tools not installed are silently skipped. Missing data is handled gracefully (e.g., tool calls default to empty, text exchanges with no tokens work fine).
+**Not supported:** Cursor (token data is tracked server-side only, not stored in the local database).
+
+Tools not installed are silently skipped.
 
 ## Installation
 
@@ -34,12 +35,12 @@ All modes support these filters:
 
 ```sh
 --period <period>    Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", year (default: today)
---tool <name>        Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro (default: all)
+--tool <name>        Tool filter — claude, codex, gemini, cline, opencode, qwen, kiro (default: all)
 ```
 
 **Periods**: Partial match works (`"7"` = `"Last 7 days"`).
 
-**Tools**: Aliases work (`openai` = Codex, `claude-code` = Claude Code). All tools work in all modes (all 6 modes support all 8 tools).
+**Tools**: Aliases work (`openai` = Codex, `claude-code` = Claude Code). All 7 tools work in all 6 modes.
 
 ## Modes
 
