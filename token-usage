@@ -808,12 +808,30 @@ def scan_qwen() -> list[dict]:
     return records
 
 
+def _cursor_model_name(raw: str) -> str:
+    """Normalize Cursor's internal model names to standard names for pricing."""
+    if not raw or raw in ("default", "unknown", ""):
+        return "cursor-default"
+    # Cursor uses names like "claude-4.5-opus-high-thinking" → "claude-opus-4-5"
+    m = raw.lower().replace("-high-thinking", "").replace("-thinking", "")
+    # Reorder "claude-X.Y-variant" to "claude-variant-X-Y"
+    import re
+    match = re.match(r"claude[- ](\d+)\.(\d+)[- ](opus|sonnet|haiku)", m)
+    if match:
+        return f"claude-{match.group(3)}-{match.group(1)}-{match.group(2)}"
+    match = re.match(r"gpt[- ](\d+)\.(\d+)[- ](.*)", m)
+    if match:
+        return f"gpt-{match.group(1)}.{match.group(2)}-{match.group(3)}"
+    return raw
+
+
 def scan_cursor() -> list[dict]:
     """Scan Cursor state.vscdb for token usage.
 
     Cursor stores conversation data in a SQLite key-value store (cursorDiskKV).
-    Assistant messages (bubbleId:*) contain tokenCount.{inputTokens, outputTokens}
-    and a createdAt timestamp. Model info is in modelInfo or composerData.modelConfig.
+    bubbleId:* entries contain messages with optional tokenCount and text.
+    Since recent Cursor versions rarely fill tokenCount, we estimate tokens
+    from text length (~4 chars/token) when real counts are missing.
     """
     records = []
     db_path = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
@@ -837,7 +855,6 @@ def scan_cursor() -> list[dict]:
             if not cid:
                 continue
             project = ""
-            # Extract project from file paths: find common directory prefix
             all_dirs = []
             for src_key in ("originalFileStates", "newlyCreatedFiles",
                             "newlyCreatedFolders"):
@@ -858,22 +875,17 @@ def scan_cursor() -> list[dict]:
                         fp = fp[7:]
                     if not fp:
                         continue
-                    # Use parent dir for files, dir itself for folders
                     if src_key == "newlyCreatedFolders":
                         all_dirs.append(fp)
                     else:
                         all_dirs.append(str(Path(fp).parent))
             if all_dirs:
-                # Common prefix of all directories = project root
                 project = os.path.commonpath(all_dirs)
             composer_projects[cid] = project
             mc = cdata.get("modelConfig") or {}
             composer_models[cid] = mc.get("modelName", "")
 
-        # Extract token data from bubbles
-        # Key format: bubbleId:{composerId}:{bubbleId}
-        # Group by composer to aggregate per-composer when no per-bubble tokens
-        composer_bubbles = {}
+        # Process each bubble individually
         cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE ?",
                     ("bubbleId:%",))
         for (key, val) in cur.fetchall():
@@ -883,110 +895,66 @@ def scan_cursor() -> list[dict]:
                 continue
             key_parts = key.split(":")
             composer_id = key_parts[1] if len(key_parts) >= 3 else ""
-            if composer_id not in composer_bubbles:
-                composer_bubbles[composer_id] = []
-            composer_bubbles[composer_id].append(data)
+            btype = data.get("type", 0)
+            if btype != 2:  # only assistant messages
+                continue
 
-        for composer_id, bubbles in composer_bubbles.items():
+            ts_str = data.get("createdAt", "")
+            if not ts_str:
+                continue
+            try:
+                if isinstance(ts_str, (int, float)):
+                    ts = datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
+                else:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError, OSError):
+                continue
+
             project = composer_projects.get(composer_id, "") or "unknown"
             comp_model = composer_models.get(composer_id, "")
 
-            # Check if any bubble has real token data
-            has_real_tokens = any(
-                (b.get("tokenCount") or {}).get("inputTokens", 0) > 0 or
-                (b.get("tokenCount") or {}).get("outputTokens", 0) > 0
-                for b in bubbles
-            )
+            # Get model from modelInfo or composer
+            model_info = data.get("modelInfo") or {}
+            model_raw = model_info.get("modelName", "") or comp_model
+            model = _cursor_model_name(model_raw)
 
-            if has_real_tokens:
-                # Use actual token counts per bubble
-                for data in bubbles:
-                    tc = data.get("tokenCount") or {}
-                    inp = tc.get("inputTokens", 0)
-                    out = tc.get("outputTokens", 0)
-                    if inp == 0 and out == 0:
-                        continue
-                    ts_str = data.get("createdAt", "")
-                    if not ts_str:
-                        continue
-                    try:
-                        if isinstance(ts_str, (int, float)):
-                            ts = datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
-                        else:
-                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    except (ValueError, AttributeError, OSError):
-                        continue
-                    model_info = data.get("modelInfo") or {}
-                    model = model_info.get("modelName", "")
-                    if not model or model in ("default", "unknown"):
-                        model = comp_model or "cursor-default"
-                    if model in ("default", "unknown", ""):
-                        model = "cursor-default"
-                    tokens = {
-                        "input":       inp,
-                        "output":      out,
-                        "cache_read":  0,
-                        "cache_write": 0,
-                    }
-                    cost = compute_cost(tokens, model)
-                    records.append({
-                        "tool":    "Cursor",
-                        "model":   model,
-                        "project": project,
-                        "ts":      ts,
-                        **tokens,
-                        "cost":    cost,
-                    })
-            else:
-                # Estimate tokens from text + thinking content (~4 chars/token)
-                # Create one aggregated record per composer
-                est_input = 0
-                est_output = 0
-                latest_ts = None
-                earliest_ts = None
-                for data in bubbles:
-                    ts_str = data.get("createdAt", "")
-                    try:
-                        if isinstance(ts_str, (int, float)):
-                            ts = datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
-                        elif ts_str:
-                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                        else:
-                            continue
-                    except (ValueError, AttributeError, OSError):
-                        continue
-                    if latest_ts is None or ts > latest_ts:
-                        latest_ts = ts
-                    if earliest_ts is None or ts < earliest_ts:
-                        earliest_ts = ts
-                    text_len = len(data.get("text", ""))
-                    thinking = data.get("thinking") or {}
-                    thinking_len = len(thinking.get("text", "")) if isinstance(thinking, dict) else 0
-                    btype = data.get("type", 0)
-                    if btype == 1:  # user message
-                        est_input += text_len // 4
-                    elif btype == 2:  # assistant message
-                        est_output += (text_len + thinking_len) // 4
-                if latest_ts and (est_input > 0 or est_output > 0):
-                    model = comp_model or "cursor-default"
-                    if model in ("default", "unknown", ""):
-                        model = "cursor-default"
-                    model = f"{model} [est]"
-                    tokens = {
-                        "input":       est_input,
-                        "output":      est_output,
-                        "cache_read":  0,
-                        "cache_write": 0,
-                    }
-                    cost = compute_cost(tokens, model)
-                    records.append({
-                        "tool":    "Cursor",
-                        "model":   model,
-                        "project": project,
-                        "ts":      latest_ts,
-                        **tokens,
-                        "cost":    cost,
-                    })
+            # Use real token counts if available, otherwise estimate from text
+            tc = data.get("tokenCount") or {}
+            inp = tc.get("inputTokens", 0)
+            out = tc.get("outputTokens", 0)
+            estimated = False
+
+            if inp == 0 and out == 0:
+                # Estimate from text content (~4 chars/token)
+                text_len = len(data.get("text", ""))
+                thinking = data.get("thinking") or data.get("allThinkingBlocks") or []
+                thinking_len = 0
+                if isinstance(thinking, dict):
+                    thinking_len = len(thinking.get("text", ""))
+                elif isinstance(thinking, list):
+                    for tb in thinking:
+                        if isinstance(tb, dict):
+                            thinking_len += len(tb.get("thinking", ""))
+                out = (text_len + thinking_len) // 4
+                if out == 0:
+                    continue
+                estimated = True
+
+            tokens = {
+                "input": inp, "output": out,
+                "cache_read": 0, "cache_write": 0,
+            }
+            suffix = " [est]" if estimated else ""
+            cost = compute_cost(tokens, model)
+            records.append({
+                "tool":    "Cursor",
+                "model":   model + suffix,
+                "project": project,
+                "ts":      ts,
+                **tokens,
+                "cost":    cost,
+            })
+
         conn.close()
     except (sqlite3.Error, OSError):
         pass
@@ -1421,7 +1389,9 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
         "Cline":       (scan_cline,       "~/.cline/"),
         "OpenCode":    (scan_opencode,    "~/.local/share/opencode/"),
         "Qwen Coder":  (scan_qwen,        "~/.qwen/"),
-        "Cursor":      (scan_cursor,      "~/Library/Application Support/Cursor/"),
+        # Cursor: token data is tracked server-side only, not in the local DB.
+        # Local estimates capture <1% of real usage. Disabled to avoid misleading numbers.
+        # "Cursor":    (scan_cursor,      "~/Library/Application Support/Cursor/"),
         "Kiro":        (scan_kiro,        "~/Library/Application Support/Kiro/"),
     }
 
@@ -3227,8 +3197,8 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None, cut
         for jsonl_file in qwen_base.rglob("*.jsonl"):
             _add("Qwen Coder", _extract_exchanges_qwen(str(jsonl_file)))
 
-    # ── Cursor ──
-    _add("Cursor", _extract_exchanges_cursor())
+    # Cursor: disabled — token data is server-side only, local estimates are unreliable
+    # _add("Cursor", _extract_exchanges_cursor())
 
     # ── Kiro ──
     _add("Kiro", _extract_exchanges_kiro())
@@ -4106,25 +4076,26 @@ def show_help():
 
 {BOLD}FILTERS{RESET}  {DIM}(apply to all modes){RESET}
   --period <period>      Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
-  --tool <name>          Tool filter — claude, codex, gemini, cline, opencode, qwen, cursor, kiro
+  --tool <name>          Tool filter — claude, codex, gemini, cline, opencode, qwen, kiro
 
   Defaults: today, all tools. Partial match works ("7" → "Last 7 days", "openai" → Codex).
 
-{BOLD}SUPPORTED TOOLS{RESET}  {DIM}(all tools work in all modes){RESET}
+{BOLD}SUPPORTED TOOLS{RESET}
   {CYAN}Claude Code{RESET}    {DIM}~/.claude/projects/{RESET}              ✓ Tokens ✓ Text ✓ Tools ✓ Speed
   {GREEN}Codex{RESET}          {DIM}~/.codex/sessions/{RESET}               ✓ Tokens ✓ Text ✓ Speed
   {YELLOW}Gemini CLI{RESET}     {DIM}~/.gemini/{RESET}                       ✓ Tokens ✓ Speed
   {MAGENTA}Cline{RESET}          {DIM}~/.cline/data/sessions/{RESET}          ✓ Tokens
   {WHITE}OpenCode{RESET}       {DIM}~/.local/share/opencode/{RESET}         ✓ Tokens ✓ Text ✓ Tools
   {RED}Qwen Coder{RESET}     {DIM}~/.qwen/{RESET}                         ✓ Tokens ✓ Text ✓ Tools
-  {BLUE}Cursor{RESET}         {DIM}~/Library/Application Support/Cursor{RESET}  ✓ Tokens
   {YELLOW}Kiro{RESET}           {DIM}~/Library/Application Support/Kiro{RESET}    ✓ Text ✓ Tools
+
+  {DIM}Cursor: not supported (token data is server-side only, not in local DB){RESET}
 
 {BOLD}QUICK START{RESET}
   token-usage                              # Full overview, all tools, today
   token-usage --period all                 # All time
   token-usage --tool claude                # Claude Code only
-  token-usage --tool cursor --period "30 days"  # Cursor, last 30 days
+  token-usage --tool kiro --period "30 days"  # Kiro, last 30 days
 
 {BOLD}PER-EXCHANGE DETAIL{RESET}
   token-usage --prompts                    # Today's exchanges across all tools
