@@ -1818,31 +1818,51 @@ def show_help():
 """)
 
 
+_KNOWN_FLAGS = {
+    "--help", "-h",
+    "--prompts", "-p",
+    "--anomalies",
+    "--plan",
+    "--export",
+    "--period", "--since",
+    "--tool",
+}
+
+
 def cli():
     args = sys.argv[1:]
     if "--help" in args or "-h" in args:
         show_help()
+        return
+
+    # Detect unknown flags (anything starting with - not in the known set)
+    unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]
+    if unknown:
+        print(f"\n  {RED}Unknown option(s): {', '.join(unknown)}{RESET}")
+        print(f"  Run {BOLD}claude-token-usage --help{RESET} for usage.\n")
+        sys.exit(1)
+
+    period = _parse_period(args)
+    try:
+        tool = _parse_tool(args)
+    except ValueError as e:
+        print(f"\n  {RED}{e}{RESET}\n")
+        sys.exit(1)
+
+    if "--prompts" in args or "-p" in args:
+        show_prompts(period, tool)
+    elif "--anomalies" in args:
+        show_anomalies(period, tool)
+    elif "--plan" in args:
+        show_plan(period, tool)
+    elif "--export" in args:
+        idx = args.index("--export")
+        out = "conversations.json"
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            out = args[idx + 1]
+        export_conversations(out, period, tool)
     else:
-        period = _parse_period(args)
-        try:
-            tool = _parse_tool(args)
-        except ValueError as e:
-            print(f"\n  {RED}{e}{RESET}\n")
-            sys.exit(1)
-        if "--prompts" in args or "-p" in args:
-            show_prompts(period, tool)
-        elif "--anomalies" in args:
-            show_anomalies(period, tool)
-        elif "--plan" in args:
-            show_plan(period, tool)
-        elif "--export" in args:
-            idx = args.index("--export")
-            out = "conversations.json"
-            if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
-                out = args[idx + 1]
-            export_conversations(out, period, tool)
-        else:
-            main(period, tool)
+        main(period, tool)
 
 
 if __name__ == "__main__":
