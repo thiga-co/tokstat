@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk ls:*)",
+      "Bash(rtk read:*)",
+      "Bash(rtk grep:*)",
+      "Bash(python3:*)",
+      "Bash(rtk wc:*)",
+      "Bash(/opt/homebrew/bin/python3 -m pip install build twine)",
+      "Read(//private/tmp/**)",
+      "Bash(/opt/homebrew/bin/python3 -m venv tokstat-build-env)",
+      "Bash(tokstat-build-env/bin/pip install:*)",
+      "Bash(chmod +x /Users/olivierbergeret/Code/tokstat/token-usage)",
+      "Bash(/tmp/tokstat-build-env/bin/python3:*)",
+      "Bash(/tmp/tokstat-build-env/bin/twine check:*)",
+      "Bash(chmod +x /Users/olivierbergeret/Code/tokstat/claude-token-usage)",
+      "Bash(/tmp/tokstat-build-env/bin/twine upload:*)",
+      "Bash(rtk git:*)",
+      "Bash(git rm:*)"
+    ]
+  }
+}

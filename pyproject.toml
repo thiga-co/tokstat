@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tokstat"
+version = "1.0.0"
+description = "Aggregate and analyze Claude Code token consumption from local JSONL transcripts"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["claude", "token", "usage", "ai", "llm", "cost"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+claude-token-usage = "tokstat.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,80 +1,51 @@
-# token-usage
+# claude-token-usage
 
-Single-file CLI tool that aggregates and displays token consumption across AI coding assistants. Scans local log files, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing data, and prints everything in a color-coded terminal table.
-
-## Supported tools
-
-All 7 tools are supported in all modes (default, --prompts, --audit, --anomalies, --plan, --export). The table below shows what data is available from each tool's data sources:
-
-| Tool | Data source | Tokens | Text | Tools | Speed |
-|------|-------------|--------|------|-------|-------|
-| Claude Code | `~/.claude/projects/` | ✓ | ✓ | ✓ | ✓ |
-| Codex (OpenAI) | `~/.codex/sessions/` | ✓ | ✓ | — | ✓ |
-| Gemini CLI | `~/.gemini/` | ✓ | — | — | ✓ |
-| Cline | `~/.cline/data/sessions/` | ✓ | — | — | — |
-| OpenCode | `~/.local/share/opencode/` | ✓ | ✓ | ✓ | — |
-| Qwen Coder | `~/.qwen/` | ✓ | ✓ | ✓ | — |
-| Kiro | `~/Library/Application Support/Kiro/` | — | ✓ | ✓ | — |
-
-**Not supported:** Cursor (token data is tracked server-side only, not stored in the local database).
-
-Tools not installed are silently skipped.
+CLI tool that aggregates and displays Claude Code token consumption. Scans `~/.claude/projects/` JSONL transcripts, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing data, and prints everything in a color-coded terminal table.
 
 ## Installation
 
-No dependencies. Requires Python 3.10+.
-
 ```sh
-chmod +x token-usage
-ln -s $(pwd)/token-usage ~/.local/bin/token-usage
+pip install tokstat
 ```
 
-## Global options
+Requires Python 3.10+. No dependencies.
 
-All modes support these filters:
+## Usage
 
 ```sh
---period <period>    Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", year (default: today)
---tool <name>        Tool filter — claude, codex, gemini, cline, opencode, qwen, kiro (default: all)
+claude-token-usage                        # overview for today
+claude-token-usage --period all           # all time
+claude-token-usage --period "7 days"
 ```
-
-**Periods**: Partial match works (`"7"` = `"Last 7 days"`).
-
-**Tools**: Aliases work (`openai` = Codex, `claude-code` = Claude Code). All 7 tools work in all 6 modes.
 
 ## Modes
 
 ### Default — aggregated overview
 
-```sh
-token-usage                              # all tools, today (default period)
-token-usage --period all                 # all tools, all time
-token-usage --tool claude                # Claude Code only, today
-token-usage --tool claude --period "7 days"
-```
-
-Displays: consumption by period, by project, by model, output speed, and grand total.
-
-### `--prompts` — per-exchange detail (all tools)
+Displays consumption by period, by project, by model, output speed, and grand total.
 
 ```sh
-token-usage --prompts
-token-usage -p --period today
-token-usage --prompts --tool cursor --period "7 days"
+claude-token-usage
+claude-token-usage --period all
 ```
 
-Per-exchange breakdown: user text, model, turns, tokens (input/output/cache), tool calls, cost. Works for all 8 tools.
+### `--prompts` — per-exchange detail
+
+Per-exchange breakdown: user text, model, turns, tokens (input/output/cache), tool calls, cost.
+
+```sh
+claude-token-usage --prompts
+claude-token-usage -p --period "7 days"
+```
 
 ### `--audit` — behavioral anti-pattern detection
 
+Scans assistant transcripts for 11 categories of behavioral anti-patterns (French + English). Summary tables show breakdown by category and by model with incident rates.
+
 ```sh
-token-usage --audit
-token-usage -a --tool opencode --period "30 days"
+claude-token-usage --audit
+claude-token-usage -a --period "30 days"
 ```
-
-Scans assistant transcripts for 11 categories of behavioral anti-patterns across all 8 tools (Claude Code, Codex, Gemini CLI, Cline, OpenCode, Qwen Coder, Cursor, Kiro). Each finding is tagged with tool and model. Summary tables show breakdown by category, by tool, and by model with incident rates.
-
-#### Detection categories
 
 | Abbr. | Category | What it detects |
 |-------|----------|----------------|
@@ -90,16 +61,14 @@ Scans assistant transcripts for 11 categories of behavioral anti-patterns across
 | Verb. | Verbosite creuse | Long structured response to short question |
 | FakeU | Comprehension feinte | "I understand" without addressing the issue |
 
-All patterns detect both French and English. Metalanguage and code blocks are filtered out.
-
 ### `--anomalies` — technical anomaly detection
 
-```sh
-token-usage --anomalies
-token-usage --anomalies --tool claude --period "30 days"
-```
+Detects unusual patterns in per-exchange token data. Results grouped by project.
 
-Detects unusual patterns in per-exchange token data across all 8 tools (Claude Code, Codex, Gemini CLI, Cline, OpenCode, Qwen Coder, Cursor, Kiro). Results grouped by project with worktree resolution.
+```sh
+claude-token-usage --anomalies
+claude-token-usage --anomalies --period "30 days"
+```
 
 | Anomaly | Trigger | Severity |
 |---------|---------|----------|
@@ -111,26 +80,16 @@ Detects unusual patterns in per-exchange token data across all 8 tools (Claude C
 | Context bloat | Input/output ratio >50:1 with >10K input | LOW |
 | Empty exchange | 5+ turns but <100 output tokens | MEDIUM |
 
-Thresholds are computed dynamically from the user's own data (median, P90).
+Thresholds are computed dynamically from your own data (median, P90).
 
 ### `--plan` — plan & optimization recommendations
 
-```sh
-token-usage --plan
-token-usage --plan --tool claude --period "30 days"
-```
-
 Cost breakdown by model, plan recommendation, and data-driven optimization advice.
 
-- **Cost table** — per-model: calls, cost, avg/day, projected monthly, cache efficiency, share
-- **Plan mapping** — Free (<$5/mo), Pro (<$18/mo), Max 5x (<$100/mo), Max 20x (<$200/mo), Enterprise (>$500/mo)
-- **Optimization recommendations** (conditional, only when data supports them):
-  - **Model selection** — if top model takes >80% of spend, suggests cheaper alternative from same family (looked up dynamically from LiteLLM pricing)
-  - **Cache optimization** — if hit rate <70%, suggests longer sessions
-  - **Guardrails** — if runaway agents detected, suggests max_turns and hooks
-  - **Context reduction** — if cache writes >5M, suggests CLAUDE.md, RTK, Repomix, .claudeignore
-  - **Spending hygiene** — if peak day >5x average, suggests budget alerts
-  - **Tool diversification** — if using single tool, suggests alternatives with free tiers
+```sh
+claude-token-usage --plan
+claude-token-usage --plan --period all
+```
 
 ```
   All time — 17 active days / 30
@@ -155,12 +114,12 @@ Cost breakdown by model, plan recommendation, and data-driven optimization advic
 
 ### `--export` — conversation export
 
-```sh
-token-usage --export
-token-usage --export out.json --tool kiro --period year
-```
+Exports all exchanges to a JSON file.
 
-Exports all exchanges to a single JSON file. Works for all 8 tools. Applies all filters (--period, --tool).
+```sh
+claude-token-usage --export
+claude-token-usage --export out.json --period "7 days"
+```
 
 ```json
 {
@@ -175,10 +134,15 @@ Exports all exchanges to a single JSON file. Works for all 8 tools. Applies all 
 }
 ```
 
+## Filters
+
+All modes support `--period`:
+
+```sh
+--period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
+                     default: today — partial match works ("7" = "Last 7 days")
+```
+
 ## Pricing
 
 Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached locally at `~/.cache/token-usage/litellm_prices.json` for 24 hours. Falls back to stale cache if fetch fails.
-
-## Project normalization
-
-Git worktrees (including Cline worktrees under `~/.cline/worktrees/`) are automatically resolved to their main project, so usage from multiple worktrees is aggregated under a single entry.
