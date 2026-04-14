@@ -32,6 +32,7 @@ Repository = "https://github.com/thiga-co/tokstat"
 
 [project.scripts]
 claude-token-usage = "tokstat.cli:cli"
+codex-token-usage = "tokstat.codex_cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
