@@ -2,6 +2,8 @@
 
 CLI tool that aggregates and displays Claude Code token consumption. Scans `~/.claude/projects/` JSONL transcripts, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing data, and prints everything in a color-coded terminal table.
 
+On our test account, Tokstat’s estimation matched Anthropic billing with approximately 95% accuracy over 30 days of usage. That said, Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
+
 ## Installation
 
 ```sh
