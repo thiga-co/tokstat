@@ -1,4 +1,4 @@
-# claude-token-usage
+# tokstat
 
 CLI tool that aggregates and displays Claude Code token consumption. Scans `~/.claude/projects/` JSONL transcripts, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing data, and prints everything in a color-coded terminal table.
 
