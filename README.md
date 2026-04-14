@@ -38,29 +38,6 @@ claude-token-usage --prompts
 claude-token-usage -p --period "7 days"
 ```
 
-### `--audit` — behavioral anti-pattern detection
-
-Scans assistant transcripts for 11 categories of behavioral anti-patterns (French + English). Summary tables show breakdown by category and by model with incident rates.
-
-```sh
-claude-token-usage --audit
-claude-token-usage -a --period "30 days"
-```
-
-| Abbr. | Category | What it detects |
-|-------|----------|----------------|
-| Gaslt | Gaslighting contextuel | Denying previous statements, rewriting history |
-| Anthr | Anthropomorphisme / fausse empathie | False emotions, fake experience claims |
-| Hedge | Dilution par prudence | Dense hedging clusters in a single sentence |
-| Lazy | Paresse intellectuelle | Deflecting to docs, generic non-answers, filler |
-| Overc | Aplomb trompeur | Confident assertions followed by tool errors |
-| Sycop | Flagornerie / sycophancy | Excessive praise, performative agreement |
-| Compl | Acquiescement performatif | "You're right, but..." patterns |
-| Prem. | Solution prematuree | Declaring victory before verification |
-| Loop | Boucle d'echec | User reports same failure 3+ times |
-| Verb. | Verbosite creuse | Long structured response to short question |
-| FakeU | Comprehension feinte | "I understand" without addressing the issue |
-
 ### `--anomalies` — technical anomaly detection
 
 Detects unusual patterns in per-exchange token data. Results grouped by project.
