@@ -7,7 +7,7 @@ Scans ~/.claude/projects/ JSONL transcripts to extract token usage data and esti
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import json
 import sys
@@ -243,16 +243,40 @@ def classify_periods(ts: datetime, boundaries: dict) -> list[str]:
 # ─── Project normalization ────────────────────────────────────────────────────
 
 import re
+import subprocess
+
+_worktree_cache: dict = {}
 
 
 def normalize_project(path: str) -> str:
-    """Return the project path as-is (no worktree resolution needed for Claude Code)."""
+    """Resolve a git worktree path to its main worktree, so all worktrees of
+    the same project are aggregated under a single entry."""
+    if not path or path == "unknown":
+        return path
+    if path in _worktree_cache:
+        return _worktree_cache[path]
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("worktree "):
+                    main = line[len("worktree "):]
+                    _worktree_cache[path] = main
+                    return main
+    except Exception:
+        pass
+
+    _worktree_cache[path] = path
     return path
 
 
 def _warm_worktree_cache(project_paths):
-    """No-op: worktree resolution is not needed for Claude Code."""
-    pass
+    for p in project_paths:
+        normalize_project(p)
 
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
