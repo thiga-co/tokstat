@@ -7,7 +7,7 @@ Scans ~/.claude/projects/ JSONL transcripts to extract token usage data and esti
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.0.2"
 
 import json
 import sys
