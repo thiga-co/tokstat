@@ -197,7 +197,7 @@ _WORKTREE_PATH_RE = re.compile(r"^(.+)/[0-9a-f]{4,8}/([^/]+)$")
 
 def normalize_project(path: str) -> str:
     if not path or path == "unknown":
-        return path
+        return "unknown"
     if path in _worktree_cache:
         return _worktree_cache[path]
 
@@ -297,7 +297,9 @@ def print_table(headers: list[str], rows: list[list[str]], col_aligns: list[str]
     return table_width
 
 
-def shorten_path(path: str, max_len: int = 40) -> str:
+def shorten_path(path: str | None, max_len: int = 40) -> str:
+    if not path:
+        return "unknown"
     home = str(Path.home())
     if path.startswith(home):
         path = "~" + path[len(home):]
