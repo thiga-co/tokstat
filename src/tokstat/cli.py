@@ -7,7 +7,7 @@ Scans ~/.claude/projects/ JSONL transcripts to extract token usage data and esti
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import json
 import sys
@@ -244,38 +244,74 @@ def classify_periods(ts: datetime, boundaries: dict) -> list[str]:
 
 import re
 import subprocess
+from pathlib import Path as _Path
 
 _worktree_cache: dict = {}
+_all_known_paths: set = set()
+
+# Pattern for temporary worktree directories: any path segment that looks like
+# a short hex hash (4-8 chars) between two path components.
+# Covers: ~/.cline/worktrees/{hash}/{name}, /tmp/{hash}/{name}, etc.
+_WORKTREE_PATH_RE = re.compile(r"^(.+)/[0-9a-f]{4,8}/([^/]+)$")
 
 
 def normalize_project(path: str) -> str:
-    """Resolve a git worktree path to its main worktree, so all worktrees of
-    the same project are aggregated under a single entry."""
+    """Resolve worktree paths to their canonical project, so all worktrees of
+    the same project are aggregated under a single entry.
+
+    Strategy (in order):
+    1. Exact cache hit.
+    2. If path exists on disk: ask git for the main worktree.
+    3. If path matches a {root}/{hash}/{name} pattern: find a known non-worktree
+       path whose basename equals {name}, or synthesize one.
+    4. Return path unchanged.
+    """
     if not path or path == "unknown":
         return path
     if path in _worktree_cache:
         return _worktree_cache[path]
 
-    try:
-        result = subprocess.run(
-            ["git", "-C", path, "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if line.startswith("worktree "):
-                    main = line[len("worktree "):]
-                    _worktree_cache[path] = main
-                    return main
-    except Exception:
-        pass
+    # 1. Git resolution for paths that still exist
+    if _Path(path).exists():
+        try:
+            result = subprocess.run(
+                ["git", "-C", path, "worktree", "list", "--porcelain"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if line.startswith("worktree "):
+                        main = line[len("worktree "):]
+                        _worktree_cache[path] = main
+                        return main
+        except Exception:
+            pass
+
+    # 2. Name-based resolution for deleted worktrees matching {root}/{hash}/{name}
+    m = _WORKTREE_PATH_RE.match(path)
+    if m:
+        name = m.group(2)
+        # Look for a known real path with the same basename
+        for known in _all_known_paths:
+            if known != path and not _WORKTREE_PATH_RE.match(known):
+                if _Path(known).name == name or known.endswith("/" + name):
+                    _worktree_cache[path] = known
+                    return known
+        # No match found: synthesize a stable canonical path from the name
+        # so that all hashes of the same project still group together
+        synthetic = str(_Path.home() / "Code" / name)
+        _worktree_cache[path] = synthetic
+        return synthetic
 
     _worktree_cache[path] = path
     return path
 
 
 def _warm_worktree_cache(project_paths):
-    for p in project_paths:
+    """Pre-populate _all_known_paths then resolve every path."""
+    _all_known_paths.update(project_paths)
+    # Resolve non-worktree paths first so they're available for name matching
+    for p in sorted(project_paths, key=lambda x: bool(_WORKTREE_PATH_RE.match(x))):
         normalize_project(p)
 
 
