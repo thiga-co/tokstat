@@ -7,7 +7,7 @@ Scans ~/.claude/projects/ JSONL transcripts to extract token usage data and esti
 
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import json
 import sys
@@ -1251,6 +1251,10 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None, cut
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
 
     return all_exchanges, tool_counts
+
+
+_SEVERITY_COLORS = {"high": BRED, "medium": BYELLOW, "low": DIM}
+_SEVERITY_ORDER  = {"high": 0, "medium": 1, "low": 2}
 
 
 def show_anomalies(period_name: str | None = None, tool_filter: str | None = None):
