@@ -3,11 +3,14 @@
 claude-token-usage — Aggregate and display token consumption from Claude Code.
 
 Scans ~/.claude/projects/ JSONL transcripts to extract token usage data and estimates costs.
+
+SPDX-License-Identifier: MIT
+Copyright (c) 2026 Olivier Bergeret
 """
 
 from __future__ import annotations
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 import json
 import sys

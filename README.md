@@ -8,7 +8,7 @@ CLI tool that aggregates and displays Claude Code token consumption. Scans `~/.c
 pip install tokstat
 ```
 
-Requires Python 3.7+. No dependencies.
+Requires Python 3.7+. No dependencies. MIT License.
 
 ## Usage
 
