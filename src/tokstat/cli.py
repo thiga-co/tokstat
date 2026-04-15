@@ -27,7 +27,7 @@ from tokstat._core import (
     normalize_project, _warm_worktree_cache,
     fmt_tokens, fmt_cost, calc_table_width, print_table, shorten_path,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    export_conversations, _parse_period,
+    export_conversations, _parse_period, print_update_notice,
 )
 
 # Register Claude Code color
@@ -480,6 +480,8 @@ def cli():
         export_conversations(_collect_all_exchanges, out, period, tool)
     else:
         main(period, tool)
+
+    print_update_notice(__version__)
 
 
 if __name__ == "__main__":

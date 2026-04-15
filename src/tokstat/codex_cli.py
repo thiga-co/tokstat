@@ -10,6 +10,8 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
+from tokstat.cli import __version__
+
 import json
 import sys
 from collections import defaultdict
@@ -23,7 +25,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    export_conversations, _parse_period,
+    export_conversations, _parse_period, print_update_notice,
 )
 
 # Register Codex color
@@ -448,6 +450,8 @@ def cli():
         export_conversations(_collect_all_exchanges, out, period, tool)
     else:
         main(period, tool)
+
+    print_update_notice(__version__)
 
 
 if __name__ == "__main__":

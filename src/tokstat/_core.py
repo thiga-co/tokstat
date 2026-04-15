@@ -1071,6 +1071,45 @@ def export_conversations(collect_fn, output_path: str,
     print(f"  {DIM}{size_kb:.0f} KB — {first_ts[:10]} to {last_ts[:10]}{RESET}\n")
 
 
+# ─── Update checker ──────────────────────────────────────────────────────
+
+_UPDATE_CACHE = Path.home() / ".cache" / "token-usage" / "update_check.json"
+
+
+def check_for_update(current_version: str) -> str | None:
+    """Check PyPI for a newer version of tokstat. Returns the latest version
+    string if an update is available, or None. Cached for 24 hours."""
+    try:
+        # Try cache first
+        if _UPDATE_CACHE.exists():
+            age = datetime.now() - datetime.fromtimestamp(_UPDATE_CACHE.stat().st_mtime)
+            if age < timedelta(hours=24):
+                data = json.loads(_UPDATE_CACHE.read_text())
+                latest = data.get("latest", current_version)
+                return latest if latest != current_version else None
+
+        # Query PyPI
+        req = urllib.request.Request(
+            "https://pypi.org/pypi/tokstat/json",
+            headers={"User-Agent": f"tokstat/{current_version}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            latest = json.loads(resp.read().decode())["info"]["version"]
+        _UPDATE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _UPDATE_CACHE.write_text(json.dumps({"latest": latest}))
+        return latest if latest != current_version else None
+    except Exception:
+        return None
+
+
+def print_update_notice(current_version: str) -> None:
+    """Print an update notice if a newer version is available on PyPI."""
+    latest = check_for_update(current_version)
+    if latest:
+        print(f"\n  {BYELLOW}┌─ Update available: {current_version} → {latest}{RESET}")
+        print(f"  {BYELLOW}└─ Run: pip install --upgrade tokstat{RESET}\n")
+
+
 # ─── Arg parsing helpers ──────────────────────────────────────────────────
 
 def _parse_period(args: list[str]) -> str | None:
