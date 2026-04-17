@@ -35,6 +35,38 @@ TOOL_COLORS["Cursor"] = BLUE
 
 _TRANSCRIPTS_BASE = Path.home() / ".cursor" / "projects"
 
+# ─── SQLite helpers ──────────────────────────────────────────────────────────
+
+_DB_PATH = (Path.home() / "Library" / "Application Support" / "Cursor"
+            / "User" / "globalStorage" / "state.vscdb")
+
+
+def _load_session_models() -> dict[str, str]:
+    """Return {session_uuid: model_name} from Cursor's SQLite composerData."""
+    models: dict[str, str] = {}
+    if not _DB_PATH.exists():
+        return models
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(_DB_PATH))
+        cur = conn.cursor()
+        cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
+        for key, val in cur.fetchall():
+            try:
+                d = json.loads(val)
+                cid = d.get("composerId", "")
+                mc = d.get("modelConfig") or {}
+                m = mc.get("modelName") or mc.get("model") or ""
+                if cid and m:
+                    models[cid] = m
+            except Exception:
+                pass
+        conn.close()
+    except Exception:
+        pass
+    return models
+
+
 # ─── Token estimation heuristics ─────────────────────────────────────────────
 _CURSOR_SYSTEM_PROMPT_TOKENS = 3_000
 _TOOL_OUTPUT_TOKENS: dict[str, int] = {
@@ -92,7 +124,7 @@ def scan_cursor() -> list[dict]:
     for ex in exchanges:
         records.append({
             "tool":        "Cursor",
-            "model":       _CURSOR_DEFAULT_MODEL + " [est]",
+            "model":       ex.get("model", _CURSOR_DEFAULT_MODEL + " [est]"),
             "project":     ex["project"],
             "ts":          ex["ts"],
             "input":       ex["tokens"]["input"],
@@ -109,6 +141,7 @@ def _parse_all_transcripts() -> list[dict]:
     if not _TRANSCRIPTS_BASE.exists():
         return []
 
+    session_models = _load_session_models()
     exchanges = []
 
     for proj_dir in _TRANSCRIPTS_BASE.iterdir():
@@ -134,6 +167,7 @@ def _parse_all_transcripts() -> list[dict]:
                 continue
 
             session_ts = datetime.fromtimestamp(jsonl.stat().st_mtime, tz=timezone.utc)
+            session_model = session_models.get(session_dir.name, _CURSOR_DEFAULT_MODEL)
 
             lines = []
             for raw in open(jsonl, errors="replace"):
@@ -177,7 +211,7 @@ def _parse_all_transcripts() -> list[dict]:
 
                     current = {
                         "tool":            "Cursor",
-                        "model":           _CURSOR_DEFAULT_MODEL + " [est]",
+                        "model":           session_model + " [est]",
                         "project":         project_path,
                         "ts":              session_ts,
                         "user_text":       user_text,
@@ -229,7 +263,12 @@ def _parse_all_transcripts() -> list[dict]:
                 inp += _TOOL_OUTPUT_TOKENS["WebFetch"] * wf_count
 
         ex["tokens"]["input"] = inp
-        ex["cost"] = compute_cost(ex["tokens"], _CURSOR_DEFAULT_MODEL)
+        # For pricing: use real model name; fall back to default for Cursor-specific names
+        raw_model = ex["model"].replace(" [est]", "")
+        from tokstat._core import match_model, ZERO_PRICE
+        if match_model(raw_model) == ZERO_PRICE:
+            raw_model = _CURSOR_DEFAULT_MODEL
+        ex["cost"] = compute_cost(ex["tokens"], raw_model)
 
     return exchanges
 
