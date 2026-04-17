@@ -383,7 +383,7 @@ _TOOL_ALIASES = {
 }
 
 _KNOWN_FLAGS = {
-    "--help", "-h", "--prompts", "-p", "--anomalies",
+    "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
 }
 
@@ -449,6 +449,9 @@ def show_help():
 
 def cli():
     args = sys.argv[1:]
+    if "--version" in args or "-V" in args:
+        print(f"tokstat {__version__}")
+        return
     if "--help" in args or "-h" in args:
         show_help()
         return
