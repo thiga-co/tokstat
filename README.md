@@ -2,6 +2,8 @@
 
 CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each tool scans local data, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints color-coded terminal tables.
 
+> On our test account, Tokstat's estimation matched Anthropic billing with approximately 95% accuracy over 30 days of usage. That said, Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
+
 ## Installation
 
 ```sh
