@@ -93,58 +93,27 @@ def _most_recent_project() -> str:
 # ─── Scanners ────────────────────────────────────────────────────────────────
 
 def scan_kiro() -> list[dict]:
-    """Scan Kiro devdata.sqlite for token usage.
+    """Scan Kiro .chat files for token usage.
 
-    Computes per-request deltas from the cumulative tokens_generated table.
-    Output tokens are not tracked by Kiro (always 0 in the table).
+    Each exchange (deduplicated by user text) becomes one record.
+    Input and output are estimated from conversation text length.
     """
+    exchanges = _extract_exchanges_kiro()
     records = []
-    if not _DB_PATH.exists():
-        return records
-
-    project = _most_recent_project()
-
-    try:
-        conn = sqlite3.connect(str(_DB_PATH))
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT model, provider, tokens_generated, tokens_prompt, timestamp
-            FROM tokens_generated ORDER BY id
-        """)
-        rows = cur.fetchall()
-        conn.close()
-    except (sqlite3.Error, OSError):
-        return records
-
-    prev_prompt = 0
-    for model, provider, tok_gen, tok_prompt, ts_str in rows:
-        try:
-            ts = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
-        except (ValueError, AttributeError):
+    for ex in exchanges:
+        if ex["ts"] is None:
             continue
-
-        delta_prompt = tok_prompt - prev_prompt if tok_prompt > prev_prompt else tok_prompt
-        prev_prompt = tok_prompt
-
-        if delta_prompt == 0 and tok_gen == 0:
-            continue
-
-        tokens = {
-            "input":       delta_prompt,
-            "output":      tok_gen,
+        records.append({
+            "tool":        "Kiro",
+            "model":       ex.get("model", _KIRO_DEFAULT_MODEL),
+            "project":     ex["project"],
+            "ts":          ex["ts"],
+            "input":       ex["tokens"]["input"],
+            "output":      ex["tokens"]["output"],
             "cache_read":  0,
             "cache_write": 0,
-        }
-        model_name = _normalize_model(model, provider)
-        records.append({
-            "tool":    "Kiro",
-            "model":   model_name,
-            "project": project,
-            "ts":      ts,
-            **tokens,
-            "cost":    compute_cost(tokens, model_name),
+            "cost":        ex["cost"],
         })
-
     return records
 
 
