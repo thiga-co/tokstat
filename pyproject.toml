@@ -32,6 +32,10 @@ Repository = "https://github.com/thiga-co/tokstat"
 
 [project.scripts]
 claude-token-usage = "tokstat.cli:cli"
+codex-token-usage = "tokstat.codex_cli:cli"
+cursor-token-usage = "tokstat.cursor_cli:cli"
+kiro-token-usage = "tokstat.kiro_cli:cli"
+gemini-token-usage = "tokstat.gemini_cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

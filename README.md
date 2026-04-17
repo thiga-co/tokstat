@@ -1,6 +1,8 @@
 # tokstat
 
-CLI tool that aggregates and displays Claude Code token consumption. Scans `~/.claude/projects/` JSONL transcripts, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing data, and prints everything in a color-coded terminal table.
+CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each tool scans local data, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints color-coded terminal tables.
+
+> On our test account, Tokstat's estimation matched Anthropic billing with approximately 95% accuracy over 30 days of usage. That said, Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
 
 On our test account, Tokstat’s estimation matched Anthropic billing with approximately 95% accuracy over 30 days of usage. That said, Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
 
@@ -12,23 +14,39 @@ pip install tokstat
 
 Requires Python 3.7+. No dependencies. MIT License.
 
-## Usage
+## Tools
 
-```sh
-claude-token-usage                        # overview for today
-claude-token-usage --period all           # all time
-claude-token-usage --period "7 days"
-```
+| Command | Agent | Data source | Tokens | Cost | Status |
+|---------|-------|-------------|--------|------|--------|
+| `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
+| `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | experimental |
+| `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ | experimental |
+| `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
+| `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
+
+> **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
+>
+> **Cursor note:** token counts are tracked server-side and not stored locally. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
 
 ## Modes
 
-### Default — aggregated overview
+All tools support the same modes:
 
-Displays consumption by period, by project, by model, output speed, and grand total.
+```sh
+<tool>                          # Aggregated overview (period, project, model, speed)
+<tool> --prompts   [-p]         # Per-exchange detail (text, turns, tokens, tools, cost)
+<tool> --anomalies              # Technical anomaly detection
+<tool> --plan                   # Cost breakdown + plan recommendation
+<tool> --export    [file.json]  # Export all exchanges to JSON
+```
+
+### Default — aggregated overview
 
 ```sh
 claude-token-usage
 claude-token-usage --period all
+codex-token-usage --period "7 days"
+cursor-token-usage --period "30 days"
 ```
 
 ### `--prompts` — per-exchange detail
@@ -82,13 +100,6 @@ claude-token-usage --plan --period all
   Plan (based on All time)
     Max 20x ($200/mo) strongly recommended.
     Projected API cost: $476.00/mo — you'd save ~$276.00/mo
-
-  Optimization Recommendations
-
-  Model selection
-    100% of spend is on claude-opus-4-6. claude-sonnet-4-6 is 2x cheaper.
-      - Use claude-sonnet-4-6 for simple tasks
-      - Switching 30% would save ~$49.78/mo
 ```
 
 ### `--export` — conversation export
@@ -124,4 +135,4 @@ All modes support `--period`:
 
 ## Pricing
 
-Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached locally at `~/.cache/token-usage/litellm_prices.json` for 24 hours. Falls back to stale cache if fetch fails.
+Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached at `~/.cache/token-usage/litellm_prices.json` for 24 hours. Falls back to stale cache if fetch fails.
