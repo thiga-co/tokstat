@@ -18,6 +18,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ |
 | `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ |
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ✓ exact (input) | ✓ |
+| `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ |
 
 > **Cursor note:** token counts are tracked server-side by Cursor and not stored locally. This tool estimates them from conversation context + tool call heuristics. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
 
