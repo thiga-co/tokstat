@@ -34,6 +34,7 @@ Repository = "https://github.com/thiga-co/tokstat"
 claude-token-usage = "tokstat.cli:cli"
 codex-token-usage = "tokstat.codex_cli:cli"
 cursor-token-usage = "tokstat.cursor_cli:cli"
+kiro-token-usage = "tokstat.kiro_cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
