@@ -12,15 +12,17 @@ Requires Python 3.7+. No dependencies. MIT License.
 
 ## Tools
 
-| Command | Agent | Data source | Tokens | Cost |
-|---------|-------|-------------|--------|------|
-| `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ |
-| `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ |
-| `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ |
-| `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ✓ |
-| `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ |
+| Command | Agent | Data source | Tokens | Cost | Status |
+|---------|-------|-------------|--------|------|--------|
+| `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
+| `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | experimental |
+| `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ | experimental |
+| `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
+| `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 
-> **Cursor note:** token counts are tracked server-side by Cursor and not stored locally. This tool estimates them from conversation context + tool call heuristics. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
+> **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
+>
+> **Cursor note:** token counts are tracked server-side and not stored locally. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
 
 ## Modes
 
