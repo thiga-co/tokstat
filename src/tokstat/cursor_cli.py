@@ -3,8 +3,8 @@
 cursor-token-usage — Analyze Cursor agent session activity from local transcripts.
 
 Data source: ~/.cursor/projects/*/agent-transcripts/**/*.jsonl
-Token counts are NOT available locally (Cursor tracks them server-side).
-This tool shows exchanges, tool calls, and session activity.
+Token counts are estimated (real counts tracked server-side by Cursor).
+Estimates are 5-15x lower than reality — tool outputs not stored locally.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -25,130 +25,87 @@ from tokstat._core import (
     TOOL_COLORS, PRICING,
     load_pricing, compute_cost,
     resolve_period,
-    shorten_path, print_table, fmt_tokens, fmt_cost,
-    _parse_period, print_update_notice,
+    normalize_project, _warm_worktree_cache,
+    shorten_path, fmt_tokens, fmt_cost,
+    show_overview_tables, show_prompts, show_anomalies, show_plan,
+    export_conversations, _parse_period, print_update_notice,
 )
-
-# ─── Token estimation heuristics ─────────────────────────────────────────────
-# Cursor's agent system prompt is large (~3k tokens).
-# Tool outputs are NOT stored locally except WebFetch (in agent-tools/).
-# We use per-tool averages based on empirical observation.
-_CURSOR_SYSTEM_PROMPT_TOKENS = 3_000
-_TOOL_OUTPUT_TOKENS: dict[str, int] = {
-    "Shell":           3_000,   # shell output (commands, file listings, etc.)
-    "ReadFile":        5_000,   # file contents (varies widely)
-    "WebFetch":        7_000,   # web page content (use agent-tools size when available)
-    "Glob":              300,
-    "ApplyPatch":        500,
-    "ReadLints":         300,
-    "GenerateImage":     200,
-    "Search":          1_000,
-    "default":           800,
-}
 
 TOOL_COLORS["Cursor"] = BLUE
 
 _TRANSCRIPTS_BASE = Path.home() / ".cursor" / "projects"
 
+# ─── Token estimation heuristics ─────────────────────────────────────────────
+_CURSOR_SYSTEM_PROMPT_TOKENS = 3_000
+_TOOL_OUTPUT_TOKENS: dict[str, int] = {
+    "Shell":         3_000,
+    "ReadFile":      5_000,
+    "WebFetch":      7_000,
+    "Glob":            300,
+    "ApplyPatch":      500,
+    "ReadLints":       300,
+    "GenerateImage":   200,
+    "Search":        1_000,
+    "default":         800,
+}
+# Cursor default model for pricing (model=auto → gpt-4o equivalent)
+_CURSOR_DEFAULT_MODEL = "gpt-4o"
+
 
 # ─── Project path decoding ────────────────────────────────────────────────────
 
 def _decode_project_path(dirname: str) -> str:
-    """Decode Cursor's project directory name to a filesystem path.
-
-    Cursor encodes paths as: separators and spaces → '-', so decoding is
-    ambiguous. We try to match against existing directories.
-    """
-    # Try matching against real paths under home
-    home = Path.home()
-    # The directory name starts with "Users-<username>-..."
-    # Replace all '-' with '/' and prepend '/'
+    """Decode Cursor's project directory name to a filesystem path."""
     candidate = "/" + dirname.replace("-", "/")
     if Path(candidate).exists():
         return candidate
-
-    # Try with spaces: some '-' might be spaces
-    # Walk down the path matching greedily
     parts = dirname.split("-")
     current = Path("/")
     i = 0
     while i < len(parts):
-        # Try joining increasing numbers of parts with spaces
         matched = False
         for j in range(len(parts), i, -1):
-            name = " ".join(parts[i:j])
-            candidate = current / name
-            if candidate.exists():
-                current = candidate
-                i = j
-                matched = True
-                break
-            name = "-".join(parts[i:j])
-            candidate = current / name
-            if candidate.exists():
-                current = candidate
-                i = j
-                matched = True
+            for sep in (" ", "-"):
+                name = sep.join(parts[i:j])
+                if (current / name).exists():
+                    current = current / name
+                    i = j
+                    matched = True
+                    break
+            if matched:
                 break
         if not matched:
-            # Fallback: use the raw decoded path
             return "/" + dirname.replace("-", "/")
-
     return str(current)
 
 
-# ─── Token estimation ────────────────────────────────────────────────────────
+# ─── Scanners ────────────────────────────────────────────────────────────────
 
-def _finalize_estimates(exchanges: list[dict]) -> None:
-    """Compute estimated input tokens and cost for each exchange.
+def scan_cursor() -> list[dict]:
+    """Scan Cursor agent-transcript JSONL files for token usage records.
 
-    Strategy:
-      input ≈ system_prompt + accumulated_context_text + tool_outputs_heuristic
-      output ≈ response_text / 4  (already set during parsing)
-
-    All values are rough estimates — real counts are 5-15x higher in practice
-    because tool outputs (Shell, ReadFile) are not stored locally.
+    Returns one record per exchange (user turn + assistant response).
+    Token counts are estimated from context accumulation + tool heuristics.
     """
-    webfetch_used: dict[str, bool] = {}  # track per-project WebFetch allocation
-
+    exchanges = _parse_all_transcripts()
+    records = []
     for ex in exchanges:
-        ctx_tokens = ex.pop("_context_chars", 0) // 4
-        webfetch_tokens = ex.pop("_webfetch_tokens", 0)
-        model = ex.pop("_model", "gpt-4o")
-
-        # System prompt constant
-        input_tokens = _CURSOR_SYSTEM_PROMPT_TOKENS + ctx_tokens
-
-        # Tool output heuristics
-        webfetch_count = 0
-        for tool_name, count in ex["tools_used"].items():
-            if tool_name == "WebFetch":
-                webfetch_count += count
-            else:
-                est = _TOOL_OUTPUT_TOKENS.get(tool_name, _TOOL_OUTPUT_TOKENS["default"])
-                input_tokens += est * count
-
-        # Use actual agent-tools size for WebFetch when available, else heuristic
-        proj = ex["project"]
-        if webfetch_count > 0:
-            if webfetch_tokens > 0 and not webfetch_used.get(proj):
-                webfetch_used[proj] = True
-                input_tokens += webfetch_tokens
-            else:
-                input_tokens += _TOOL_OUTPUT_TOKENS["WebFetch"] * webfetch_count
-
-        ex["tokens"]["input"] = input_tokens
-        ex["cost"] = compute_cost(ex["tokens"], model)
+        records.append({
+            "tool":        "Cursor",
+            "model":       _CURSOR_DEFAULT_MODEL + " [est]",
+            "project":     ex["project"],
+            "ts":          ex["ts"],
+            "input":       ex["tokens"]["input"],
+            "output":      ex["tokens"]["output"],
+            "cache_read":  0,
+            "cache_write": 0,
+            "cost":        ex["cost"],
+        })
+    return records
 
 
-# ─── Session scanner ──────────────────────────────────────────────────────────
-
-def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -> list[dict]:
-    """Scan Cursor agent-transcript JSONL files and return session exchanges.
-
-    Each exchange = one user turn → all following assistant turns.
-    Returns a list of exchange dicts.
-    """
+def _parse_all_transcripts() -> list[dict]:
+    """Parse all Cursor agent-transcript JSONL files into exchange dicts."""
     if not _TRANSCRIPTS_BASE.exists():
         return []
 
@@ -160,13 +117,10 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
 
         project_path = _decode_project_path(proj_dir.name)
 
-        # Collect agent-tools file sizes (WebFetch results stored locally)
         tools_dir = proj_dir / "agent-tools"
-        webfetch_tokens_available = 0
-        if tools_dir.exists():
-            for f in tools_dir.iterdir():
-                if f.is_file():
-                    webfetch_tokens_available += f.stat().st_size // 4
+        webfetch_tokens = sum(
+            f.stat().st_size // 4 for f in tools_dir.iterdir() if f.is_file()
+        ) if tools_dir.exists() else 0
 
         at_dir = proj_dir / "agent-transcripts"
         if not at_dir.exists():
@@ -179,12 +133,7 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
             if not jsonl.exists():
                 continue
 
-            # Use file modification time as session timestamp
             session_ts = datetime.fromtimestamp(jsonl.stat().st_mtime, tz=timezone.utc)
-            if session_ts < cutoff:
-                continue
-            if cutoff_end and session_ts >= cutoff_end:
-                continue
 
             lines = []
             for raw in open(jsonl, errors="replace"):
@@ -198,16 +147,15 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
             if not lines:
                 continue
 
-            # Parse exchanges: user turn → assistant turn(s)
             current = None
             context_chars = 0
+            webfetch_allocated = False
 
             for rec in lines:
                 role = rec.get("role")
                 content = rec.get("message", {}).get("content", [])
                 if not isinstance(content, list):
                     content = []
-
                 msg_chars = sum(len(str(c)) for c in content)
 
                 if role == "user":
@@ -218,7 +166,6 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
                     for c in content:
                         if isinstance(c, dict) and c.get("type") == "text":
                             t = c.get("text", "")
-                            # Strip injected tags
                             t = re.sub(r"<user_info>.*?</user_info>", "", t, flags=re.DOTALL)
                             t = re.sub(r"<agent_transcripts>.*?</agent_transcripts>", "", t, flags=re.DOTALL)
                             t = re.sub(r"<user_query>\s*", "", t)
@@ -230,6 +177,7 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
 
                     current = {
                         "tool":            "Cursor",
+                        "model":           _CURSOR_DEFAULT_MODEL + " [est]",
                         "project":         project_path,
                         "ts":              session_ts,
                         "user_text":       user_text,
@@ -239,9 +187,9 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
                         "num_turns":       0,
                         "tokens":          {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                         "cost":            0.0,
-                        "_context_chars":  context_chars,
-                        "_webfetch_tokens": webfetch_tokens_available,
-                        "_model":          "gpt-4o",  # Cursor default; refined below
+                        "_ctx":            context_chars,
+                        "_wf":             webfetch_tokens,
+                        "_wf_used":        webfetch_allocated,
                     }
                     context_chars += msg_chars
 
@@ -255,26 +203,75 @@ def scan_cursor_sessions(cutoff: datetime, cutoff_end: datetime | None = None) -
                                     current["assistant_texts"].append(t)
                                     current["tokens"]["output"] += len(t) // 4
                             elif c.get("type") == "tool_use":
-                                name = c.get("name", "unknown")
-                                current["tools_used"][name] += 1
+                                current["tools_used"][c.get("name", "unknown")] += 1
                     context_chars += msg_chars
 
             if current is not None:
                 exchanges.append(current)
 
     # Compute input token estimates and costs
-    _finalize_estimates(exchanges)
+    for ex in exchanges:
+        ctx = ex.pop("_ctx", 0) // 4
+        wf_tokens = ex.pop("_wf", 0)
+        wf_used = ex.pop("_wf_used", False)
+
+        inp = _CURSOR_SYSTEM_PROMPT_TOKENS + ctx
+        wf_count = 0
+        for tool_name, count in ex["tools_used"].items():
+            if tool_name == "WebFetch":
+                wf_count += count
+            else:
+                inp += _TOOL_OUTPUT_TOKENS.get(tool_name, _TOOL_OUTPUT_TOKENS["default"]) * count
+        if wf_count > 0:
+            if wf_tokens > 0 and not wf_used:
+                inp += wf_tokens
+            else:
+                inp += _TOOL_OUTPUT_TOKENS["WebFetch"] * wf_count
+
+        ex["tokens"]["input"] = inp
+        ex["cost"] = compute_cost(ex["tokens"], _CURSOR_DEFAULT_MODEL)
 
     return exchanges
 
 
-# ─── Display modes ────────────────────────────────────────────────────────────
+def _extract_exchanges_cursor() -> list[dict]:
+    """Return Cursor exchanges in standard format for display modes."""
+    return _parse_all_transcripts()
 
-def show_overview(period_name: str | None = None):
-    print(f"\n{BOLD} Cursor Session Activity{RESET}")
+
+def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
+                           cutoff_end: datetime | None = None) -> tuple[list[dict], dict[str, int]]:
+    """Collect Cursor exchanges filtered by time."""
+    all_exchanges = []
+    tool_counts: dict[str, int] = {}
+
+    def _add(tool_name, exchanges):
+        if tool_filter and tool_name != tool_filter:
+            return
+        filtered = [ex for ex in exchanges
+                    if ex["ts"] and ex["ts"] >= cutoff
+                    and (cutoff_end is None or ex["ts"] < cutoff_end)]
+        for ex in filtered:
+            ex["tool"] = tool_name
+        if filtered:
+            all_exchanges.extend(filtered)
+            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + len(filtered)
+
+    _add("Cursor", _extract_exchanges_cursor())
+    _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
+    return all_exchanges, tool_counts
+
+
+# ─── Main (aggregated overview) ──────────────────────────────────────────────
+
+def main(period_name: str | None = None, tool_filter: str | None = None):
+    print(f"\n{BOLD} Token Usage — Cursor{RESET}")
+    print(f"{DIM}  Note: token counts are estimated [est] — real counts tracked server-side{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
-    print(f"{DIM}  Token estimates: context + tool heuristics (5-15x underestimate possible){RESET}\n")
+    if PRICING:
+        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{DIM}  Scanning ~/.cursor/projects/...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -286,129 +283,52 @@ def show_overview(period_name: str | None = None):
         print(f"  {DIM}Cursor not found at {_TRANSCRIPTS_BASE}{RESET}\n")
         return
 
-    exchanges = scan_cursor_sessions(cutoff, cutoff_end)
+    records = scan_cursor()
+    records = [r for r in records
+               if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
 
-    if not exchanges:
-        print(f"  {YELLOW}No Cursor sessions found for {period_label}.{RESET}\n")
+    if records:
+        est_count = len(records)
+        print(f"  {BLUE}●{RESET} {'Cursor':<12} {est_count:>6} records [est] from ~/.cursor/")
+    print(f"\n  Period: {BOLD}{period_label}{RESET}")
+
+    if not records:
+        print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
         return
 
-    print(f"  {BLUE}●{RESET} Cursor  {len(exchanges):>4} exchanges   Period: {BOLD}{period_label}{RESET}\n")
-
-    # Group by project
-    by_project: dict[str, list[dict]] = {}
-    for ex in exchanges:
-        by_project.setdefault(ex["project"], []).append(ex)
-
-    headers = ["Project", "Exchanges", "Input [est]", "Output [est]", "Cost [est]", "Top tools"]
-    aligns  = ["<",       ">",         ">",           ">",            ">",           "<"]
-    rows = []
-
-    for proj, exs in sorted(by_project.items(), key=lambda x: -sum(e["cost"] for e in x[1])):
-        all_tools: dict[str, int] = defaultdict(int)
-        for ex in exs:
-            for t, c in ex["tools_used"].items():
-                all_tools[t] += c
-        top = sorted(all_tools, key=lambda t: -all_tools[t])[:3]
-        tools_str = ", ".join(f"{t}({all_tools[t]})" for t in top) or DIM + "—" + RESET
-        total_in   = sum(e["tokens"]["input"] for e in exs)
-        total_out  = sum(e["tokens"]["output"] for e in exs)
-        total_cost = sum(e["cost"] for e in exs)
-        rows.append([
-            shorten_path(proj, 38),
-            str(len(exs)),
-            fmt_tokens(total_in),
-            fmt_tokens(total_out),
-            fmt_cost(total_cost),
-            tools_str,
-        ])
-
-    print_table(headers, rows, aligns)
-
-    # Total tool usage
-    all_tools: dict[str, int] = defaultdict(int)
-    for ex in exchanges:
-        for t, c in ex["tools_used"].items():
-            all_tools[t] += c
-
-    if all_tools:
-        print(f"\n  {BOLD}Tool usage{RESET}")
-        tool_rows = [[t, str(c)] for t, c in
-                     sorted(all_tools.items(), key=lambda x: -x[1])[:10]]
-        print_table(["Tool", "Calls"], tool_rows, ["<", ">"])
-
-    total_turns = sum(e["num_turns"] for e in exchanges)
-    total_in    = sum(e["tokens"]["input"] for e in exchanges)
-    total_out   = sum(e["tokens"]["output"] for e in exchanges)
-    total_cost  = sum(e["cost"] for e in exchanges)
-    first_ts = min(e["ts"] for e in exchanges)
-    last_ts  = max(e["ts"] for e in exchanges)
-    print(f"\n  {BOLD}Total [est]:{RESET} {fmt_tokens(total_in + total_out)} tokens  {fmt_cost(total_cost)}  {total_turns} turns")
-    print(f"  {DIM}Period: {first_ts.strftime('%Y-%m-%d')} to {last_ts.strftime('%Y-%m-%d')}{RESET}")
-    print(f"  {DIM}⚠ Estimates only — tool outputs (Shell/ReadFile) not stored locally.{RESET}\n")
-
-
-def show_prompts(period_name: str | None = None):
-    print(f"\n{BOLD} Cursor Exchanges{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
-    load_pricing()
-    print(f"{DIM}  Token estimates only — real counts tracked server-side by Cursor.{RESET}\n")
-
-    try:
-        cutoff, cutoff_end, period_label = resolve_period(period_name)
-    except ValueError as e:
-        print(f"  {RED}{e}{RESET}\n")
-        return
-
-    exchanges = scan_cursor_sessions(cutoff, cutoff_end)
-    if not exchanges:
-        print(f"  {YELLOW}No exchanges found.{RESET}\n")
-        return
-
-    print(f"  Period: {BOLD}{period_label}{RESET}\n")
-
-    by_project: dict[str, list[dict]] = {}
-    for ex in exchanges:
-        by_project.setdefault(ex["project"], []).append(ex)
-
-    for proj, exs in sorted(by_project.items(), key=lambda x: -sum(e["cost"] for e in x[1])):
-        proj_display = shorten_path(proj, 50)
-        total_turns = sum(e["num_turns"] for e in exs)
-        total_cost  = sum(e["cost"] for e in exs)
-        print(f"  {BLUE}{BOLD}Cursor{RESET} {DIM}{proj_display}{RESET}  "
-              f"{CYAN}{len(exs)} exchanges{RESET}  {total_turns} turns  "
-              f"{BOLD}{fmt_cost(total_cost)}{RESET} {DIM}[est]{RESET}")
-
-        headers = ["#", "Date", "Input text", "Turns", "Input[est]", "Output[est]", "Cost[est]", "Tools"]
-        aligns  = [">", "<",    "<",          ">",     ">",          ">",           ">",          "<"]
-        rows = []
-
-        for i, ex in enumerate(sorted(exs, key=lambda e: e["ts"]), 1):
-            user_text = ex.get("user_text", "").replace("\n", " ")
-            if len(user_text) > 45:
-                user_text = user_text[:42] + "..."
-            if not user_text:
-                user_text = DIM + "(no text)" + RESET
-
-            ts_str = ex["ts"].strftime("%m-%d %H:%M")
-            tools = ex.get("tools_used", {})
-            top = sorted(tools, key=lambda t: -tools[t])[:3]
-            tools_str = " ".join(t for t in top) if top else DIM + "—" + RESET
-            tok = ex.get("tokens", {})
-
-            rows.append([str(i), ts_str, user_text,
-                         str(ex.get("num_turns", 0)),
-                         fmt_tokens(tok.get("input", 0)),
-                         fmt_tokens(tok.get("output", 0)),
-                         fmt_cost(ex.get("cost", 0)),
-                         tools_str])
-
-        print_table(headers, rows, aligns)
-        print()
+    show_overview_tables(records, [], cutoff, cutoff_end, period_label, tool_filter)
+    print(f"  {DIM}⚠ All token counts are estimates — Shell/ReadFile outputs not stored locally.{RESET}\n")
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
-_KNOWN_FLAGS = {"--help", "-h", "--prompts", "-p", "--period", "--since"}
+_TOOL_ALIASES = {
+    "cursor": "Cursor",
+}
+
+_KNOWN_FLAGS = {
+    "--help", "-h", "--prompts", "-p", "--anomalies",
+    "--plan", "--export", "--period", "--since", "--tool",
+}
+
+
+def _parse_tool(args: list[str]) -> str | None:
+    if "--tool" not in args:
+        return None
+    idx = args.index("--tool")
+    if idx + 1 >= len(args):
+        return None
+    raw = args[idx + 1].lower().strip()
+    if raw in ("all", "tous", "*"):
+        return None
+    canonical = _TOOL_ALIASES.get(raw)
+    if canonical:
+        return canonical
+    for alias, name in _TOOL_ALIASES.items():
+        if raw in alias or raw in name.lower():
+            return name
+    valid = ", ".join(sorted(set(_TOOL_ALIASES.values())))
+    raise ValueError(f"Unknown tool '{args[idx + 1]}'. Available: {valid}")
 
 
 def show_help():
@@ -421,15 +341,18 @@ def show_help():
       For exact counts: cursor.com/settings/usage → Export CSV.{RESET}
 
 {BOLD}MODES{RESET}
-  cursor-token-usage              Session activity overview (projects, exchanges, tools)
-  cursor-token-usage --prompts    Per-exchange detail with tool calls
-  cursor-token-usage --help       This help
+  cursor-token-usage                            Aggregated overview (period, project, model)
+  cursor-token-usage --prompts  [-p]            Per-exchange detail (text, turns, tools, cost)
+  cursor-token-usage --anomalies                Technical anomaly detection
+  cursor-token-usage --plan                     Cost breakdown + optimization tips
+  cursor-token-usage --export   [file.json]     Export all exchanges to JSON
+  cursor-token-usage --help     [-h]            This help
 
 {BOLD}FILTERS{RESET}
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
 
 {BOLD}DATA SOURCE{RESET}
-  {BLUE}Cursor{RESET}  {DIM}~/.cursor/projects/*/agent-transcripts/{RESET}
+  {BLUE}Cursor{RESET}    {DIM}~/.cursor/projects/*/agent-transcripts/{RESET}
 """)
 
 
@@ -446,11 +369,26 @@ def cli():
         sys.exit(1)
 
     period = _parse_period(args)
+    try:
+        tool = _parse_tool(args)
+    except ValueError as e:
+        print(f"\n  {RED}{e}{RESET}\n")
+        sys.exit(1)
 
     if "--prompts" in args or "-p" in args:
-        show_prompts(period)
+        show_prompts(_collect_all_exchanges, period, tool)
+    elif "--anomalies" in args:
+        show_anomalies(_collect_all_exchanges, period, tool)
+    elif "--plan" in args:
+        show_plan(_collect_all_exchanges, period, tool)
+    elif "--export" in args:
+        idx = args.index("--export")
+        out = "conversations.json"
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            out = args[idx + 1]
+        export_conversations(_collect_all_exchanges, out, period, tool)
     else:
-        show_overview(period)
+        main(period, tool)
 
     print_update_notice(__version__)
 
