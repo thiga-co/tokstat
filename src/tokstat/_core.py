@@ -1076,6 +1076,13 @@ def export_conversations(collect_fn, output_path: str,
 _UPDATE_CACHE = Path.home() / ".cache" / "token-usage" / "update_check.json"
 
 
+def _version_tuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
 def check_for_update(current_version: str) -> str | None:
     """Check PyPI for a newer version of tokstat. Returns the latest version
     string if an update is available, or None. Cached for 24 hours."""
@@ -1086,7 +1093,7 @@ def check_for_update(current_version: str) -> str | None:
             if age < timedelta(hours=24):
                 data = json.loads(_UPDATE_CACHE.read_text())
                 latest = data.get("latest", current_version)
-                return latest if latest != current_version else None
+                return latest if _version_tuple(latest) > _version_tuple(current_version) else None
 
         # Query PyPI
         req = urllib.request.Request(
@@ -1097,7 +1104,7 @@ def check_for_update(current_version: str) -> str | None:
             latest = json.loads(resp.read().decode())["info"]["version"]
         _UPDATE_CACHE.parent.mkdir(parents=True, exist_ok=True)
         _UPDATE_CACHE.write_text(json.dumps({"latest": latest}))
-        return latest if latest != current_version else None
+        return latest if _version_tuple(latest) > _version_tuple(current_version) else None
     except Exception:
         return None
 
