@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 import json
 import sys
@@ -52,7 +52,7 @@ def scan_claude_code() -> list[dict]:
         if not proj_dir.is_dir():
             continue
         project = decode_project_dir(proj_dir.name)
-        for jsonl_file in proj_dir.glob("*.jsonl"):
+        for jsonl_file in proj_dir.rglob("*.jsonl"):
             try:
                 prev_msg_id = None
                 pending = None
@@ -119,7 +119,7 @@ def scan_speed_claude_code() -> list[dict]:
     for proj_dir in base.iterdir():
         if not proj_dir.is_dir():
             continue
-        for jsonl_file in proj_dir.glob("*.jsonl"):
+        for jsonl_file in proj_dir.rglob("*.jsonl"):
             try:
                 msgs = []
                 with open(jsonl_file, "r", errors="replace") as f:
@@ -326,9 +326,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
         for proj_dir in base.iterdir():
             if not proj_dir.is_dir():
                 continue
-            for jsonl_file in proj_dir.glob("*.jsonl"):
-                if "/subagents/" in str(jsonl_file):
-                    continue
+            for jsonl_file in proj_dir.rglob("*.jsonl"):
                 _add("Claude Code", _extract_exchanges(str(jsonl_file)))
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
