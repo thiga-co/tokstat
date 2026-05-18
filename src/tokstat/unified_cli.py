@@ -158,25 +158,38 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
 
 def watch(period_name: str | None, tool_filter: str | None, interval: float):
-    """Refresh the overview every `interval` seconds until Ctrl+C."""
+    """Refresh the overview every `interval` seconds until Ctrl+C.
+
+    Uses cursor-home + erase-to-end-of-screen instead of full clear so the
+    redraw overwrites in place without flashing.
+    """
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
+    # Hide cursor during refresh to avoid jitter; show again on exit.
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
 
     iteration = 0
     try:
         while True:
             iteration += 1
-            # Clear screen + move cursor to home
-            sys.stdout.write("\033[2J\033[H")
-            sys.stdout.flush()
             suffix = (f"  {DIM}— watching, refresh #{iteration} every {interval:g}s "
                       f"(Ctrl+C to stop){RESET}")
+            # Move cursor to home WITHOUT clearing, render on top of previous frame.
+            sys.stdout.write("\033[H")
+            sys.stdout.flush()
             ok = _render_overview(period_name, tool_filter, header_suffix=suffix)
+            # Erase any leftover lines from a previous, taller frame.
+            sys.stdout.write("\033[J")
+            sys.stdout.flush()
             if not ok:
                 return
             time.sleep(interval)
     except KeyboardInterrupt:
         print(f"\n  {DIM}Stopped after {iteration} refresh(es).{RESET}\n")
+    finally:
+        sys.stdout.write("\033[?25h")  # show cursor again
+        sys.stdout.flush()
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
