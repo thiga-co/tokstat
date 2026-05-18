@@ -317,18 +317,77 @@ _SEVERITY_ORDER  = {"high": 0, "medium": 1, "low": 2}
 
 # ─── Shared display: overview tables ─────────────────────────────────────
 
+def compute_overview_state(records: list[dict], exchanges: list[dict],
+                           cutoff: datetime, cutoff_end: datetime | None,
+                           period_label: str) -> dict:
+    """Return a per-row stable signature of the overview, for diffing across
+    watch refreshes. Keys mirror those used in `show_overview_tables`:
+        ("period",  period_name, tool_name) → (tokens_in, tokens_out, cost, prompts, turns, api)
+        ("project", normalized_proj, tool_name) → same tuple
+        ("model",   model_name) → same tuple
+    """
+    boundaries = period_boundaries()
+    if period_label == "All time":
+        pass  # use full boundaries
+    else:
+        boundaries = {period_label: (cutoff, cutoff_end)}
+
+    state: dict = {}
+
+    def _bump(key, *, inp=0, out=0, cost=0.0, prompts=0, turns=0, api=0):
+        cur = state.get(key, (0, 0, 0.0, 0, 0, 0))
+        state[key] = (cur[0] + inp, cur[1] + out, cur[2] + cost,
+                      cur[3] + prompts, cur[4] + turns, cur[5] + api)
+
+    for rec in records:
+        for period in classify_periods(rec["ts"], boundaries):
+            _bump(("period", period, rec["tool"]),
+                  inp=rec["input"], out=rec["output"], cost=rec["cost"], api=1)
+        _bump(("project", normalize_project(rec["project"]), rec["tool"]),
+              inp=rec["input"], out=rec["output"], cost=rec["cost"], api=1)
+        _bump(("model", rec["model"]),
+              inp=rec["input"], out=rec["output"], cost=rec["cost"], api=1)
+
+    for ex in exchanges:
+        ts = ex.get("ts")
+        if ts is None:
+            continue
+        nturns = ex.get("num_turns", 0) or 0
+        for period in classify_periods(ts, boundaries):
+            _bump(("period", period, ex["tool"]), prompts=1, turns=nturns)
+        _bump(("project", normalize_project(ex.get("project") or "unknown"), ex["tool"]),
+              prompts=1, turns=nturns)
+        m = ex.get("model") or ""
+        if m:
+            _bump(("model", m), prompts=1, turns=nturns)
+
+    return state
+
+
 def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                          cutoff: datetime, cutoff_end: datetime | None,
                          period_label: str, tool_filter: str | None = None,
-                         all_exchanges: list[dict] | None = None):
+                         all_exchanges: list[dict] | None = None,
+                         changed_keys: set | None = None):
     """Print period, project, model, and speed tables from a list of records.
 
     If `all_exchanges` is provided, three extra activity columns are added to
     each table — Prompts (user inputs), Turns (assistant turns within each
     exchange), and API (raw API calls). Otherwise these columns are omitted.
+
+    If `changed_keys` is provided (a set produced by `compute_overview_state`
+    diffed across two refreshes), rows whose compound key is in the set get a
+    ◆ marker in their leftmost data column. Used by `tokstat --watch`.
     """
     show_activity = all_exchanges is not None
     exchanges = all_exchanges or []
+    watching = changed_keys is not None
+    marked_keys = changed_keys or set()
+
+    def _mark(key) -> str:
+        if not watching:
+            return ""
+        return f"{BYELLOW}◆{RESET} " if key in marked_keys else "  "
 
     # ─── 1. Consumption by period ──────────────────────────────────────
     boundaries = period_boundaries()
@@ -397,22 +456,29 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
 
     for period in period_order:
         first = True
+        any_changed_here = False
         for tool in active_tools:
             b = tool_period[tool].get(period)
             if not b or (b["input"] == 0 and b["output"] == 0):
                 continue
             color = TOOL_COLORS.get(tool, "")
+            key = ("period", period, tool)
+            mark = _mark(key)
+            if key in marked_keys:
+                any_changed_here = True
             rows.append(_row(
                 f"{BOLD}{period}{RESET}" if first else "",
-                f"{color}{tool}{RESET}",
+                f"{mark}{color}{tool}{RESET}",
                 b,
             ))
             first = False
         t = period_totals.get(period)
         if t and (t["input"] > 0 or t["output"] > 0):
+            mark = (f"{BYELLOW}◆{RESET} " if watching and any_changed_here
+                    else ("  " if watching else ""))
             rows.append(_row(
                 f"{BOLD}{period}{RESET}" if first else "",
-                f"{BOLD}TOTAL{RESET}",
+                f"{mark}{BOLD}TOTAL{RESET}",
                 t,
                 bold=True,
             ))
@@ -471,22 +537,29 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
 
     for proj in sorted_projects:
         first = True
+        any_changed_here = False
         short = shorten_path(proj, 38)
         for tool in active_tools:
             b = proj_tool[proj].get(tool)
             if not b or (b["input"] == 0 and b["output"] == 0):
                 continue
             color = TOOL_COLORS.get(tool, "")
+            key = ("project", proj, tool)
+            mark = _mark(key)
+            if key in marked_keys:
+                any_changed_here = True
             rows.append(_row(
                 f"{BOLD}{short}{RESET}" if first else "",
-                f"{color}{tool}{RESET}",
+                f"{mark}{color}{tool}{RESET}",
                 b,
             ))
             first = False
         t = proj_totals[proj]
+        mark = (f"{BYELLOW}◆{RESET} " if watching and any_changed_here
+                else ("  " if watching else ""))
         rows.append(_row(
             f"{BOLD}{short}{RESET}" if first else "",
-            f"{BOLD}TOTAL{RESET}",
+            f"{mark}{BOLD}TOTAL{RESET}",
             t,
             bold=True,
         ))
@@ -526,12 +599,17 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         headers = ["Model", "Tool", "Input", "Output", "Cost"]
         aligns  = ["<",     "<",    ">",     ">",      ">"]
     rows = []
+    any_model_changed = False
     for model in sorted_models:
         d = model_data[model]
         if d["input"] == 0 and d["output"] == 0:
             continue
         color = TOOL_COLORS.get(d["tool"], "")
-        row = [model, f"{color}{d['tool']}{RESET}"]
+        key = ("model", model)
+        mark = _mark(key)
+        if key in marked_keys:
+            any_model_changed = True
+        row = [f"{mark}{model}", f"{color}{d['tool']}{RESET}"]
         if show_activity:
             row += [str(d["prompts"]), str(d["turns"]), str(d["api_calls"])]
         row += [fmt_tokens(d["input"]), fmt_tokens(d["output"]), fmt_cost(d["cost"])]
@@ -540,7 +618,9 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     total_cost = sum(d["cost"] for d in model_data.values())
     total_in   = sum(d["input"] for d in model_data.values())
     total_out  = sum(d["output"] for d in model_data.values())
-    total_row = [f"{BOLD}ALL MODELS{RESET}", ""]
+    total_mark = (f"{BYELLOW}◆{RESET} " if watching and any_model_changed
+                  else ("  " if watching else ""))
+    total_row = [f"{total_mark}{BOLD}ALL MODELS{RESET}", ""]
     if show_activity:
         total_prompts = sum(d["prompts"] for d in model_data.values())
         total_turns   = sum(d["turns"] for d in model_data.values())

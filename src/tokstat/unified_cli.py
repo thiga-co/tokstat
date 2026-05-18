@@ -44,6 +44,7 @@ from tokstat._core import (
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     export_conversations, _parse_period, print_update_notice,
+    compute_overview_state,
 )
 
 
@@ -114,8 +115,14 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 # ─── Main (aggregated overview) ──────────────────────────────────────────────
 
 def _render_overview(period_name: str | None, tool_filter: str | None,
-                     header_suffix: str = "") -> bool:
-    """Scan all sources and print the overview tables. Returns False on error."""
+                     header_suffix: str = "",
+                     prev_state: dict | None = None) -> tuple[bool, dict | None]:
+    """Scan all sources and print the overview tables.
+
+    Returns (ok, current_state). `current_state` is the snapshot of the
+    aggregated metrics — pass it back as `prev_state` next call to highlight
+    rows that changed.
+    """
     print(f"\n{BOLD} Token Usage — All tools{RESET}{header_suffix}")
     print(f"{DIM}  Scanning all data sources...{RESET}\n")
 
@@ -123,7 +130,7 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
-        return False
+        return False, None
 
     records, speed_records, counts = _scan_all(tool_filter)
 
@@ -142,13 +149,18 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
 
     print(f"\n  Period: {BOLD}{period_label}{RESET}")
 
+    state = compute_overview_state(records, exchanges, cutoff, cutoff_end, period_label)
+    changed_keys: set | None = None
+    if prev_state is not None:
+        changed_keys = {k for k, v in state.items() if prev_state.get(k) != v}
+
     if not records:
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
-        return True
+        return True, state
 
     show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
-                         tool_filter, all_exchanges=exchanges)
-    return True
+                         tool_filter, all_exchanges=exchanges, changed_keys=changed_keys)
+    return True, state
 
 
 def main(period_name: str | None = None, tool_filter: str | None = None):
@@ -163,29 +175,31 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
     """Refresh the overview every `interval` seconds until Ctrl+C.
 
     Uses cursor-home + erase-to-end-of-screen instead of full clear so the
-    redraw overwrites in place without flashing.
+    redraw overwrites in place without flashing. Rows whose aggregated
+    metrics changed since the previous tick are marked with a yellow ◆.
     """
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
-    # Hide cursor during refresh to avoid jitter; show again on exit.
-    sys.stdout.write("\033[?25l")
+    sys.stdout.write("\033[?25l")  # hide cursor during loop
     sys.stdout.flush()
 
     iteration = 0
+    prev_state: dict | None = None
     try:
         while True:
             iteration += 1
             suffix = (f"  {DIM}— watching, refresh #{iteration} every {interval:g}s "
                       f"(Ctrl+C to stop){RESET}")
-            # Move cursor to home WITHOUT clearing, render on top of previous frame.
             sys.stdout.write("\033[H")
             sys.stdout.flush()
-            ok = _render_overview(period_name, tool_filter, header_suffix=suffix)
-            # Erase any leftover lines from a previous, taller frame.
+            ok, state = _render_overview(period_name, tool_filter,
+                                         header_suffix=suffix,
+                                         prev_state=prev_state)
             sys.stdout.write("\033[J")
             sys.stdout.flush()
             if not ok:
                 return
+            prev_state = state
             time.sleep(interval)
     except KeyboardInterrupt:
         print(f"\n  {DIM}Stopped after {iteration} refresh(es).{RESET}\n")
