@@ -10,6 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -112,23 +113,20 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 # ─── Main (aggregated overview) ──────────────────────────────────────────────
 
-def main(period_name: str | None = None, tool_filter: str | None = None):
-    print(f"\n{BOLD} Token Usage — All tools{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
-    load_pricing()
-    if PRICING:
-        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+def _render_overview(period_name: str | None, tool_filter: str | None,
+                     header_suffix: str = "") -> bool:
+    """Scan all sources and print the overview tables. Returns False on error."""
+    print(f"\n{BOLD} Token Usage — All tools{RESET}{header_suffix}")
     print(f"{DIM}  Scanning all data sources...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
-        return
+        return False
 
     records, speed_records, counts = _scan_all(tool_filter)
 
-    # Filter to period
     records = [r for r in records
                if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
     speed_records = [sr for sr in speed_records
@@ -145,17 +143,73 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     if not records:
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
-        return
+        return True
 
     show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label, tool_filter)
+    return True
+
+
+def main(period_name: str | None = None, tool_filter: str | None = None):
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    if PRICING:
+        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
+    _render_overview(period_name, tool_filter)
+
+
+def watch(period_name: str | None, tool_filter: str | None, interval: float):
+    """Refresh the overview every `interval` seconds until Ctrl+C."""
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+
+    iteration = 0
+    try:
+        while True:
+            iteration += 1
+            # Clear screen + move cursor to home
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.flush()
+            suffix = (f"  {DIM}— watching, refresh #{iteration} every {interval:g}s "
+                      f"(Ctrl+C to stop){RESET}")
+            ok = _render_overview(period_name, tool_filter, header_suffix=suffix)
+            if not ok:
+                return
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(f"\n  {DIM}Stopped after {iteration} refresh(es).{RESET}\n")
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--export", "--period", "--since", "--tool",
+    "--plan", "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
+
+_DEFAULT_WATCH_INTERVAL = 5.0
+
+
+def _parse_watch_interval(args: list[str]) -> float | None:
+    """Return refresh interval in seconds if --watch / -w is set, else None."""
+    flag = None
+    for f in ("--watch", "-w"):
+        if f in args:
+            flag = f
+            break
+    if flag is None:
+        return None
+    idx = args.index(flag)
+    if idx + 1 < len(args):
+        nxt = args[idx + 1]
+        if not nxt.startswith("-"):
+            try:
+                val = float(nxt)
+                if val < 1:
+                    raise ValueError
+                return val
+            except ValueError:
+                pass
+    return _DEFAULT_WATCH_INTERVAL
 
 
 def _parse_tool(args: list[str]) -> str | None:
@@ -187,6 +241,7 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --plan                           Cost breakdown + optimization tips
   tokstat --export   [file.json]           Export all exchanges to JSON
+  tokstat --watch    [-w] [SECONDS]        Refresh overview live (default 5s, Ctrl+C to stop)
   tokstat --version  [-V]                  Show version
   tokstat --help     [-h]                  This help
 
@@ -228,6 +283,14 @@ def cli():
     except ValueError as e:
         print(f"\n  {RED}{e}{RESET}\n")
         sys.exit(1)
+
+    watch_interval = _parse_watch_interval(args)
+    if watch_interval is not None:
+        if any(f in args for f in ("--prompts", "-p", "--anomalies", "--plan", "--export")):
+            print(f"\n  {RED}--watch only applies to the default overview mode.{RESET}\n")
+            sys.exit(1)
+        watch(period, tool, watch_interval)
+        return
 
     if "--prompts" in args or "-p" in args:
         show_prompts(_collect_all_exchanges, period, tool)
