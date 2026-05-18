@@ -31,6 +31,7 @@ Homepage = "https://github.com/thiga-co/tokstat"
 Repository = "https://github.com/thiga-co/tokstat"
 
 [project.scripts]
+tokstat = "tokstat.unified_cli:cli"
 claude-token-usage = "tokstat.cli:cli"
 codex-token-usage = "tokstat.codex_cli:cli"
 cursor-token-usage = "tokstat.cursor_cli:cli"

@@ -16,11 +16,14 @@ Requires Python 3.7+. No dependencies. MIT License.
 
 | Command | Agent | Data source | Tokens | Cost | Status |
 |---------|-------|-------------|--------|------|--------|
+| `tokstat` | **all of the below** | combined | mixed | ✓ | new |
 | `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | experimental |
 | `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ | experimental |
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
+
+`tokstat` runs all five scanners and aggregates their records into a single overview. Use `--tool <name>` to scope to one tool, or stick with the per-tool commands for detail.
 
 > **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
 >
