@@ -37,6 +37,7 @@ codex-token-usage = "tokstat.codex_cli:cli"
 cursor-token-usage = "tokstat.cursor_cli:cli"
 kiro-token-usage = "tokstat.kiro_cli:cli"
 gemini-token-usage = "tokstat.gemini_cli:cli"
+opencode-token-usage = "tokstat.opencode_cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

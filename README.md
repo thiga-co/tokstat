@@ -22,6 +22,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ | experimental |
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
+| `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
 
 `tokstat` runs all five scanners and aggregates their records into a single overview. Use `--tool <name>` to scope to one tool, or stick with the per-tool commands for detail.
 

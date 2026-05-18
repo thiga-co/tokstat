@@ -37,6 +37,10 @@ from tokstat.gemini_cli import (
     scan_gemini, scan_speed_gemini,
     _collect_all_exchanges as _collect_gemini,
 )
+from tokstat.opencode_cli import (
+    scan_opencode, scan_speed_opencode,
+    _collect_all_exchanges as _collect_opencode,
+)
 
 from tokstat._core import (
     BOLD, DIM, RESET, YELLOW, RED,
@@ -58,6 +62,8 @@ _TOOLS = [
     ("Kiro",        scan_kiro,        None,                   _collect_kiro,
      "~/Library/Application Support/Kiro/"),
     ("Gemini CLI",  scan_gemini,      scan_speed_gemini,      _collect_gemini, "~/.gemini/"),
+    ("opencode",    scan_opencode,    scan_speed_opencode,    _collect_opencode,
+     "~/.local/share/opencode/"),
 ]
 
 _TOOL_ALIASES = {
@@ -66,6 +72,7 @@ _TOOL_ALIASES = {
     "cursor": "Cursor",
     "kiro":   "Kiro",
     "gemini": "Gemini CLI",  "gemini-cli":  "Gemini CLI",
+    "opencode": "opencode",  "open-code":   "opencode",
 }
 
 
@@ -286,7 +293,7 @@ def show_help():
 
 {BOLD}FILTERS{RESET}
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
-  --tool   <name>      claude, codex, cursor, kiro, gemini (default: all)
+  --tool   <name>      claude, codex, cursor, kiro, gemini, opencode (default: all)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/
@@ -294,10 +301,12 @@ def show_help():
   Cursor       ~/.cursor/projects/                                    (estimates)
   Kiro         ~/Library/Application Support/Kiro/...                 (estimates)
   Gemini CLI   ~/.gemini/tmp/
+  opencode     ~/.local/share/opencode/storage/
 
 {BOLD}SEE ALSO{RESET}
   claude-token-usage, codex-token-usage, cursor-token-usage,
-  kiro-token-usage, gemini-token-usage — single-tool variants.
+  kiro-token-usage, gemini-token-usage, opencode-token-usage
+  — single-tool variants.
 """)
 
 
