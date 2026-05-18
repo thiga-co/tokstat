@@ -710,46 +710,6 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         agents_suffix = ""
     print(f"  {BOLD}Last 60 min:{RESET}  {fmt_tokens(last_hour_tokens)} t/h · "
           f"{fmt_cost(last_hour_cost)}/h{agents_suffix}")
-
-    # ─── Subscription windows (Claude Code & Codex) ──────────────────
-    from tokstat._plans import load_user_plans, plan_limits_for, PLAN_LABELS
-    user_plans = load_user_plans()
-    five_h_ago = now - timedelta(hours=5)
-    week_ago   = now - timedelta(days=7)
-    sub_lines: list[str] = []
-    for tool in ("Claude Code", "Codex"):
-        plan_id = user_plans.get(tool)
-        limits = plan_limits_for(tool, plan_id)
-        if not limits:
-            continue
-        prompts_5h = sum(1 for ex in exchanges
-                         if ex.get("tool") == tool and ex.get("ts")
-                         and ex["ts"] >= five_h_ago)
-        prompts_week = sum(1 for ex in exchanges
-                           if ex.get("tool") == tool and ex.get("ts")
-                           and ex["ts"] >= week_ago)
-        cap_5h   = limits["prompts_5h"]
-        cap_week = limits["prompts_week"]
-        rem_5h   = max(cap_5h - prompts_5h, 0)
-        rem_week = max(cap_week - prompts_week, 0)
-        pct_5h   = prompts_5h * 100 // cap_5h if cap_5h else 0
-        pct_week = prompts_week * 100 // cap_week if cap_week else 0
-        color5h   = (BRED if pct_5h   >= 90 else BYELLOW if pct_5h   >= 70 else GREEN)
-        colorweek = (BRED if pct_week >= 90 else BYELLOW if pct_week >= 70 else GREEN)
-        tool_color = TOOL_COLORS.get(tool, "")
-        plan_label = PLAN_LABELS.get(plan_id, plan_id)
-        sub_lines.append(
-            f"  {tool_color}{tool:<11}{RESET} {DIM}({plan_label}){RESET}  "
-            f"5h: {color5h}{prompts_5h}/{cap_5h}{RESET} prompts "
-            f"({color5h}{pct_5h}%{RESET}, {rem_5h} left)  ·  "
-            f"week: {colorweek}{prompts_week}/{cap_week}{RESET} prompts "
-            f"({colorweek}{pct_week}%{RESET}, {rem_week} left)"
-        )
-    if sub_lines:
-        print(f"  {BOLD}Subscription:{RESET}")
-        for line in sub_lines:
-            print(line)
-
     print(f"  {DIM}{period_line}{RESET}")
     print()
 
