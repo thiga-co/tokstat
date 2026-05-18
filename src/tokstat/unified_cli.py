@@ -131,6 +131,7 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
                if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
     speed_records = [sr for sr in speed_records
                      if sr["ts"] >= cutoff and (cutoff_end is None or sr["ts"] < cutoff_end)]
+    exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
 
     for tool_name, n_total, data_path in counts:
         if n_total == 0:
@@ -145,7 +146,8 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
         return True
 
-    show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label, tool_filter)
+    show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
+                         tool_filter, all_exchanges=exchanges)
     return True
 
 

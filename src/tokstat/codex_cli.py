@@ -343,7 +343,9 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     speed_records = [sr for sr in speed_records
                      if sr["ts"] >= cutoff and (cutoff_end is None or sr["ts"] < cutoff_end)]
 
-    show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label, tool_filter)
+    exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
+    show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
+                         tool_filter, all_exchanges=exchanges)
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────

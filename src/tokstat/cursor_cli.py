@@ -335,7 +335,9 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
         return
 
-    show_overview_tables(records, [], cutoff, cutoff_end, period_label, tool_filter)
+    exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
+    show_overview_tables(records, [], cutoff, cutoff_end, period_label,
+                         tool_filter, all_exchanges=exchanges)
     print(f"  {DIM}⚠ All token counts are estimates — Shell/ReadFile outputs not stored locally.{RESET}\n")
 
 

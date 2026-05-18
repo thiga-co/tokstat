@@ -88,7 +88,8 @@ TOOL_COLORS: dict[str, str] = {}
 # ─── Data structures ──────────────────────────────────────────────────────
 
 def empty_bucket():
-    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0}
+    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0,
+            "prompts": 0, "turns": 0, "api_calls": 0}
 
 
 def add_bucket(a, b):
@@ -318,8 +319,16 @@ _SEVERITY_ORDER  = {"high": 0, "medium": 1, "low": 2}
 
 def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                          cutoff: datetime, cutoff_end: datetime | None,
-                         period_label: str, tool_filter: str | None = None):
-    """Print period, project, model, and speed tables from a list of records."""
+                         period_label: str, tool_filter: str | None = None,
+                         all_exchanges: list[dict] | None = None):
+    """Print period, project, model, and speed tables from a list of records.
+
+    If `all_exchanges` is provided, three extra activity columns are added to
+    each table — Prompts (user inputs), Turns (assistant turns within each
+    exchange), and API (raw API calls). Otherwise these columns are omitted.
+    """
+    show_activity = all_exchanges is not None
+    exchanges = all_exchanges or []
 
     # ─── 1. Consumption by period ──────────────────────────────────────
     boundaries = period_boundaries()
@@ -341,17 +350,50 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
             b["cache_read"]  += rec["cache_read"]
             b["cache_write"] += rec["cache_write"]
             b["cost"]        += rec["cost"]
+            b["api_calls"]   += 1
             t = period_totals[period]
             t["input"]       += rec["input"]
             t["output"]      += rec["output"]
             t["cache_read"]  += rec["cache_read"]
             t["cache_write"] += rec["cache_write"]
             t["cost"]        += rec["cost"]
+            t["api_calls"]   += 1
+
+    for ex in exchanges:
+        ts = ex.get("ts")
+        if ts is None:
+            continue
+        nturns = ex.get("num_turns", 0) or 0
+        for period in classify_periods(ts, boundaries):
+            b = tool_period[ex["tool"]][period]
+            b["prompts"] += 1
+            b["turns"]   += nturns
+            t = period_totals[period]
+            t["prompts"] += 1
+            t["turns"]   += nturns
 
     active_tools = sorted(set(r["tool"] for r in all_records))
-    headers = ["Period", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
-    aligns  = ["<",      "<",    ">",     ">",      ">",       ">",       ">"]
+    if show_activity:
+        headers = ["Period", "Tool", "Prompts", "Turns", "API",
+                   "Input", "Output", "Cache R", "Cache W", "Cost"]
+        aligns  = ["<",      "<",    ">",       ">",     ">",
+                   ">",     ">",      ">",       ">",       ">"]
+    else:
+        headers = ["Period", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
+        aligns  = ["<",      "<",    ">",     ">",      ">",       ">",       ">"]
     rows = []
+    blank_cols = len(headers)
+
+    def _row(label, tool_disp, b, *, bold=False):
+        def F(s):
+            return f"{BOLD}{s}{RESET}" if bold else s
+        cells = [label, tool_disp]
+        if show_activity:
+            cells += [F(str(b["prompts"])), F(str(b["turns"])), F(str(b["api_calls"]))]
+        cells += [F(fmt_tokens(b["input"])), F(fmt_tokens(b["output"])),
+                  F(fmt_tokens(b["cache_read"])), F(fmt_tokens(b["cache_write"])),
+                  F(fmt_cost(b["cost"]))]
+        return cells
 
     for period in period_order:
         first = True
@@ -360,26 +402,21 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
             if not b or (b["input"] == 0 and b["output"] == 0):
                 continue
             color = TOOL_COLORS.get(tool, "")
-            rows.append([
+            rows.append(_row(
                 f"{BOLD}{period}{RESET}" if first else "",
                 f"{color}{tool}{RESET}",
-                fmt_tokens(b["input"]), fmt_tokens(b["output"]),
-                fmt_tokens(b["cache_read"]), fmt_tokens(b["cache_write"]),
-                fmt_cost(b["cost"]),
-            ])
+                b,
+            ))
             first = False
         t = period_totals.get(period)
         if t and (t["input"] > 0 or t["output"] > 0):
-            rows.append([
+            rows.append(_row(
                 f"{BOLD}{period}{RESET}" if first else "",
                 f"{BOLD}TOTAL{RESET}",
-                f"{BOLD}{fmt_tokens(t['input'])}{RESET}",
-                f"{BOLD}{fmt_tokens(t['output'])}{RESET}",
-                f"{BOLD}{fmt_tokens(t['cache_read'])}{RESET}",
-                f"{BOLD}{fmt_tokens(t['cache_write'])}{RESET}",
-                f"{BOLD}{fmt_cost(t['cost'])}{RESET}",
-            ])
-            rows.append([""] * 7)
+                t,
+                bold=True,
+            ))
+            rows.append([""] * blank_cols)
 
     w = calc_table_width(headers, rows)
     print(f"\n{'─' * w}")
@@ -401,17 +438,36 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         b["cache_read"]  += rec["cache_read"]
         b["cache_write"] += rec["cache_write"]
         b["cost"]        += rec["cost"]
+        b["api_calls"]   += 1
         t = proj_totals[p]
         t["input"]       += rec["input"]
         t["output"]      += rec["output"]
         t["cache_read"]  += rec["cache_read"]
         t["cache_write"] += rec["cache_write"]
         t["cost"]        += rec["cost"]
+        t["api_calls"]   += 1
+
+    for ex in exchanges:
+        p = normalize_project(ex.get("project") or "unknown")
+        nturns = ex.get("num_turns", 0) or 0
+        b = proj_tool[p][ex["tool"]]
+        b["prompts"] += 1
+        b["turns"]   += nturns
+        t = proj_totals[p]
+        t["prompts"] += 1
+        t["turns"]   += nturns
 
     sorted_projects = sorted(proj_totals.keys(), key=lambda p: proj_totals[p]["cost"], reverse=True)
-    headers = ["Project", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
-    aligns  = ["<",       "<",    ">",     ">",      ">",       ">",       ">"]
+    if show_activity:
+        headers = ["Project", "Tool", "Prompts", "Turns", "API",
+                   "Input", "Output", "Cache R", "Cache W", "Cost"]
+        aligns  = ["<",       "<",    ">",       ">",     ">",
+                   ">",     ">",      ">",       ">",       ">"]
+    else:
+        headers = ["Project", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
+        aligns  = ["<",       "<",    ">",     ">",      ">",       ">",       ">"]
     rows = []
+    blank_cols = len(headers)
 
     for proj in sorted_projects:
         first = True
@@ -421,25 +477,20 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
             if not b or (b["input"] == 0 and b["output"] == 0):
                 continue
             color = TOOL_COLORS.get(tool, "")
-            rows.append([
+            rows.append(_row(
                 f"{BOLD}{short}{RESET}" if first else "",
                 f"{color}{tool}{RESET}",
-                fmt_tokens(b["input"]), fmt_tokens(b["output"]),
-                fmt_tokens(b["cache_read"]), fmt_tokens(b["cache_write"]),
-                fmt_cost(b["cost"]),
-            ])
+                b,
+            ))
             first = False
         t = proj_totals[proj]
-        rows.append([
+        rows.append(_row(
             f"{BOLD}{short}{RESET}" if first else "",
             f"{BOLD}TOTAL{RESET}",
-            f"{BOLD}{fmt_tokens(t['input'])}{RESET}",
-            f"{BOLD}{fmt_tokens(t['output'])}{RESET}",
-            f"{BOLD}{fmt_tokens(t['cache_read'])}{RESET}",
-            f"{BOLD}{fmt_tokens(t['cache_write'])}{RESET}",
-            f"{BOLD}{fmt_cost(t['cost'])}{RESET}",
-        ])
-        rows.append([""] * 7)
+            t,
+            bold=True,
+        ))
+        rows.append([""] * blank_cols)
 
     w = calc_table_width(headers, rows)
     print(f"\n{'─' * w}")
@@ -448,33 +499,59 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     print_table(headers, rows, aligns)
 
     # ─── 3. Model breakdown ────────────────────────────────────────────
-    model_data = defaultdict(lambda: {"input": 0, "output": 0, "cost": 0.0, "tool": ""})
+    model_data = defaultdict(lambda: {"input": 0, "output": 0, "cost": 0.0, "tool": "",
+                                      "prompts": 0, "turns": 0, "api_calls": 0})
     for rec in all_records:
         m = model_data[rec["model"]]
-        m["input"]  += rec["input"]
-        m["output"] += rec["output"]
-        m["cost"]   += rec["cost"]
-        m["tool"]    = rec["tool"]
+        m["input"]     += rec["input"]
+        m["output"]    += rec["output"]
+        m["cost"]      += rec["cost"]
+        m["api_calls"] += 1
+        m["tool"]       = rec["tool"]
+    for ex in exchanges:
+        model = ex.get("model") or ""
+        if not model:
+            continue
+        m = model_data[model]
+        m["prompts"] += 1
+        m["turns"]   += ex.get("num_turns", 0) or 0
+        if not m["tool"]:
+            m["tool"] = ex.get("tool", "")
 
     sorted_models = sorted(model_data.keys(), key=lambda m: model_data[m]["cost"], reverse=True)
-    headers = ["Model", "Tool", "Input", "Output", "Cost"]
-    aligns  = ["<",     "<",    ">",     ">",      ">"]
+    if show_activity:
+        headers = ["Model", "Tool", "Prompts", "Turns", "API", "Input", "Output", "Cost"]
+        aligns  = ["<",     "<",    ">",       ">",     ">",   ">",     ">",      ">"]
+    else:
+        headers = ["Model", "Tool", "Input", "Output", "Cost"]
+        aligns  = ["<",     "<",    ">",     ">",      ">"]
     rows = []
     for model in sorted_models:
         d = model_data[model]
         if d["input"] == 0 and d["output"] == 0:
             continue
         color = TOOL_COLORS.get(d["tool"], "")
-        rows.append([model, f"{color}{d['tool']}{RESET}",
-                     fmt_tokens(d["input"]), fmt_tokens(d["output"]), fmt_cost(d["cost"])])
+        row = [model, f"{color}{d['tool']}{RESET}"]
+        if show_activity:
+            row += [str(d["prompts"]), str(d["turns"]), str(d["api_calls"])]
+        row += [fmt_tokens(d["input"]), fmt_tokens(d["output"]), fmt_cost(d["cost"])]
+        rows.append(row)
 
     total_cost = sum(d["cost"] for d in model_data.values())
     total_in   = sum(d["input"] for d in model_data.values())
     total_out  = sum(d["output"] for d in model_data.values())
-    rows.append([f"{BOLD}ALL MODELS{RESET}", "",
-                 f"{BOLD}{fmt_tokens(total_in)}{RESET}",
-                 f"{BOLD}{fmt_tokens(total_out)}{RESET}",
-                 f"{BOLD}{fmt_cost(total_cost)}{RESET}"])
+    total_row = [f"{BOLD}ALL MODELS{RESET}", ""]
+    if show_activity:
+        total_prompts = sum(d["prompts"] for d in model_data.values())
+        total_turns   = sum(d["turns"] for d in model_data.values())
+        total_api     = sum(d["api_calls"] for d in model_data.values())
+        total_row += [f"{BOLD}{total_prompts}{RESET}",
+                      f"{BOLD}{total_turns}{RESET}",
+                      f"{BOLD}{total_api}{RESET}"]
+    total_row += [f"{BOLD}{fmt_tokens(total_in)}{RESET}",
+                  f"{BOLD}{fmt_tokens(total_out)}{RESET}",
+                  f"{BOLD}{fmt_cost(total_cost)}{RESET}"]
+    rows.append(total_row)
 
     w = calc_table_width(headers, rows)
     print(f"\n{'─' * w}")
@@ -512,7 +589,14 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     # ─── Grand total ──────────────────────────────────────────────────
     total_all_tokens = sum(r["input"] + r["output"] + r["cache_read"] + r["cache_write"]
                            for r in all_records)
-    print(f"\n  {BOLD}Grand total:{RESET} {fmt_tokens(total_all_tokens)} tokens across {len(all_records)} API calls")
+    if show_activity:
+        n_prompts = sum(1 for ex in exchanges if ex.get("ts") is not None)
+        n_turns   = sum((ex.get("num_turns", 0) or 0) for ex in exchanges)
+        print(f"\n  {BOLD}Grand total:{RESET} {fmt_tokens(total_all_tokens)} tokens · "
+              f"{n_prompts} prompts · {n_turns} turns · {len(all_records)} API calls")
+    else:
+        print(f"\n  {BOLD}Grand total:{RESET} {fmt_tokens(total_all_tokens)} tokens "
+              f"across {len(all_records)} API calls")
     print(f"  {BOLD}Estimated cost:{RESET} {fmt_cost(total_cost)}")
     print(f"  {DIM}Period: {all_records[0]['ts'].strftime('%Y-%m-%d')} to "
           f"{max(r['ts'] for r in all_records).strftime('%Y-%m-%d')}{RESET}")
