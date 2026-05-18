@@ -666,20 +666,43 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         print(f"{'─' * w}")
         print_table(headers, rows, aligns)
 
-    # ─── Grand total ──────────────────────────────────────────────────
+    # ─── Grand total (as its own section) ─────────────────────────────
     total_all_tokens = sum(r["input"] + r["output"] + r["cache_read"] + r["cache_write"]
                            for r in all_records)
+    now = datetime.now(timezone.utc)
+    one_hour_ago = now - timedelta(hours=1)
+    last_hour_tokens = sum(r["input"] + r["output"] + r["cache_read"] + r["cache_write"]
+                           for r in all_records if r["ts"] >= one_hour_ago)
+    last_hour_cost = sum(r["cost"] for r in all_records if r["ts"] >= one_hour_ago)
+
     if show_activity:
         n_prompts = sum(1 for ex in exchanges if ex.get("ts") is not None)
         n_turns   = sum((ex.get("num_turns", 0) or 0) for ex in exchanges)
-        print(f"\n  {BOLD}Grand total:{RESET} {fmt_tokens(total_all_tokens)} tokens · "
-              f"{n_prompts} prompts · {n_turns} turns · {len(all_records)} API calls")
+        summary = (f"{fmt_tokens(total_all_tokens)} tokens · "
+                   f"{n_prompts} prompts · {n_turns} turns · "
+                   f"{len(all_records)} API calls")
     else:
-        print(f"\n  {BOLD}Grand total:{RESET} {fmt_tokens(total_all_tokens)} tokens "
-              f"across {len(all_records)} API calls")
-    print(f"  {BOLD}Estimated cost:{RESET} {fmt_cost(total_cost)}")
-    print(f"  {DIM}Period: {all_records[0]['ts'].strftime('%Y-%m-%d')} to "
-          f"{max(r['ts'] for r in all_records).strftime('%Y-%m-%d')}{RESET}")
+        summary = f"{fmt_tokens(total_all_tokens)} tokens across {len(all_records)} API calls"
+
+    period_line = (f"Period: {all_records[0]['ts'].strftime('%Y-%m-%d')} to "
+                   f"{max(r['ts'] for r in all_records).strftime('%Y-%m-%d')}")
+    rate_line   = (f"Current rate (last 60 min): "
+                   f"{fmt_tokens(last_hour_tokens)} t/h · "
+                   f"{fmt_cost(last_hour_cost)}/h")
+
+    # Compute box width from the longest plain-text content line.
+    inner_lines = [summary, f"Estimated cost: {fmt_cost(total_cost)}",
+                   rate_line, period_line]
+    plain = [_strip_ansi(s) for s in inner_lines]
+    w = max(len(p) for p in plain) + 4  # padding
+    print(f"\n{'─' * w}")
+    print(f"{BOLD} GRAND TOTAL{RESET}")
+    print(f"{'─' * w}")
+    print(f"  {BOLD}Total:{RESET}        {summary}")
+    print(f"  {BOLD}Estimated:{RESET}    {fmt_cost(total_cost)}")
+    print(f"  {BOLD}Last 60 min:{RESET}  {fmt_tokens(last_hour_tokens)} t/h · "
+          f"{fmt_cost(last_hour_cost)}/h")
+    print(f"  {DIM}{period_line}{RESET}")
     print()
 
 
