@@ -9,8 +9,10 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
+import io
 import sys
 import time
+from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 
@@ -190,12 +192,20 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
             iteration += 1
             suffix = (f"  {DIM}— watching, refresh #{iteration} every {interval:g}s "
                       f"(Ctrl+C to stop){RESET}")
-            sys.stdout.write("\033[H")
-            sys.stdout.flush()
-            ok, state = _render_overview(period_name, tool_filter,
-                                         header_suffix=suffix,
-                                         prev_state=prev_state)
-            sys.stdout.write("\033[J")
+            # Render into a buffer so we can rewrite each line with a
+            # trailing erase-to-EOL — avoids leftover chars when a new line
+            # is shorter than the previous frame's line at that position.
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                ok, state = _render_overview(period_name, tool_filter,
+                                             header_suffix=suffix,
+                                             prev_state=prev_state)
+            output = buf.getvalue()
+
+            sys.stdout.write("\033[H")  # cursor home, no clear
+            for line in output.split("\n"):
+                sys.stdout.write(line + "\033[K\n")  # erase rest of line
+            sys.stdout.write("\033[J")  # erase any leftover lines below
             sys.stdout.flush()
             if not ok:
                 return
