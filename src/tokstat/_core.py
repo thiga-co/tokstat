@@ -671,9 +671,11 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                            for r in all_records)
     now = datetime.now(timezone.utc)
     one_hour_ago = now - timedelta(hours=1)
+    last_hour_records = [r for r in all_records if r["ts"] >= one_hour_ago]
     last_hour_tokens = sum(r["input"] + r["output"] + r["cache_read"] + r["cache_write"]
-                           for r in all_records if r["ts"] >= one_hour_ago)
-    last_hour_cost = sum(r["cost"] for r in all_records if r["ts"] >= one_hour_ago)
+                           for r in last_hour_records)
+    last_hour_cost = sum(r["cost"] for r in last_hour_records)
+    active_tools_last_hour = sorted({r["tool"] for r in last_hour_records})
 
     if show_activity:
         n_prompts = sum(1 for ex in exchanges if ex.get("ts") is not None)
@@ -700,8 +702,14 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     print(f"{'─' * w}")
     print(f"  {BOLD}Total:{RESET}        {summary}")
     print(f"  {BOLD}Estimated:{RESET}    {fmt_cost(total_cost)}")
+    if active_tools_last_hour:
+        agents_str = ", ".join(f"{TOOL_COLORS.get(t, '')}{t}{RESET}"
+                               for t in active_tools_last_hour)
+        agents_suffix = f"  {DIM}({agents_str}{DIM}){RESET}"
+    else:
+        agents_suffix = ""
     print(f"  {BOLD}Last 60 min:{RESET}  {fmt_tokens(last_hour_tokens)} t/h · "
-          f"{fmt_cost(last_hour_cost)}/h")
+          f"{fmt_cost(last_hour_cost)}/h{agents_suffix}")
     print(f"  {DIM}{period_line}{RESET}")
     print()
 
