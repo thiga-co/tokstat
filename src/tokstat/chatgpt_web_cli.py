@@ -48,8 +48,17 @@ _SERVICE = "chatgpt.com"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def _project_label(account: str) -> str:
-    return f"chatgpt.com ({account})"
+def _project_label(account: str, conv: dict | None = None) -> str:
+    """Per-conversation project label. Each ChatGPT chat shows up as its
+    own row under CONSUMPTION BY PROJECT, prefixed with the account so
+    multiple imported accounts stay distinguishable."""
+    if conv is None:
+        return f"chatgpt.com ({account})"
+    title = (conv.get("title") or "").strip() or "(untitled)"
+    if len(title) > 60:
+        title = title[:57] + "..."
+    prefix = "chatgpt" if account == "default" else f"chatgpt/{account}"
+    return f"{prefix}: {title}"
 
 
 def _cache_id(account: str, conv_id: str) -> str:
@@ -176,6 +185,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
     records = []
     for conv in convs:
         account = conv.get("_account") or "default"
+        project = _project_label(account, conv)
         for msg in _conv_messages(conv):
             if msg["sender"] != "assistant":
                 continue
@@ -187,7 +197,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
             records.append({
                 "tool":    TOOL_NAME,
                 "model":   msg["model"] + " [est]",
-                "project": _project_label(account),
+                "project": project,
                 "ts":      msg["ts"],
                 **tokens,
                 "cost":    compute_cost(tokens, msg["model"]),
@@ -206,7 +216,7 @@ def _extract_exchanges_chatgpt_web() -> list[dict]:
     exchanges: list[dict] = []
     for conv in convs:
         account = conv.get("_account") or "default"
-        project = _project_label(account)
+        project = _project_label(account, conv)
         current = None
         for m in _conv_messages(conv):
             if m["sender"] == "user":
