@@ -16,9 +16,11 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -176,9 +178,16 @@ def _cache_id(account: str, conv_id: str) -> str:
     return f"{account}__{conv_id}"
 
 
+_MAX_WORKERS = int(os.environ.get("TOKSTAT_WEB_WORKERS", "8") or "8")
+
+
 def _sync_account(account: str) -> list[dict]:
     entries = _list_conversations(account)
     out: list[dict] = []
+
+    # Partition into cache-hit (fresh) vs to-fetch first, so the parallel
+    # work doesn't bother re-doing what's already on disk.
+    to_fetch: list[tuple[str, str, str, dict | None]] = []
     for entry in entries:
         conv_id = entry.get("id")
         if not conv_id:
@@ -189,18 +198,47 @@ def _sync_account(account: str) -> list[dict]:
         if cache_is_fresh(cached, updated):
             cached["_account"] = account
             out.append(cached)
-            continue
+        else:
+            to_fetch.append((conv_id, updated, cache_id, cached))
+
+    if not to_fetch:
+        print(f"  {DIM}[{account}] {len(out)} conversations (all cached).{RESET}")
+        return out
+
+    total = len(to_fetch)
+    print(f"  {DIM}[{account}] fetching {total} conversation(s), "
+          f"{_MAX_WORKERS} in parallel...{RESET}", flush=True)
+    # Pre-warm the bearer so workers don't race to refresh it.
+    try:
+        _bearer(account)
+    except Exception:
+        pass
+
+    def _fetch_one(item):
+        conv_id, updated, cache_id, cached = item
         try:
             detail = _get_conversation(account, conv_id)
         except Exception:
-            if cached:
-                cached["_account"] = account
-                out.append(cached)
-            continue
+            return cached  # may be None
         detail["_updated_at"] = updated
         detail["_account"] = account
         cache_save(_SERVICE, cache_id, detail)
-        out.append(detail)
+        return detail
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        futures = {ex.submit(_fetch_one, it): it for it in to_fetch}
+        for f in as_completed(futures):
+            done += 1
+            r = f.result()
+            if r is not None:
+                out.append(r)
+            if done == total or done % max(1, total // 40) == 0:
+                pct = done * 100 // total
+                print(f"\r  {DIM}[{account}] {done}/{total} "
+                      f"({pct}%){RESET}",
+                      end="", flush=True)
+    print()  # final newline after progress
     return out
 
 
