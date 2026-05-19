@@ -186,6 +186,7 @@ def _cache_id(account: str, conv_id: str) -> str:
 
 
 _MAX_WORKERS = int(os.environ.get("TOKSTAT_WEB_WORKERS", "8") or "8")
+_STRICT_FRESHNESS = False  # toggled by --refresh in cli()
 
 
 def _sync_account(account: str) -> list[dict]:
@@ -220,7 +221,7 @@ def _sync_account(account: str) -> list[dict]:
             updated = entry.get("updated_at")
             cache_id = _cache_id(account, conv_id)
             cached = cache_load(_SERVICE, cache_id)
-            if cache_is_fresh(cached, updated):
+            if cache_is_fresh(cached, updated, strict=_STRICT_FRESHNESS):
                 cached["_account"] = account
                 out.append(cached)
                 continue
@@ -530,7 +531,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
     "--set-cookie", "--clear-cookie", "--account", "--list-accounts",
-    "--import",
+    "--import", "--refresh",
 }
 
 
@@ -580,6 +581,8 @@ def show_help():
   claude-web-token-usage --clear-cookie           Forget all accounts
                               [--account <name>]  ...or just one
   claude-web-token-usage --list-accounts          Show configured accounts
+  claude-web-token-usage --refresh                Re-fetch updated convs
+                                                  (otherwise cache = fresh)
 
 {BOLD}OFFICIAL EXPORT (recommended){RESET}
   On claude.ai → Settings → Privacy → Export Data. You'll get an
@@ -664,6 +667,10 @@ def cli():
 
     period = _parse_period(args)
     tool = _parse_tool(args)
+
+    if "--refresh" in args:
+        global _STRICT_FRESHNESS
+        _STRICT_FRESHNESS = True
 
     if "--prompts" in args or "-p" in args:
         show_prompts(_collect_all_exchanges, period, tool)

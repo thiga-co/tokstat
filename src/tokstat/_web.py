@@ -210,8 +210,20 @@ def cache_save(service: str, conv_id: str, data: dict) -> None:
     p.write_text(json.dumps(data))
 
 
-def cache_is_fresh(cached: dict | None, updated_at: str | None) -> bool:
-    """A cached conv is fresh iff its stored `_updated_at` >= the list's."""
-    if not cached or not updated_at:
+def cache_is_fresh(cached: dict | None, updated_at: str | None,
+                   strict: bool = False) -> bool:
+    """A cached conv is considered fresh.
+
+    In the default (non-strict) mode any cached payload counts as fresh —
+    this matches users' expectation that once `--import` has populated the
+    cache, subsequent runs don't re-fetch silently. Set `strict=True` (e.g.
+    `--refresh` flag) to require the cached `_updated_at` to match the
+    list endpoint's value.
+    """
+    if not cached:
+        return False
+    if not strict:
+        return True
+    if not updated_at:
         return False
     return cached.get("_updated_at") == updated_at
