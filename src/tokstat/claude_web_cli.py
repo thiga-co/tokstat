@@ -36,7 +36,7 @@ from tokstat._core import (
 )
 from tokstat._web import (
     cache_iter, cache_save, imported_accounts,
-    cache_orphans, clean_orphans,
+    cache_orphans, clean_orphans, clear_imports,
 )
 
 TOOL_NAME = "Claude.ai"
@@ -291,6 +291,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
     "--import", "--account", "--list-accounts", "--clean-cache",
+    "--clear-imports",
 }
 
 
@@ -337,6 +338,10 @@ def show_help():
   claude-web-token-usage --import <zip|json|dir>  Load the official export
                               [--account <name>]
   claude-web-token-usage --list-accounts          Show imported accounts
+  claude-web-token-usage --clean-cache            Drop legacy orphan files
+                                                  (pre-multi-account era)
+  claude-web-token-usage --clear-imports          Drop imported convs
+                              [--account <name>]  ...for one account only
 
 {BOLD}FILTERS{RESET}
   --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
@@ -389,8 +394,17 @@ def cli():
 
     if "--clean-cache" in args:
         n = clean_orphans(_SERVICE)
-        print(f"  Removed {BOLD}{n}{RESET} orphan cache file(s) from "
-              f"{DIM}~/.cache/tokstat/web/{_SERVICE}/{RESET}.")
+        kept = len(list(cache_iter(_SERVICE)))
+        print(f"  Removed {BOLD}{n}{RESET} legacy orphan file(s). "
+              f"{BOLD}{kept}{RESET} imported conversation(s) kept "
+              f"({DIM}use --clear-imports to drop those too{RESET}).")
+        return
+
+    if "--clear-imports" in args:
+        account = _parse_account(args) if "--account" in args else None
+        n = clear_imports(_SERVICE, account)
+        scope = f"account {BOLD}{account}{RESET}" if account else "all accounts"
+        print(f"  Removed {BOLD}{n}{RESET} imported conversation(s) ({scope}).")
         return
 
     unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]

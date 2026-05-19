@@ -97,3 +97,25 @@ def clean_orphans(service: str) -> int:
         except OSError:
             pass
     return len(orphans)
+
+
+def clear_imports(service: str, account: str | None = None) -> int:
+    """Delete imported cache files. With `account=None`, wipe every
+    imported account. With a name, only that account's files. Returns
+    the number of files removed."""
+    d = _CACHE_BASE / service
+    if not d.exists():
+        return 0
+    n = 0
+    for f in d.glob("*.json"):
+        name = f.stem
+        if "__" not in name:
+            continue  # orphan — leave to clean_orphans
+        if account is not None and name.split("__", 1)[0] != account:
+            continue
+        try:
+            f.unlink()
+            n += 1
+        except OSError:
+            pass
+    return n
