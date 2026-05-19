@@ -23,16 +23,26 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
-| `claude-web-token-usage` | claude.ai (web) | private endpoints (cookie auth) | ~ estimated | ~ | experimental |
-| `chatgpt-web-token-usage` | chatgpt.com (web) | private endpoints (cookie auth) | ~ estimated | ~ | experimental |
+| `claude-web-token-usage` | claude.ai (web) | private endpoints (cookie auth) | ~ estimated | ~ | **highly experimental** |
+| `chatgpt-web-token-usage` | chatgpt.com (web) | private endpoints (cookie auth) | ~ estimated | ~ | **highly experimental** |
 
-> **Web scrapers** hit private (undocumented) endpoints with your session cookie. They may break without notice when the provider changes their API. Token counts are estimated from text length; cost is computed from LiteLLM pricing using the model returned in the conversation payload.
-
-`tokstat` runs all five scanners and aggregates their records into a single overview. Use `--tool <name>` to scope to one tool, or stick with the per-tool commands for detail.
+`tokstat` runs all scanners and aggregates their records into a single overview. Use `--tool <name>` to scope to one tool, or stick with the per-tool commands for detail.
 
 > **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
 >
 > **Cursor note:** token counts are tracked server-side and not stored locally. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
+
+### ⚠️ Web scrapers — highly experimental, use at your own risk
+
+The two web tools (`claude-web-token-usage`, `chatgpt-web-token-usage`) are a different beast from the rest. They are **not** stable, **not** officially supported by Anthropic / OpenAI, and may stop working at any time. Specifically:
+
+- **No public API.** They hit private endpoints (`claude.ai/api/...`, `chatgpt.com/backend-api/...`) the same way the web UI does. These endpoints can change shape or move without warning — when that happens, tokstat will break until the scraper is updated.
+- **Cookie auth.** You provide your own session cookie (`sessionKey` for claude.ai, `__Secure-next-auth.session-token` for chatgpt.com). It is stored in `~/.config/tokstat/web-auth.json` with mode `0600`. Treat it like a password — anyone with this file can act as you on the corresponding site.
+- **Tokens are estimated.** Web UIs do not expose per-message usage; we approximate output tokens as `chars / 4`. Models shown carry a `[est]` suffix. Real cost may differ significantly.
+- **Terms of service.** Automated calls to private endpoints may not be permitted by Anthropic's / OpenAI's ToS in all contexts. Make sure your usage complies with the providers' terms before relying on these tools. *No warranty is provided.*
+- **Full account history is downloaded** on first run (no server-side date filter). Subsequent runs are incremental via local cache in `~/.cache/tokstat/web/<service>/`.
+
+If any of the above doesn't sit right with you, **stick to the other tools** — they all read local files only and require no credentials.
 
 ## Modes
 
