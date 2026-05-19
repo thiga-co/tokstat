@@ -56,45 +56,52 @@ def _project_label(account: str) -> str:
 def _import_from_path(path: str, account: str) -> int:
     """Populate the local cache from a claude.ai data export.
 
-    Accepts a directory containing conversations.json, the JSON file
-    itself, or a ZIP archive. Each conversation is stored under the
-    same cache layout the live scraper writes to.
+    Accepts a directory, a ZIP archive, or a JSON file. Looks for
+    conversations.json (legacy) or conversations-NNN.json chunks.
     """
+    import re
     from zipfile import ZipFile
     p = Path(path).expanduser()
     if not p.exists():
         raise FileNotFoundError(f"no such file or directory: {p}")
+    pat = re.compile(r"(^|/)conversations(?:-\d+)?\.json$")
+    chunks: list[str] = []
     if p.is_dir():
-        jp = p / "conversations.json"
-        if not jp.exists():
-            raise FileNotFoundError(f"{p} contains no conversations.json")
-        raw_text = jp.read_text(errors="replace")
+        for f in sorted(p.rglob("*.json")):
+            if pat.search(f.name):
+                chunks.append(f.read_text(errors="replace"))
+        if not chunks:
+            raise FileNotFoundError(
+                f"{p} contains no conversations.json or conversations-NNN.json")
     elif p.suffix.lower() == ".zip":
         with ZipFile(p) as z:
-            try:
-                with z.open("conversations.json") as f:
-                    raw_text = f.read().decode("utf-8", errors="replace")
-            except KeyError:
+            members = sorted(n for n in z.namelist() if pat.search(n))
+            if not members:
                 raise FileNotFoundError(
-                    f"{p} doesn't contain conversations.json at its root")
+                    f"{p} contains no conversations.json or "
+                    f"conversations-NNN.json")
+            for n in members:
+                with z.open(n) as f:
+                    chunks.append(f.read().decode("utf-8", errors="replace"))
     else:
-        raw_text = p.read_text(errors="replace")
-    data = json.loads(raw_text)
-    if not isinstance(data, list):
-        raise ValueError("conversations.json must be a JSON array")
-    n = 0
-    for conv in data:
-        if not isinstance(conv, dict):
+        chunks.append(p.read_text(errors="replace"))
+    n_imported = 0
+    for raw_text in chunks:
+        data = json.loads(raw_text)
+        if not isinstance(data, list):
             continue
-        conv_id = conv.get("uuid") or conv.get("id")
-        if not conv_id:
-            continue
-        updated = conv.get("updated_at") or conv.get("created_at") or ""
-        conv["_updated_at"] = updated
-        conv["_account"]    = account
-        cache_save(_SERVICE, _cache_id(account, conv_id), conv)
-        n += 1
-    return n
+        for conv in data:
+            if not isinstance(conv, dict):
+                continue
+            conv_id = conv.get("uuid") or conv.get("id")
+            if not conv_id:
+                continue
+            updated = conv.get("updated_at") or conv.get("created_at") or ""
+            conv["_updated_at"] = updated
+            conv["_account"]    = account
+            cache_save(_SERVICE, _cache_id(account, conv_id), conv)
+            n_imported += 1
+    return n_imported
 
 
 def _anon_id() -> str:

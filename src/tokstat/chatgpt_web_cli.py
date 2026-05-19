@@ -59,54 +59,61 @@ def _import_from_path(path: str, account: str) -> int:
     """Populate the local cache from a ChatGPT data export.
 
     Accepts:
-      - a directory containing conversations.json,
-      - the conversations.json file itself,
-      - a ZIP archive containing conversations.json.
+      - a directory containing conversations.json (or conversations-NNN.json
+        chunks — newer exports split the array into multiple files),
+      - one of those JSON files directly,
+      - a ZIP archive containing any of the above.
 
-    Returns the number of conversations imported. Each entry is stored
-    under the same cache layout the live scraper writes to, so subsequent
-    runs see the data without making any HTTP calls.
+    Returns the number of conversations imported.
     """
+    import re
     from zipfile import ZipFile
 
     p = Path(path).expanduser()
     if not p.exists():
         raise FileNotFoundError(f"no such file or directory: {p}")
 
-    raw_text: str
+    pat = re.compile(r"(^|/)conversations(?:-\d+)?\.json$")
+
+    chunks: list[str] = []
     if p.is_dir():
-        json_path = p / "conversations.json"
-        if not json_path.exists():
-            raise FileNotFoundError(f"{p} contains no conversations.json")
-        raw_text = json_path.read_text(errors="replace")
+        for f in sorted(p.rglob("*.json")):
+            if pat.search(f.name):
+                chunks.append(f.read_text(errors="replace"))
+        if not chunks:
+            raise FileNotFoundError(
+                f"{p} contains no conversations.json or conversations-NNN.json")
     elif p.suffix.lower() == ".zip":
         with ZipFile(p) as z:
-            try:
-                with z.open("conversations.json") as f:
-                    raw_text = f.read().decode("utf-8", errors="replace")
-            except KeyError:
+            members = sorted(n for n in z.namelist() if pat.search(n))
+            if not members:
                 raise FileNotFoundError(
-                    f"{p} doesn't contain conversations.json at its root")
+                    f"{p} contains no conversations.json or "
+                    f"conversations-NNN.json. ZIP entries: "
+                    f"{', '.join(z.namelist()[:5])}...")
+            for n in members:
+                with z.open(n) as f:
+                    chunks.append(f.read().decode("utf-8", errors="replace"))
     else:
-        raw_text = p.read_text(errors="replace")
+        chunks.append(p.read_text(errors="replace"))
 
-    data = json.loads(raw_text)
-    if not isinstance(data, list):
-        raise ValueError("conversations.json must be a JSON array")
-
-    n = 0
-    for conv in data:
-        if not isinstance(conv, dict):
-            continue
-        conv_id = conv.get("id") or conv.get("conversation_id")
-        if not conv_id:
-            continue
-        updated = str(conv.get("update_time", "") or conv.get("create_time", ""))
-        conv["_updated_at"] = updated
-        conv["_account"]    = account
-        cache_save(_SERVICE, _cache_id(account, conv_id), conv)
-        n += 1
-    return n
+    n_imported = 0
+    for raw_text in chunks:
+        data = json.loads(raw_text)
+        if not isinstance(data, list):
+            continue  # skip stray non-array files just in case
+        for conv in data:
+            if not isinstance(conv, dict):
+                continue
+            conv_id = conv.get("id") or conv.get("conversation_id")
+            if not conv_id:
+                continue
+            updated = str(conv.get("update_time", "") or conv.get("create_time", ""))
+            conv["_updated_at"] = updated
+            conv["_account"]    = account
+            cache_save(_SERVICE, _cache_id(account, conv_id), conv)
+            n_imported += 1
+    return n_imported
 
 
 # ─── Access-token cache ──────────────────────────────────────────────────────
