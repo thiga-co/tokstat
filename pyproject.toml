@@ -38,6 +38,8 @@ cursor-token-usage = "tokstat.cursor_cli:cli"
 kiro-token-usage = "tokstat.kiro_cli:cli"
 gemini-token-usage = "tokstat.gemini_cli:cli"
 opencode-token-usage = "tokstat.opencode_cli:cli"
+claude-web-token-usage = "tokstat.claude_web_cli:cli"
+chatgpt-web-token-usage = "tokstat.chatgpt_web_cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

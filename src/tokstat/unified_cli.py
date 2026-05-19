@@ -41,6 +41,14 @@ from tokstat.opencode_cli import (
     scan_opencode, scan_speed_opencode,
     _collect_all_exchanges as _collect_opencode,
 )
+from tokstat.claude_web_cli import (
+    scan_claude_web,
+    _collect_all_exchanges as _collect_claude_web,
+)
+from tokstat.chatgpt_web_cli import (
+    scan_chatgpt_web,
+    _collect_all_exchanges as _collect_chatgpt_web,
+)
 
 from tokstat._core import (
     BOLD, DIM, RESET, YELLOW, RED,
@@ -64,6 +72,10 @@ _TOOLS = [
     ("Gemini CLI",  scan_gemini,      scan_speed_gemini,      _collect_gemini, "~/.gemini/"),
     ("opencode",    scan_opencode,    scan_speed_opencode,    _collect_opencode,
      "~/.local/share/opencode/"),
+    ("Claude.ai",   scan_claude_web,  None,                   _collect_claude_web,
+     "claude.ai (web)"),
+    ("ChatGPT",     scan_chatgpt_web, None,                   _collect_chatgpt_web,
+     "chatgpt.com (web)"),
 ]
 
 _TOOL_ALIASES = {
@@ -73,6 +85,8 @@ _TOOL_ALIASES = {
     "kiro":   "Kiro",
     "gemini": "Gemini CLI",  "gemini-cli":  "Gemini CLI",
     "opencode": "opencode",  "open-code":   "opencode",
+    "claude.ai": "Claude.ai", "claude-web": "Claude.ai", "claudeai": "Claude.ai",
+    "chatgpt":   "ChatGPT",   "chatgpt.com": "ChatGPT",  "chatgpt-web": "ChatGPT",
 }
 
 
@@ -293,7 +307,8 @@ def show_help():
 
 {BOLD}FILTERS{RESET}
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
-  --tool   <name>      claude, codex, cursor, kiro, gemini, opencode (default: all)
+  --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
+                       claude.ai, chatgpt (default: all)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/
@@ -302,11 +317,13 @@ def show_help():
   Kiro         ~/Library/Application Support/Kiro/...                 (estimates)
   Gemini CLI   ~/.gemini/tmp/
   opencode     ~/.local/share/opencode/storage/
+  Claude.ai    private https://claude.ai/api/ (session cookie, estimates)
+  ChatGPT      private https://chatgpt.com/backend-api/ (session cookie, estimates)
 
 {BOLD}SEE ALSO{RESET}
   claude-token-usage, codex-token-usage, cursor-token-usage,
-  kiro-token-usage, gemini-token-usage, opencode-token-usage
-  — single-tool variants.
+  kiro-token-usage, gemini-token-usage, opencode-token-usage,
+  claude-web-token-usage, chatgpt-web-token-usage — single-tool variants.
 """)
 
 

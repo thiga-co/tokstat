@@ -23,6 +23,10 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
+| `claude-web-token-usage` | claude.ai (web) | private endpoints (cookie auth) | ~ estimated | ~ | experimental |
+| `chatgpt-web-token-usage` | chatgpt.com (web) | private endpoints (cookie auth) | ~ estimated | ~ | experimental |
+
+> **Web scrapers** hit private (undocumented) endpoints with your session cookie. They may break without notice when the provider changes their API. Token counts are estimated from text length; cost is computed from LiteLLM pricing using the model returned in the conversation payload.
 
 `tokstat` runs all five scanners and aggregates their records into a single overview. Use `--tool <name>` to scope to one tool, or stick with the per-tool commands for detail.
 
