@@ -191,13 +191,16 @@ def _sync_account(account: str) -> list[dict]:
             return ("ok", detail, None)
 
         done = failed = 0
+        sample_errors: list[str] = []
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
             futures = [ex.submit(_fetch_one, it) for it in to_fetch]
             for f in as_completed(futures):
                 done += 1
-                status, r, _err = f.result()
+                status, r, err = f.result()
                 if status == "fail":
                     failed += 1
+                    if err and len(sample_errors) < 3:
+                        sample_errors.append(err)
                 if r is not None:
                     out.append(r)
                 if done == total or done % max(1, total // 40) == 0:
@@ -206,8 +209,10 @@ def _sync_account(account: str) -> list[dict]:
                           f"— {failed} failed{RESET}", end="", flush=True)
         print()
         if failed:
-            print(f"  {YELLOW}[{account}] {failed} conversation(s) failed after "
-                  f"retries — they'll be retried on the next run.{RESET}")
+            print(f"  {YELLOW}[{account}] {failed}/{total} conversation(s) "
+                  f"failed after retries.{RESET}")
+            for i, err in enumerate(sample_errors, 1):
+                print(f"  {DIM}  e{i}: {err}{RESET}")
 
     if failed_orgs and not ok_orgs:
         names = ", ".join(n for n, _ in failed_orgs)

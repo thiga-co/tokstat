@@ -135,9 +135,28 @@ def _bearer(account: str) -> str:
     return _load_access_token(account) or _refresh_access_token(account)
 
 
+def _oai_device_id() -> str:
+    """Stable per-install UUID used as OAI-Device-Id, matching how the
+    web app fingerprints clients. Persisted in web-auth.json."""
+    import uuid as _uuid
+    cfg = _load_config()
+    did = cfg.get("chatgpt_oai_device_id")
+    if not did:
+        did = str(_uuid.uuid4())
+        cfg["chatgpt_oai_device_id"] = did
+        _save_config(cfg)
+    return did
+
+
 def _auth_headers(account: str) -> dict:
-    return {"Authorization": f"Bearer {_bearer(account)}",
-            "Referer": f"{_BASE}/"}
+    return {
+        "Authorization":  f"Bearer {_bearer(account)}",
+        "Referer":        f"{_BASE}/",
+        "Origin":         _BASE,
+        "OAI-Device-Id":  _oai_device_id(),
+        "OAI-Language":   "en-US",
+        "Accept":         "*/*",
+    }
 
 
 # ─── Fetchers ────────────────────────────────────────────────────────────────
@@ -254,13 +273,16 @@ def _sync_account(account: str) -> list[dict]:
         return ("ok", detail, None)
 
     done = failed = 0
+    sample_errors: list[str] = []
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {ex.submit(_fetch_one, it): it for it in to_fetch}
         for f in as_completed(futures):
             done += 1
-            status, r, _err = f.result()
+            status, r, err = f.result()
             if status == "fail":
                 failed += 1
+                if err and len(sample_errors) < 3:
+                    sample_errors.append(err)
             if r is not None:
                 out.append(r)
             if done == total or done % max(1, total // 40) == 0:
@@ -270,8 +292,10 @@ def _sync_account(account: str) -> list[dict]:
                       end="", flush=True)
     print()
     if failed:
-        print(f"  {YELLOW}[{account}] {failed} conversation(s) failed after "
-              f"retries — they'll be retried on the next run.{RESET}")
+        print(f"  {YELLOW}[{account}] {failed}/{total} conversation(s) failed "
+              f"after retries.{RESET}")
+        for i, err in enumerate(sample_errors, 1):
+            print(f"  {DIM}  e{i}: {err}{RESET}")
     return out
 
 
