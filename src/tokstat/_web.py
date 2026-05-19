@@ -54,21 +54,28 @@ def _save_config(cfg: dict) -> None:
         pass
 
 
-def get_session(service: str) -> str | None:
-    """Return the session cookie/token for the named service, or None.
+def get_session(service: str):
+    """Return the session secret(s) for the named service, or None.
 
-    `service` is one of `claude.ai`, `chatgpt.com`. Env vars take precedence
-    over the on-disk config so callers can scope a single invocation."""
+    May return a plain string (single cookie / token) or a list of strings
+    (cookie split across multiple parts, like NextAuth's
+    `__Secure-next-auth.session-token.0` / `.1`). Env vars take precedence
+    over the on-disk config and are always returned as strings.
+    """
     env_key = {
         "claude.ai":   "TOKSTAT_CLAUDE_AI_SESSION",
         "chatgpt.com": "TOKSTAT_CHATGPT_SESSION",
     }.get(service)
     if env_key and os.environ.get(env_key):
         return os.environ[env_key].strip() or None
-    return _load_config().get(service)
+    val = _load_config().get(service)
+    if isinstance(val, list):
+        cleaned = [v for v in val if v]
+        return cleaned or None
+    return val
 
 
-def set_session(service: str, value: str) -> None:
+def set_session(service: str, value) -> None:
     cfg = _load_config()
     cfg[service] = value
     _save_config(cfg)

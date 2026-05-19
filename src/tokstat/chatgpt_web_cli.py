@@ -68,16 +68,32 @@ def _save_access_token(token: str, expires_at_epoch: float) -> None:
     _save_config(cfg)
 
 
-def _refresh_access_token() -> str:
+def _cookie_header() -> str:
+    """Build the Cookie header. The chatgpt.com session token can be split
+    by NextAuth across `__Secure-next-auth.session-token.0` and `.1` when
+    it overflows 4 KB. We support both single-value and multi-part storage.
+    """
     sess = get_session(_SERVICE)
     if not sess:
         raise RuntimeError(
             "No chatgpt.com session cookie configured. "
-            "Run: chatgpt-web-token-usage --set-cookie <__Secure-next-auth.session-token>"
+            "Run: chatgpt-web-token-usage --set-cookie <value> [<value-part-1>]"
         )
+    if isinstance(sess, list):
+        parts = [(f"__Secure-next-auth.session-token.{i}", v.strip())
+                 for i, v in enumerate(sess) if v]
+    else:
+        # If the user pasted a raw "name=value; name=value" string, pass through.
+        if "=" in sess and ";" in sess:
+            return sess
+        parts = [("__Secure-next-auth.session-token", sess.strip())]
+    return "; ".join(f"{name}={val}" for name, val in parts)
+
+
+def _refresh_access_token() -> str:
     data = http_get_json(
         f"{_BASE}/api/auth/session",
-        headers={"Cookie": f"__Secure-next-auth.session-token={sess}",
+        headers={"Cookie": _cookie_header(),
                  "Referer": f"{_BASE}/"},
     )
     if not data or not data.get("accessToken"):
@@ -382,10 +398,15 @@ def show_help():
 {BOLD}chatgpt-web-token-usage{RESET} — Usage from the chatgpt.com web UI (estimated).
 
 {BOLD}SETUP{RESET}
-  Copy the {BOLD}__Secure-next-auth.session-token{RESET} cookie value from
-  chatgpt.com in your browser, then:
-    chatgpt-web-token-usage --set-cookie <value>
-  Or export {BOLD}TOKSTAT_CHATGPT_SESSION{RESET}=<value>.
+  In chatgpt.com (logged in), open DevTools → Application → Cookies.
+  Copy the value of {BOLD}__Secure-next-auth.session-token{RESET}. If you see
+  two cookies named {BOLD}.session-token.0{RESET} and {BOLD}.session-token.1{RESET}
+  (NextAuth splits the token when it overflows 4 KB), pass {BOLD}both{RESET}:
+
+    chatgpt-web-token-usage --set-cookie <value-0> [<value-1>]
+
+  Or export {BOLD}TOKSTAT_CHATGPT_SESSION{RESET} = the raw Cookie header
+  string ("name=val; name=val") if you'd rather configure it that way.
 
 {BOLD}MODES{RESET}
   chatgpt-web-token-usage                      Aggregated overview
@@ -419,13 +440,21 @@ def cli():
         if idx + 1 >= len(args):
             print(f"  {RED}--set-cookie requires a value.{RESET}")
             sys.exit(1)
-        set_session(_SERVICE, args[idx + 1].strip())
+        # Accept an optional second positional value for the .1 part when
+        # NextAuth has split the token across two cookies.
+        part0 = args[idx + 1].strip()
+        part1 = (args[idx + 2].strip()
+                 if idx + 2 < len(args) and not args[idx + 2].startswith("-")
+                 else None)
+        value: object = [part0, part1] if part1 else part0
+        set_session(_SERVICE, value)
         # Force a token refresh on the next run.
         cfg = _load_config()
         cfg.pop("chatgpt_access_token", None)
         cfg.pop("chatgpt_access_token_exp", None)
         _save_config(cfg)
-        print(f"  {BOLD}chatgpt.com{RESET} session cookie stored "
+        parts_msg = "1 cookie" if part1 is None else "2 cookie parts (.0 + .1)"
+        print(f"  {BOLD}chatgpt.com{RESET} session stored — {parts_msg} "
               f"({DIM}~/.config/tokstat/web-auth.json{RESET}).")
         return
     if "--clear-cookie" in args:
