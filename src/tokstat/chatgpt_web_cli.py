@@ -75,8 +75,14 @@ def _content_text(content: dict | None) -> str:
 
 
 def _conv_messages(conv: dict) -> list[dict]:
-    """Walk the conversation `mapping` tree, returning all visible
-    user/assistant messages chronologically sorted."""
+    """Walk the conversation `mapping` tree, returning user prompts and
+    user-visible assistant replies chronologically sorted.
+
+    Filters out internal assistant turns (reasoning / `thoughts`,
+    reasoning_recap, tool calls like `web.run`, system, tool). Only
+    assistant nodes with `content_type == "text"` and `recipient == "all"`
+    are kept — those are the messages the user actually sees in the UI.
+    """
     mapping = conv.get("mapping") or {}
     msgs = []
     for node in mapping.values():
@@ -91,7 +97,13 @@ def _conv_messages(conv: dict) -> list[dict]:
         ts = _parse_dt(m.get("create_time"))
         if ts is None:
             continue
-        text = _content_text(m.get("content"))
+        content = m.get("content") or {}
+        if author == "assistant":
+            content_type = (content.get("content_type") if isinstance(content, dict) else "") or "text"
+            recipient = m.get("recipient") or "all"
+            if content_type != "text" or recipient != "all":
+                continue  # reasoning, tool call, recap — not a user-facing reply
+        text = _content_text(content)
         if not text.strip():
             continue
         meta = m.get("metadata") or {}
