@@ -175,6 +175,26 @@ def cache_dir(service: str) -> Path:
     return p
 
 
+def cache_iter(service: str):
+    """Yield every cached conversation payload for `service`, tagging each
+    with `_account` decoded from its `<account>__<id>.json` filename.
+    Used to support offline mode after an import."""
+    d = _CACHE_BASE / service
+    if not d.exists():
+        return
+    for f in d.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = f.stem
+        if "__" in name and not data.get("_account"):
+            data["_account"] = name.split("__", 1)[0]
+        yield data
+
+
 def cache_load(service: str, conv_id: str) -> dict | None:
     p = cache_dir(service) / f"{conv_id}.json"
     if not p.exists():

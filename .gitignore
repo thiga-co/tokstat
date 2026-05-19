@@ -4,3 +4,9 @@ build/
 __pycache__/
 *.pyc
 .claude/
+
+# Local data export archives (claude.ai / chatgpt.com etc.). Can be hundreds
+# of MB and contain private chat history — never commit them. Import via
+# the appropriate --import flag instead.
+*.zip
+conversations.json

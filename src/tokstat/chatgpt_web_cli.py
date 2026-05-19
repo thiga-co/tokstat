@@ -37,7 +37,7 @@ from tokstat._core import (
 )
 from tokstat._web import (
     get_accounts, get_session, set_session, clear_session,
-    http_get_json, cache_load, cache_save, cache_is_fresh,
+    http_get_json, cache_load, cache_save, cache_is_fresh, cache_iter,
     _CONFIG_PATH, _load_config, _save_config,
     RateLimited,
 )
@@ -51,6 +51,62 @@ _BASE    = "https://chatgpt.com"
 
 def _project_label(account: str) -> str:
     return f"chatgpt.com ({account})"
+
+
+# ─── Offline import (official data export) ───────────────────────────────────
+
+def _import_from_path(path: str, account: str) -> int:
+    """Populate the local cache from a ChatGPT data export.
+
+    Accepts:
+      - a directory containing conversations.json,
+      - the conversations.json file itself,
+      - a ZIP archive containing conversations.json.
+
+    Returns the number of conversations imported. Each entry is stored
+    under the same cache layout the live scraper writes to, so subsequent
+    runs see the data without making any HTTP calls.
+    """
+    from zipfile import ZipFile
+
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such file or directory: {p}")
+
+    raw_text: str
+    if p.is_dir():
+        json_path = p / "conversations.json"
+        if not json_path.exists():
+            raise FileNotFoundError(f"{p} contains no conversations.json")
+        raw_text = json_path.read_text(errors="replace")
+    elif p.suffix.lower() == ".zip":
+        with ZipFile(p) as z:
+            try:
+                with z.open("conversations.json") as f:
+                    raw_text = f.read().decode("utf-8", errors="replace")
+            except KeyError:
+                raise FileNotFoundError(
+                    f"{p} doesn't contain conversations.json at its root")
+    else:
+        raw_text = p.read_text(errors="replace")
+
+    data = json.loads(raw_text)
+    if not isinstance(data, list):
+        raise ValueError("conversations.json must be a JSON array")
+
+    n = 0
+    for conv in data:
+        if not isinstance(conv, dict):
+            continue
+        conv_id = conv.get("id") or conv.get("conversation_id")
+        if not conv_id:
+            continue
+        updated = str(conv.get("update_time", "") or conv.get("create_time", ""))
+        conv["_updated_at"] = updated
+        conv["_account"]    = account
+        cache_save(_SERVICE, _cache_id(account, conv_id), conv)
+        n += 1
+    return n
 
 
 # ─── Access-token cache ──────────────────────────────────────────────────────
@@ -441,22 +497,26 @@ def _to_records(convs: list[dict]) -> list[dict]:
 
 
 def scan_chatgpt_web() -> list[dict]:
-    if not get_accounts(_SERVICE):
-        return []
-    try:
-        convs = _sync_all()
-    except Exception as e:
-        print(f"  {RED}chatgpt.com fetch failed: {e}{RESET}", file=sys.stderr)
-        return []
+    if get_accounts(_SERVICE):
+        try:
+            convs = _sync_all()
+        except Exception as e:
+            print(f"  {RED}chatgpt.com fetch failed: {e}{RESET}", file=sys.stderr)
+            convs = list(cache_iter(_SERVICE))
+    else:
+        convs = list(cache_iter(_SERVICE))
     return _to_records(convs)
 
 
 def _extract_exchanges_chatgpt_web() -> list[dict]:
-    if not get_accounts(_SERVICE):
-        return []
-    try:
-        convs = _sync_all()
-    except Exception:
+    if get_accounts(_SERVICE):
+        try:
+            convs = _sync_all()
+        except Exception:
+            convs = list(cache_iter(_SERVICE))
+    else:
+        convs = list(cache_iter(_SERVICE))
+    if not convs:
         return []
 
     exchanges: list[dict] = []
@@ -529,17 +589,27 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
 
     accounts = get_accounts(_SERVICE)
-    if not accounts:
-        print(f"\n  {YELLOW}No chatgpt.com session cookie configured.{RESET}")
-        print(f"  Open chatgpt.com in a logged-in browser, DevTools → "
-              f"Application → Cookies → copy {BOLD}__Secure-next-auth.session-token{RESET}"
-              f" (or its .0 / .1 split), then:\n")
-        print(f"    {BOLD}chatgpt-web-token-usage --set-cookie <v0> [<v1>]"
-              f" [--account <name>]{RESET}\n")
+    cached_any = any(True for _ in cache_iter(_SERVICE))
+    if not accounts and not cached_any:
+        print(f"\n  {YELLOW}No chatgpt.com session cookie configured "
+              f"and no imported data found.{RESET}")
+        print(f"  Two ways to feed this tool:")
+        print(f"    {BOLD}1. Live scrape{RESET} — copy the "
+              f"__Secure-next-auth.session-token cookie value from"
+              f" chatgpt.com (DevTools → Application → Cookies), then:")
+        print(f"       chatgpt-web-token-usage --set-cookie <v0> [<v1>]"
+              f" [--account <name>]")
+        print(f"    {BOLD}2. Official export{RESET} — Settings → Data "
+              f"controls → Export data on chatgpt.com, wait for the email, then:")
+        print(f"       chatgpt-web-token-usage --import <export.zip>"
+              f" [--account <name>]")
         return
 
-    names = ", ".join(sorted(accounts.keys()))
-    print(f"{DIM}  Syncing chatgpt.com accounts: {names}...{RESET}\n")
+    if accounts:
+        names = ", ".join(sorted(accounts.keys()))
+        print(f"{DIM}  Syncing chatgpt.com accounts: {names}...{RESET}\n")
+    else:
+        print(f"{DIM}  Reading from local cache (offline, no scraping)...{RESET}\n")
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
@@ -573,6 +643,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
     "--set-cookie", "--clear-cookie", "--account", "--list-accounts",
+    "--import",
 }
 
 
@@ -628,11 +699,20 @@ def show_help():
   chatgpt-web-token-usage --anomalies              Anomaly detection
   chatgpt-web-token-usage --plan                   Cost breakdown + tips
   chatgpt-web-token-usage --export   [file]        Export exchanges to JSON
+  chatgpt-web-token-usage --import <zip|json|dir>  Load the official export
+                              [--account <name>]   (no scraping needed)
   chatgpt-web-token-usage --set-cookie <v0> [<v1>] Store session cookie
                               [--account <name>]   ...for a named account
   chatgpt-web-token-usage --clear-cookie           Forget all accounts
                               [--account <name>]   ...or just one
   chatgpt-web-token-usage --list-accounts          Show configured accounts
+
+{BOLD}OFFICIAL EXPORT (recommended){RESET}
+  On chatgpt.com → Settings → Data controls → Export data. You'll get
+  an email with a ZIP. Run:
+    chatgpt-web-token-usage --import path/to/export.zip
+  This populates the local cache without any HTTP traffic — no rate
+  limits, no cookies, no ToS gray area. Subsequent runs read the cache.
 
 {BOLD}FILTERS{RESET}
   --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
@@ -650,6 +730,26 @@ def cli():
         return
     if "--help" in args or "-h" in args:
         show_help()
+        return
+
+    if "--import" in args:
+        idx = args.index("--import")
+        if idx + 1 >= len(args) or args[idx + 1].startswith("-"):
+            print(f"  {RED}--import requires a path "
+                  f"(ZIP, JSON, or extracted folder).{RESET}")
+            sys.exit(1)
+        account = _parse_account(args)
+        path = args[idx + 1]
+        try:
+            n = _import_from_path(path, account)
+        except Exception as e:
+            print(f"  {RED}Import failed: {e}{RESET}")
+            sys.exit(1)
+        print(f"  Imported {BOLD}{n}{RESET} conversation(s) into account "
+              f"{BOLD}{account}{RESET} "
+              f"({DIM}cache: ~/.cache/tokstat/web/{_SERVICE}/{RESET}).")
+        print(f"  Run {BOLD}chatgpt-web-token-usage --period all{RESET} "
+              f"to view the data.")
         return
 
     if "--list-accounts" in args:

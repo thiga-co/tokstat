@@ -38,7 +38,7 @@ from tokstat._core import (
 )
 from tokstat._web import (
     get_accounts, get_session, set_session, clear_session,
-    http_get_json, cache_load, cache_save, cache_is_fresh,
+    http_get_json, cache_iter, cache_load, cache_save, cache_is_fresh,
 )
 
 TOOL_NAME = "Claude.ai"
@@ -51,6 +51,50 @@ _BASE    = "https://claude.ai/api"
 def _project_label(account: str) -> str:
     """Project label distinguishing per-account scans in the breakdown."""
     return f"claude.ai ({account})"
+
+
+def _import_from_path(path: str, account: str) -> int:
+    """Populate the local cache from a claude.ai data export.
+
+    Accepts a directory containing conversations.json, the JSON file
+    itself, or a ZIP archive. Each conversation is stored under the
+    same cache layout the live scraper writes to.
+    """
+    from zipfile import ZipFile
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such file or directory: {p}")
+    if p.is_dir():
+        jp = p / "conversations.json"
+        if not jp.exists():
+            raise FileNotFoundError(f"{p} contains no conversations.json")
+        raw_text = jp.read_text(errors="replace")
+    elif p.suffix.lower() == ".zip":
+        with ZipFile(p) as z:
+            try:
+                with z.open("conversations.json") as f:
+                    raw_text = f.read().decode("utf-8", errors="replace")
+            except KeyError:
+                raise FileNotFoundError(
+                    f"{p} doesn't contain conversations.json at its root")
+    else:
+        raw_text = p.read_text(errors="replace")
+    data = json.loads(raw_text)
+    if not isinstance(data, list):
+        raise ValueError("conversations.json must be a JSON array")
+    n = 0
+    for conv in data:
+        if not isinstance(conv, dict):
+            continue
+        conv_id = conv.get("uuid") or conv.get("id")
+        if not conv_id:
+            continue
+        updated = conv.get("updated_at") or conv.get("created_at") or ""
+        conv["_updated_at"] = updated
+        conv["_account"]    = account
+        cache_save(_SERVICE, _cache_id(account, conv_id), conv)
+        n += 1
+    return n
 
 
 def _anon_id() -> str:
@@ -334,22 +378,26 @@ def _to_records(convs: list[dict]) -> list[dict]:
 
 
 def scan_claude_web() -> list[dict]:
-    if not get_accounts(_SERVICE):
-        return []
-    try:
-        convs = _sync_all()
-    except Exception as e:
-        print(f"  {RED}claude.ai fetch failed: {e}{RESET}", file=sys.stderr)
-        return []
+    if get_accounts(_SERVICE):
+        try:
+            convs = _sync_all()
+        except Exception as e:
+            print(f"  {RED}claude.ai fetch failed: {e}{RESET}", file=sys.stderr)
+            convs = list(cache_iter(_SERVICE))
+    else:
+        convs = list(cache_iter(_SERVICE))
     return _to_records(convs)
 
 
 def _extract_exchanges_claude_web() -> list[dict]:
-    if not get_accounts(_SERVICE):
-        return []
-    try:
-        convs = _sync_all()
-    except Exception:
+    if get_accounts(_SERVICE):
+        try:
+            convs = _sync_all()
+        except Exception:
+            convs = list(cache_iter(_SERVICE))
+    else:
+        convs = list(cache_iter(_SERVICE))
+    if not convs:
         return []
 
     exchanges: list[dict] = []
@@ -422,16 +470,26 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
 
     accounts = get_accounts(_SERVICE)
-    if not accounts:
-        print(f"\n  {YELLOW}No claude.ai session cookie configured.{RESET}")
-        print(f"  Open claude.ai in a logged-in browser, DevTools → "
-              f"Application → Cookies → copy {BOLD}sessionKey{RESET}, then:\n")
-        print(f"    {BOLD}claude-web-token-usage --set-cookie <value>"
-              f" [--account <name>]{RESET}\n")
+    cached_any = any(True for _ in cache_iter(_SERVICE))
+    if not accounts and not cached_any:
+        print(f"\n  {YELLOW}No claude.ai session cookie configured "
+              f"and no imported data found.{RESET}")
+        print(f"  Two ways to feed this tool:")
+        print(f"    {BOLD}1. Live scrape{RESET} — copy the sessionKey cookie "
+              f"from claude.ai (DevTools → Application → Cookies), then:")
+        print(f"       claude-web-token-usage --set-cookie <value>"
+              f" [--account <name>]")
+        print(f"    {BOLD}2. Official export{RESET} — Settings → Privacy → "
+              f"Export Data on claude.ai, wait for the email, then:")
+        print(f"       claude-web-token-usage --import <export.zip>"
+              f" [--account <name>]")
         return
 
-    names = ", ".join(sorted(accounts.keys()))
-    print(f"{DIM}  Syncing claude.ai accounts: {names}...{RESET}\n")
+    if accounts:
+        names = ", ".join(sorted(accounts.keys()))
+        print(f"{DIM}  Syncing claude.ai accounts: {names}...{RESET}\n")
+    else:
+        print(f"{DIM}  Reading from local cache (offline, no scraping)...{RESET}\n")
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
@@ -465,6 +523,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
     "--set-cookie", "--clear-cookie", "--account", "--list-accounts",
+    "--import",
 }
 
 
@@ -507,11 +566,19 @@ def show_help():
   claude-web-token-usage --anomalies              Anomaly detection
   claude-web-token-usage --plan                   Cost breakdown + tips
   claude-web-token-usage --export   [file]        Export exchanges to JSON
+  claude-web-token-usage --import <zip|json|dir>  Load the official export
+                              [--account <name>]  (no scraping needed)
   claude-web-token-usage --set-cookie <v>         Store sessionKey cookie
                               [--account <name>]  ...for a named account
   claude-web-token-usage --clear-cookie           Forget all accounts
                               [--account <name>]  ...or just one
   claude-web-token-usage --list-accounts          Show configured accounts
+
+{BOLD}OFFICIAL EXPORT (recommended){RESET}
+  On claude.ai → Settings → Privacy → Export Data. You'll get an
+  email with a ZIP. Run:
+    claude-web-token-usage --import path/to/export.zip
+  This populates the local cache without any HTTP traffic.
 
 {BOLD}FILTERS{RESET}
   --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
@@ -529,6 +596,26 @@ def cli():
         return
     if "--help" in args or "-h" in args:
         show_help()
+        return
+
+    if "--import" in args:
+        idx = args.index("--import")
+        if idx + 1 >= len(args) or args[idx + 1].startswith("-"):
+            print(f"  {RED}--import requires a path "
+                  f"(ZIP, JSON, or extracted folder).{RESET}")
+            sys.exit(1)
+        account = _parse_account(args)
+        path = args[idx + 1]
+        try:
+            n = _import_from_path(path, account)
+        except Exception as e:
+            print(f"  {RED}Import failed: {e}{RESET}")
+            sys.exit(1)
+        print(f"  Imported {BOLD}{n}{RESET} conversation(s) into account "
+              f"{BOLD}{account}{RESET} "
+              f"({DIM}cache: ~/.cache/tokstat/web/{_SERVICE}/{RESET}).")
+        print(f"  Run {BOLD}claude-web-token-usage --period all{RESET} "
+              f"to view the data.")
         return
 
     if "--list-accounts" in args:
