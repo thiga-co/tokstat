@@ -276,20 +276,29 @@ def _sync_account(account: str) -> list[dict]:
     sample_errors: list[str] = []
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {ex.submit(_fetch_one, it): it for it in to_fetch}
-        for f in as_completed(futures):
-            done += 1
-            status, r, err = f.result()
-            if status == "fail":
-                failed += 1
-                if err and len(sample_errors) < 3:
-                    sample_errors.append(err)
-            if r is not None:
-                out.append(r)
-            if done == total or done % max(1, total // 40) == 0:
-                pct = done * 100 // total
-                print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
-                      f"— {failed} failed{RESET}",
-                      end="", flush=True)
+        try:
+            for f in as_completed(futures):
+                done += 1
+                status, r, err = f.result()
+                if status == "fail":
+                    failed += 1
+                    if err and len(sample_errors) < 3:
+                        # Dump the first few errors live so Ctrl+C still
+                        # leaves the user with something actionable.
+                        print(f"\n  {DIM}  e{len(sample_errors) + 1}: "
+                              f"{err}{RESET}", flush=True)
+                        sample_errors.append(err)
+                if r is not None:
+                    out.append(r)
+                if done == total or done % max(1, total // 40) == 0:
+                    pct = done * 100 // total
+                    print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
+                          f"— {failed} failed{RESET}",
+                          end="", flush=True)
+        except KeyboardInterrupt:
+            print(f"\n  {YELLOW}Interrupted at {done}/{total} "
+                  f"({failed} failed).{RESET}")
+            raise
     print()
     if failed:
         print(f"  {YELLOW}[{account}] {failed}/{total} conversation(s) failed "
