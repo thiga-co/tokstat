@@ -105,6 +105,28 @@ def _get_conversation(account: str, org_uuid: str, conv_uuid: str) -> dict:
     )
 
 
+def _get_conversation_with_retry(account: str, org_uuid: str,
+                                 conv_uuid: str, max_attempts: int = 4) -> dict:
+    import time as _time
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return _get_conversation(account, org_uuid, conv_uuid)
+        except RuntimeError as e:
+            msg = str(e)
+            last_err = e
+            if "HTTP 429" in msg or "HTTP 5" in msg:
+                _time.sleep(min(2 ** attempt, 8) + 0.25 * attempt)
+            else:
+                raise
+        except Exception as e:
+            last_err = e
+            _time.sleep(min(2 ** attempt, 8))
+    if last_err:
+        raise last_err
+    raise RuntimeError("unreachable")
+
+
 def _cache_id(account: str, conv_id: str) -> str:
     # Namespace cache files by account so two accounts can't collide on the
     # same conversation UUID space.
@@ -160,27 +182,32 @@ def _sync_account(account: str) -> list[dict]:
         def _fetch_one(item):
             org_uuid, conv_id, updated, cache_id, cached = item
             try:
-                detail = _get_conversation(account, org_uuid, conv_id)
-            except Exception:
-                return cached
+                detail = _get_conversation_with_retry(account, org_uuid, conv_id)
+            except Exception as e:
+                return ("fail", cached, str(e)[:200])
             detail["_updated_at"] = updated
             detail["_account"] = account
             cache_save(_SERVICE, cache_id, detail)
-            return detail
+            return ("ok", detail, None)
 
-        done = 0
+        done = failed = 0
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
             futures = [ex.submit(_fetch_one, it) for it in to_fetch]
             for f in as_completed(futures):
                 done += 1
-                r = f.result()
+                status, r, _err = f.result()
+                if status == "fail":
+                    failed += 1
                 if r is not None:
                     out.append(r)
                 if done == total or done % max(1, total // 40) == 0:
                     pct = done * 100 // total
-                    print(f"\r  {DIM}[{account}] {done}/{total} "
-                          f"({pct}%){RESET}", end="", flush=True)
+                    print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
+                          f"— {failed} failed{RESET}", end="", flush=True)
         print()
+        if failed:
+            print(f"  {YELLOW}[{account}] {failed} conversation(s) failed after "
+                  f"retries — they'll be retried on the next run.{RESET}")
 
     if failed_orgs and not ok_orgs:
         names = ", ".join(n for n, _ in failed_orgs)

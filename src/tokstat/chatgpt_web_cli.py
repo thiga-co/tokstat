@@ -174,6 +174,34 @@ def _get_conversation(account: str, conv_id: str) -> dict:
     )
 
 
+def _get_conversation_with_retry(account: str, conv_id: str,
+                                 max_attempts: int = 4) -> dict:
+    """Same as _get_conversation but retries 429/5xx and 401 (after token
+    refresh) with exponential backoff. Lets 4xx-other propagate."""
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return _get_conversation(account, conv_id)
+        except RuntimeError as e:
+            msg = str(e)
+            last_err = e
+            if "HTTP 401" in msg:
+                try:
+                    _refresh_access_token(account)
+                except Exception:
+                    pass
+            elif "HTTP 429" in msg or "HTTP 5" in msg:
+                time.sleep(min(2 ** attempt, 8) + 0.25 * attempt)
+            else:
+                raise
+        except Exception as e:
+            last_err = e
+            time.sleep(min(2 ** attempt, 8))
+    if last_err:
+        raise last_err
+    raise RuntimeError("unreachable")
+
+
 def _cache_id(account: str, conv_id: str) -> str:
     return f"{account}__{conv_id}"
 
@@ -217,28 +245,33 @@ def _sync_account(account: str) -> list[dict]:
     def _fetch_one(item):
         conv_id, updated, cache_id, cached = item
         try:
-            detail = _get_conversation(account, conv_id)
-        except Exception:
-            return cached  # may be None
+            detail = _get_conversation_with_retry(account, conv_id)
+        except Exception as e:
+            return ("fail", cached, str(e)[:200])
         detail["_updated_at"] = updated
         detail["_account"] = account
         cache_save(_SERVICE, cache_id, detail)
-        return detail
+        return ("ok", detail, None)
 
-    done = 0
+    done = failed = 0
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {ex.submit(_fetch_one, it): it for it in to_fetch}
         for f in as_completed(futures):
             done += 1
-            r = f.result()
+            status, r, _err = f.result()
+            if status == "fail":
+                failed += 1
             if r is not None:
                 out.append(r)
             if done == total or done % max(1, total // 40) == 0:
                 pct = done * 100 // total
-                print(f"\r  {DIM}[{account}] {done}/{total} "
-                      f"({pct}%){RESET}",
+                print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
+                      f"— {failed} failed{RESET}",
                       end="", flush=True)
-    print()  # final newline after progress
+    print()
+    if failed:
+        print(f"  {YELLOW}[{account}] {failed} conversation(s) failed after "
+              f"retries — they'll be retried on the next run.{RESET}")
     return out
 
 
