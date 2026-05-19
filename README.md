@@ -23,8 +23,8 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
-| `claude-web-token-usage` | claude.ai (web) | private endpoints (cookie auth) | ~ estimated | ~ | **highly experimental** |
-| `chatgpt-web-token-usage` | chatgpt.com (web) | private endpoints (cookie auth) | ~ estimated | ~ | **highly experimental** |
+| `claude-web-token-usage` | claude.ai (web export) | `--import` of official ZIP | ~ estimated | ~ | experimental |
+| `chatgpt-web-token-usage` | chatgpt.com (web export) | `--import` of official ZIP | ~ estimated | ~ | experimental |
 
 `tokstat` runs all scanners and aggregates their records into a single overview. Use `--tool <name>` to scope to one tool, or stick with the per-tool commands for detail.
 
@@ -32,17 +32,29 @@ Requires Python 3.7+. No dependencies. MIT License.
 >
 > **Cursor note:** token counts are tracked server-side and not stored locally. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
 
-### ⚠️ Web scrapers — highly experimental, use at your own risk
+### Web exports (claude.ai / chatgpt.com)
 
-The two web tools (`claude-web-token-usage`, `chatgpt-web-token-usage`) are a different beast from the rest. They are **not** stable, **not** officially supported by Anthropic / OpenAI, and may stop working at any time. Specifically:
+The two web tools work from the **official data export** each provider lets you request from your account settings. There is no live scraping — past attempts ran into 30-second per-request rate limits, anti-bot filters, and gray-area ToS questions. Stick to the export and tokstat reads it locally.
 
-- **No public API.** They hit private endpoints (`claude.ai/api/...`, `chatgpt.com/backend-api/...`) the same way the web UI does. These endpoints can change shape or move without warning — when that happens, tokstat will break until the scraper is updated.
-- **Cookie auth.** You provide your own session cookie (`sessionKey` for claude.ai, `__Secure-next-auth.session-token` for chatgpt.com). It is stored in `~/.config/tokstat/web-auth.json` with mode `0600`. Treat it like a password — anyone with this file can act as you on the corresponding site.
-- **Tokens are estimated.** Web UIs do not expose per-message usage; we approximate output tokens as `chars / 4`. Models shown carry a `[est]` suffix. Real cost may differ significantly.
-- **Terms of service.** Automated calls to private endpoints may not be permitted by Anthropic's / OpenAI's ToS in all contexts. Make sure your usage complies with the providers' terms before relying on these tools. *No warranty is provided.*
-- **Full account history is downloaded** on first run (no server-side date filter). Subsequent runs are incremental via local cache in `~/.cache/tokstat/web/<service>/`.
+1. Request the export
+   - **claude.ai**: Settings → Privacy → Export Data
+   - **chatgpt.com**: Settings → Data controls → Export data
+2. Wait for the email with the ZIP download link.
+3. Import:
+   ```sh
+   claude-web-token-usage  --import path/to/claude-export.zip
+   chatgpt-web-token-usage --import path/to/chatgpt-export.zip
+   ```
+4. Run normally; the cache under `~/.cache/tokstat/web/<service>/` is now the source of truth:
+   ```sh
+   claude-web-token-usage --period all
+   chatgpt-web-token-usage --prompts --period "30 days"
+   tokstat --tool chatgpt
+   ```
 
-If any of the above doesn't sit right with you, **stick to the other tools** — they all read local files only and require no credentials.
+Multiple accounts (perso + work) can coexist — add `--account <name>` on each `--import`. Each shows up as a separate row under **CONSUMPTION BY PROJECT**.
+
+Token counts are **estimated** from message text length (`chars / 4`); models shown carry a `[est]` suffix. Real billing may differ.
 
 ## Modes
 

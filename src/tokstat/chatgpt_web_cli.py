@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-chatgpt-web-token-usage — Usage from logged-in chatgpt.com (web UI).
+chatgpt-web-token-usage — Token usage from a chatgpt.com data export.
 
-ChatGPT requires exchanging the `__Secure-next-auth.session-token` cookie
-for a short-lived bearer access token via `/api/auth/session`. We cache
-the access token in `~/.config/tokstat/web-auth.json` and refresh it
-when it expires.
+This tool no longer scrapes chatgpt.com. OpenAI's private endpoints
+rate-limit at ~30 s per request and reject urllib-based clients;
+use the official data export (chatgpt.com → Settings → Data controls
+→ Export data, you'll get an email with a ZIP) and feed it via
+`--import`.
 
-Tokens are **estimated** from text length (chars / 4).
+Token counts are estimated from message text length (chars / 4); cost
+is computed from LiteLLM pricing using each conversation's model slug.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -16,14 +18,12 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import json
-import os
+import re
 import sys
-import threading
-import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from zipfile import ZipFile
 
 from tokstat.cli import __version__
 from tokstat._core import (
@@ -36,400 +36,24 @@ from tokstat._core import (
     export_conversations, _parse_period, print_update_notice,
 )
 from tokstat._web import (
-    get_accounts, get_session, set_session, clear_session,
-    http_get_json, cache_load, cache_save, cache_is_fresh, cache_iter,
-    _CONFIG_PATH, _load_config, _save_config,
-    RateLimited,
+    cache_iter, cache_save, imported_accounts,
 )
 
 TOOL_NAME = "ChatGPT"
 TOOL_COLORS[TOOL_NAME] = GREEN
 
 _SERVICE = "chatgpt.com"
-_BASE    = "https://chatgpt.com"
 
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _project_label(account: str) -> str:
     return f"chatgpt.com ({account})"
 
 
-# ─── Offline import (official data export) ───────────────────────────────────
-
-def _import_from_path(path: str, account: str) -> int:
-    """Populate the local cache from a ChatGPT data export.
-
-    Accepts:
-      - a directory containing conversations.json (or conversations-NNN.json
-        chunks — newer exports split the array into multiple files),
-      - one of those JSON files directly,
-      - a ZIP archive containing any of the above.
-
-    Returns the number of conversations imported.
-    """
-    import re
-    from zipfile import ZipFile
-
-    p = Path(path).expanduser()
-    if not p.exists():
-        raise FileNotFoundError(f"no such file or directory: {p}")
-
-    pat = re.compile(r"(^|/)conversations(?:-\d+)?\.json$")
-
-    chunks: list[str] = []
-    if p.is_dir():
-        for f in sorted(p.rglob("*.json")):
-            if pat.search(f.name):
-                chunks.append(f.read_text(errors="replace"))
-        if not chunks:
-            raise FileNotFoundError(
-                f"{p} contains no conversations.json or conversations-NNN.json")
-    elif p.suffix.lower() == ".zip":
-        with ZipFile(p) as z:
-            members = sorted(n for n in z.namelist() if pat.search(n))
-            if not members:
-                raise FileNotFoundError(
-                    f"{p} contains no conversations.json or "
-                    f"conversations-NNN.json. ZIP entries: "
-                    f"{', '.join(z.namelist()[:5])}...")
-            for n in members:
-                with z.open(n) as f:
-                    chunks.append(f.read().decode("utf-8", errors="replace"))
-    else:
-        chunks.append(p.read_text(errors="replace"))
-
-    n_imported = 0
-    for raw_text in chunks:
-        data = json.loads(raw_text)
-        if not isinstance(data, list):
-            continue  # skip stray non-array files just in case
-        for conv in data:
-            if not isinstance(conv, dict):
-                continue
-            conv_id = conv.get("id") or conv.get("conversation_id")
-            if not conv_id:
-                continue
-            updated = str(conv.get("update_time", "") or conv.get("create_time", ""))
-            conv["_updated_at"] = updated
-            conv["_account"]    = account
-            cache_save(_SERVICE, _cache_id(account, conv_id), conv)
-            n_imported += 1
-    return n_imported
-
-
-# ─── Access-token cache ──────────────────────────────────────────────────────
-# We piggyback on the same web-auth.json file as the session cookie. Token
-# entry shape: {"chatgpt_access_token": "...", "chatgpt_access_token_exp": 0}
-
-def _tok_key(account: str) -> str:
-    return f"chatgpt_access_token__{account}"
-
-
-def _load_access_token(account: str) -> str | None:
-    cfg = _load_config()
-    tok = cfg.get(_tok_key(account))
-    exp = cfg.get(_tok_key(account) + "_exp") or 0
-    if not tok:
-        return None
-    if exp and time.time() > exp - 60:
-        return None
-    return tok
-
-
-def _save_access_token(account: str, token: str, expires_at_epoch: float) -> None:
-    cfg = _load_config()
-    cfg[_tok_key(account)] = token
-    cfg[_tok_key(account) + "_exp"] = int(expires_at_epoch)
-    _save_config(cfg)
-
-
-def _clear_access_token(account: str | None = None) -> None:
-    cfg = _load_config()
-    if account is None:
-        for k in list(cfg.keys()):
-            if k.startswith("chatgpt_access_token__"):
-                cfg.pop(k, None)
-    else:
-        cfg.pop(_tok_key(account), None)
-        cfg.pop(_tok_key(account) + "_exp", None)
-    _save_config(cfg)
-
-
-def _cookie_header(account: str) -> str:
-    """Build the Cookie header for the given account. Supports a single
-    string, a list (NextAuth-split parts), or a pre-baked "name=val; ..."
-    string under the account entry.
-    """
-    sess = get_session(_SERVICE, account)
-    if not sess:
-        raise RuntimeError(
-            f"No chatgpt.com session cookie configured for account '{account}'. "
-            f"Run: chatgpt-web-token-usage --set-cookie <value-0> [<value-1>] "
-            f"[--account {account}]"
-        )
-    if isinstance(sess, list):
-        parts = [(f"__Secure-next-auth.session-token.{i}", v.strip())
-                 for i, v in enumerate(sess) if v]
-    else:
-        if "=" in sess and ";" in sess:
-            return sess
-        parts = [("__Secure-next-auth.session-token", sess.strip())]
-    return "; ".join(f"{name}={val}" for name, val in parts)
-
-
-def _refresh_access_token(account: str) -> str:
-    data = http_get_json(
-        f"{_BASE}/api/auth/session",
-        headers={"Cookie": _cookie_header(account),
-                 "Referer": f"{_BASE}/"},
-    )
-    if not data or not data.get("accessToken"):
-        raise RuntimeError(
-            f"chatgpt.com /api/auth/session returned no access token for "
-            f"account '{account}' — cookie likely expired; re-run --set-cookie."
-        )
-    expires_str = data.get("expires") or ""
-    try:
-        epoch = datetime.fromisoformat(expires_str.replace("Z", "+00:00")).timestamp()
-    except (ValueError, AttributeError):
-        epoch = time.time() + 3600
-    _save_access_token(account, data["accessToken"], epoch)
-    return data["accessToken"]
-
-
-def _bearer(account: str) -> str:
-    return _load_access_token(account) or _refresh_access_token(account)
-
-
-def _oai_device_id() -> str:
-    """Stable per-install UUID used as OAI-Device-Id, matching how the
-    web app fingerprints clients. Persisted in web-auth.json."""
-    import uuid as _uuid
-    cfg = _load_config()
-    did = cfg.get("chatgpt_oai_device_id")
-    if not did:
-        did = str(_uuid.uuid4())
-        cfg["chatgpt_oai_device_id"] = did
-        _save_config(cfg)
-    return did
-
-
-def _auth_headers(account: str) -> dict:
-    return {
-        "Authorization":  f"Bearer {_bearer(account)}",
-        "Referer":        f"{_BASE}/",
-        "Origin":         _BASE,
-        "OAI-Device-Id":  _oai_device_id(),
-        "OAI-Language":   "en-US",
-        "Accept":         "*/*",
-    }
-
-
-# ─── Fetchers ────────────────────────────────────────────────────────────────
-
-def _list_conversations(account: str) -> list[dict]:
-    items: list[dict] = []
-    offset = 0
-    page_size = 100
-    while True:
-        url = (f"{_BASE}/backend-api/conversations"
-               f"?offset={offset}&limit={page_size}&order=updated")
-        try:
-            data = http_get_json(url, headers=_auth_headers(account))
-        except RuntimeError as e:
-            if "HTTP 401" in str(e) and offset == 0:
-                _refresh_access_token(account)
-                data = http_get_json(url, headers=_auth_headers(account))
-            else:
-                raise
-        batch = (data or {}).get("items") or []
-        items.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-        if offset > 5000:
-            break
-    return items
-
-
-# Global request throttle. ChatGPT's /backend-api/conversation/{id} endpoint
-# is tightly rate-limited (~a few req/s account-wide), so even one worker
-# triggers 429s without spacing. Defaults to one request every 2 s; override
-# via TOKSTAT_CHATGPT_MIN_INTERVAL.
-_MIN_INTERVAL = float(os.environ.get("TOKSTAT_CHATGPT_MIN_INTERVAL", "2.0"))
-_STRICT_FRESHNESS = False  # toggled by --refresh in cli()
-_rate_lock = threading.Lock()
-_next_allowed_at = [0.0]
-
-
-def _throttle(extra_wait: float = 0.0) -> None:
-    """Block until the next request is allowed. `extra_wait` extends the
-    cooldown after a 429 — callers pass the Retry-After value here. A
-    notice is printed when the wait is long enough to look like a hang."""
-    with _rate_lock:
-        now = time.monotonic()
-        wait = _next_allowed_at[0] - now
-        if extra_wait > wait:
-            wait = extra_wait
-        if wait > 5.0:
-            print(f"\n  {DIM}  ↳ rate-limited, waiting {wait:.0f}s...{RESET}",
-                  flush=True)
-        if wait > 0:
-            time.sleep(wait)
-        _next_allowed_at[0] = time.monotonic() + _MIN_INTERVAL
-
-
-def _get_conversation(account: str, conv_id: str) -> dict:
-    _throttle()
-    return http_get_json(
-        f"{_BASE}/backend-api/conversation/{conv_id}",
-        headers=_auth_headers(account),
-    )
-
-
-def _get_conversation_with_retry(account: str, conv_id: str,
-                                 max_attempts: int = 5) -> dict:
-    """Retries 429 (honoring Retry-After), 5xx, and 401 (after token refresh)
-    with exponential backoff. Lets 4xx-other propagate."""
-    last_err: Exception | None = None
-    for attempt in range(max_attempts):
-        try:
-            return _get_conversation(account, conv_id)
-        except RateLimited as e:
-            last_err = e
-            # Push the global cooldown so other workers also back off.
-            _throttle(extra_wait=max(e.retry_after, 5.0 * (attempt + 1)))
-        except RuntimeError as e:
-            msg = str(e)
-            last_err = e
-            if "HTTP 401" in msg:
-                try:
-                    _refresh_access_token(account)
-                except Exception:
-                    pass
-            elif "HTTP 5" in msg:
-                time.sleep(min(2 ** attempt, 8) + 0.25 * attempt)
-            else:
-                raise
-        except Exception as e:
-            last_err = e
-            time.sleep(min(2 ** attempt, 8))
-    if last_err:
-        raise last_err
-    raise RuntimeError("unreachable")
-
-
 def _cache_id(account: str, conv_id: str) -> str:
     return f"{account}__{conv_id}"
 
-
-# Few workers is fine: the global throttle (~1 req per _MIN_INTERVAL s) is
-# what actually paces the sync. Override with TOKSTAT_WEB_WORKERS.
-_MAX_WORKERS = int(os.environ.get("TOKSTAT_WEB_WORKERS", "2") or "2")
-
-
-def _sync_account(account: str) -> list[dict]:
-    entries = _list_conversations(account)
-    out: list[dict] = []
-
-    # Partition into cache-hit (fresh) vs to-fetch first, so the parallel
-    # work doesn't bother re-doing what's already on disk.
-    to_fetch: list[tuple[str, str, str, dict | None]] = []
-    for entry in entries:
-        conv_id = entry.get("id")
-        if not conv_id:
-            continue
-        updated = str(entry.get("update_time", ""))
-        cache_id = _cache_id(account, conv_id)
-        cached = cache_load(_SERVICE, cache_id)
-        if cache_is_fresh(cached, updated, strict=_STRICT_FRESHNESS):
-            cached["_account"] = account
-            out.append(cached)
-        else:
-            to_fetch.append((conv_id, updated, cache_id, cached))
-
-    if not to_fetch:
-        print(f"  {DIM}[{account}] {len(out)} conversations (all cached).{RESET}")
-        return out
-
-    total = len(to_fetch)
-    print(f"  {DIM}[{account}] fetching {total} conversation(s), "
-          f"{_MAX_WORKERS} in parallel...{RESET}", flush=True)
-    # Pre-warm the bearer so workers don't race to refresh it.
-    try:
-        _bearer(account)
-    except Exception:
-        pass
-
-    def _fetch_one(item):
-        conv_id, updated, cache_id, cached = item
-        try:
-            detail = _get_conversation_with_retry(account, conv_id)
-        except Exception as e:
-            return ("fail", cached, str(e)[:200])
-        detail["_updated_at"] = updated
-        detail["_account"] = account
-        cache_save(_SERVICE, cache_id, detail)
-        return ("ok", detail, None)
-
-    def _fmt_eta(secs: float) -> str:
-        secs = max(int(secs), 0)
-        if secs < 60:
-            return f"{secs}s"
-        if secs < 3600:
-            return f"{secs // 60}m{secs % 60:02d}s"
-        return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
-
-    done = failed = 0
-    sample_errors: list[str] = []
-    start = time.monotonic()
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        futures = {ex.submit(_fetch_one, it): it for it in to_fetch}
-        try:
-            for f in as_completed(futures):
-                done += 1
-                status, r, err = f.result()
-                if status == "fail":
-                    failed += 1
-                    if err and len(sample_errors) < 3:
-                        print(f"\n  {DIM}  e{len(sample_errors) + 1}: "
-                              f"{err}{RESET}", flush=True)
-                        sample_errors.append(err)
-                if r is not None:
-                    out.append(r)
-                pct = done * 100 // total
-                elapsed = time.monotonic() - start
-                rate = done / elapsed if elapsed > 0 else 0
-                remaining = total - done
-                eta = remaining / rate if rate > 0 else 0
-                print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
-                      f"— {failed} failed · {rate:.2f}/s · "
-                      f"ETA {_fmt_eta(eta)}    {RESET}",
-                      end="", flush=True)
-        except KeyboardInterrupt:
-            print(f"\n  {YELLOW}Interrupted at {done}/{total} "
-                  f"({failed} failed).{RESET}")
-            raise
-    print()
-    if failed:
-        print(f"  {YELLOW}[{account}] {failed}/{total} conversation(s) failed "
-              f"after retries.{RESET}")
-        for i, err in enumerate(sample_errors, 1):
-            print(f"  {DIM}  e{i}: {err}{RESET}")
-    return out
-
-
-def _sync_all() -> list[dict]:
-    accounts = get_accounts(_SERVICE)
-    out: list[dict] = []
-    for name in sorted(accounts.keys()):
-        try:
-            out.extend(_sync_account(name))
-        except Exception as e:
-            print(f"  {RED}[{name}] {e}{RESET}", file=sys.stderr)
-    return out
-
-
-# ─── Parsing ────────────────────────────────────────────────────────────────
 
 def _parse_dt(epoch) -> datetime | None:
     if epoch is None:
@@ -450,8 +74,8 @@ def _content_text(content: dict | None) -> str:
 
 
 def _conv_messages(conv: dict) -> list[dict]:
-    """Walk the conversation `mapping` tree, yielding chronologically-sorted
-    visible messages (skip system, tool, hidden)."""
+    """Walk the conversation `mapping` tree, returning all visible
+    user/assistant messages chronologically sorted."""
     mapping = conv.get("mapping") or {}
     msgs = []
     for node in mapping.values():
@@ -466,19 +90,74 @@ def _conv_messages(conv: dict) -> list[dict]:
         ts = _parse_dt(m.get("create_time"))
         if ts is None:
             continue
-        meta = m.get("metadata") or {}
         text = _content_text(m.get("content"))
         if not text.strip():
             continue
+        meta = m.get("metadata") or {}
         msgs.append({
             "ts":     ts,
             "sender": author,
             "text":   text,
-            "model":  meta.get("model_slug") or conv.get("default_model_slug") or "gpt-unknown",
+            "model":  meta.get("model_slug")
+                      or conv.get("default_model_slug")
+                      or "gpt-unknown",
         })
     msgs.sort(key=lambda m: m["ts"])
     return msgs
 
+
+# ─── Import (official data export) ───────────────────────────────────────────
+
+_EXPORT_PATTERN = re.compile(r"(^|/)conversations(?:-\d+)?\.json$")
+
+
+def _import_from_path(path: str, account: str) -> int:
+    """Populate the local cache from a ChatGPT data export — directory,
+    ZIP, or one of the conversations*.json files directly."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such file or directory: {p}")
+    chunks: list[str] = []
+    if p.is_dir():
+        for f in sorted(p.rglob("*.json")):
+            if _EXPORT_PATTERN.search(f.name):
+                chunks.append(f.read_text(errors="replace"))
+        if not chunks:
+            raise FileNotFoundError(
+                f"{p} contains no conversations.json or conversations-NNN.json")
+    elif p.suffix.lower() == ".zip":
+        with ZipFile(p) as z:
+            members = sorted(n for n in z.namelist() if _EXPORT_PATTERN.search(n))
+            if not members:
+                raise FileNotFoundError(
+                    f"{p} contains no conversations.json or "
+                    f"conversations-NNN.json. ZIP entries: "
+                    f"{', '.join(z.namelist()[:5])}...")
+            for n in members:
+                with z.open(n) as f:
+                    chunks.append(f.read().decode("utf-8", errors="replace"))
+    else:
+        chunks.append(p.read_text(errors="replace"))
+    n = 0
+    for raw_text in chunks:
+        data = json.loads(raw_text)
+        if not isinstance(data, list):
+            continue
+        for conv in data:
+            if not isinstance(conv, dict):
+                continue
+            conv_id = conv.get("id") or conv.get("conversation_id")
+            if not conv_id:
+                continue
+            conv["_updated_at"] = str(conv.get("update_time", "") or
+                                      conv.get("create_time", ""))
+            conv["_account"]    = account
+            cache_save(_SERVICE, _cache_id(account, conv_id), conv)
+            n += 1
+    return n
+
+
+# ─── Records / exchanges (from cache) ─────────────────────────────────────────
 
 def _to_records(convs: list[dict]) -> list[dict]:
     records = []
@@ -492,10 +171,9 @@ def _to_records(convs: list[dict]) -> list[dict]:
                 continue
             tokens = {"input": 0, "output": out_tokens,
                       "cache_read": 0, "cache_write": 0}
-            model = msg["model"] + " [est]"
             records.append({
                 "tool":    TOOL_NAME,
-                "model":   model,
+                "model":   msg["model"] + " [est]",
                 "project": _project_label(account),
                 "ts":      msg["ts"],
                 **tokens,
@@ -505,35 +183,19 @@ def _to_records(convs: list[dict]) -> list[dict]:
 
 
 def scan_chatgpt_web() -> list[dict]:
-    if get_accounts(_SERVICE):
-        try:
-            convs = _sync_all()
-        except Exception as e:
-            print(f"  {RED}chatgpt.com fetch failed: {e}{RESET}", file=sys.stderr)
-            convs = list(cache_iter(_SERVICE))
-    else:
-        convs = list(cache_iter(_SERVICE))
-    return _to_records(convs)
+    return _to_records(list(cache_iter(_SERVICE)))
 
 
 def _extract_exchanges_chatgpt_web() -> list[dict]:
-    if get_accounts(_SERVICE):
-        try:
-            convs = _sync_all()
-        except Exception:
-            convs = list(cache_iter(_SERVICE))
-    else:
-        convs = list(cache_iter(_SERVICE))
+    convs = list(cache_iter(_SERVICE))
     if not convs:
         return []
-
     exchanges: list[dict] = []
     for conv in convs:
         account = conv.get("_account") or "default"
         project = _project_label(account)
-        msgs = _conv_messages(conv)
         current = None
-        for m in msgs:
+        for m in _conv_messages(conv):
             if m["sender"] == "user":
                 if current:
                     exchanges.append(current)
@@ -587,37 +249,24 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
     return all_exchanges, tool_counts
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main(period_name: str | None = None, tool_filter: str | None = None):
-    print(f"\n{BOLD} Token Usage — {TOOL_NAME} (web){RESET}")
+    print(f"\n{BOLD} Token Usage — {TOOL_NAME} (web export){RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
 
-    accounts = get_accounts(_SERVICE)
-    cached_any = any(True for _ in cache_iter(_SERVICE))
-    if not accounts and not cached_any:
-        print(f"\n  {YELLOW}No chatgpt.com session cookie configured "
-              f"and no imported data found.{RESET}")
-        print(f"  Two ways to feed this tool:")
-        print(f"    {BOLD}1. Live scrape{RESET} — copy the "
-              f"__Secure-next-auth.session-token cookie value from"
-              f" chatgpt.com (DevTools → Application → Cookies), then:")
-        print(f"       chatgpt-web-token-usage --set-cookie <v0> [<v1>]"
-              f" [--account <name>]")
-        print(f"    {BOLD}2. Official export{RESET} — Settings → Data "
-              f"controls → Export data on chatgpt.com, wait for the email, then:")
-        print(f"       chatgpt-web-token-usage --import <export.zip>"
-              f" [--account <name>]")
+    accounts = imported_accounts(_SERVICE)
+    if not accounts:
+        print(f"\n  {YELLOW}No imported chatgpt.com data found.{RESET}")
+        print(f"  On chatgpt.com → Settings → Data controls → Export data,")
+        print(f"  wait for the email with the ZIP, then run:")
+        print(f"    {BOLD}chatgpt-web-token-usage --import <export.zip>{RESET}\n")
         return
 
-    if accounts:
-        names = ", ".join(sorted(accounts.keys()))
-        print(f"{DIM}  Syncing chatgpt.com accounts: {names}...{RESET}\n")
-    else:
-        print(f"{DIM}  Reading from local cache (offline, no scraping)...{RESET}\n")
+    print(f"{DIM}  Reading cache for accounts: {', '.join(accounts)}{RESET}\n")
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
@@ -629,7 +278,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
                if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
 
     if records:
-        print(f"  {GREEN}●{RESET} {TOOL_NAME:<10} {len(records):>6} assistant messages from chatgpt.com")
+        print(f"  {GREEN}●{RESET} {TOOL_NAME:<10} {len(records):>6} assistant messages")
     print(f"\n  Period: {BOLD}{period_label}{RESET}")
 
     if not records:
@@ -640,7 +289,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     show_overview_tables(records, [], cutoff, cutoff_end, period_label,
                          tool_filter, all_exchanges=exchanges)
     print(f"  {DIM}⚠ Token counts are estimated from text length "
-          f"(chatgpt.com does not expose usage).{RESET}\n")
+          f"(chatgpt.com export does not include usage).{RESET}\n")
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -650,18 +299,8 @@ _TOOL_ALIASES = {"chatgpt": TOOL_NAME, "chatgpt.com": TOOL_NAME, "chatgpt-web": 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
-    "--set-cookie", "--clear-cookie", "--account", "--list-accounts",
-    "--import", "--refresh",
+    "--import", "--account", "--list-accounts",
 }
-
-
-def _parse_account(args: list[str]) -> str:
-    if "--account" not in args:
-        return "default"
-    idx = args.index("--account")
-    if idx + 1 >= len(args):
-        return "default"
-    return args[idx + 1].strip() or "default"
 
 
 def _parse_tool(args: list[str]) -> str | None:
@@ -673,33 +312,30 @@ def _parse_tool(args: list[str]) -> str | None:
     raw = args[idx + 1].lower().strip()
     if raw in ("all", "tous", "*"):
         return None
-    return _TOOL_ALIASES.get(raw) or None
+    return _TOOL_ALIASES.get(raw)
+
+
+def _parse_account(args: list[str]) -> str:
+    if "--account" not in args:
+        return "default"
+    idx = args.index("--account")
+    if idx + 1 >= len(args):
+        return "default"
+    return args[idx + 1].strip() or "default"
 
 
 def show_help():
     print(f"""
-{BOLD}chatgpt-web-token-usage{RESET} — Usage from the chatgpt.com web UI (estimated).
+{BOLD}chatgpt-web-token-usage{RESET} — Usage from a chatgpt.com data export (estimated).
 
 {BOLD}SETUP{RESET}
-  In chatgpt.com (logged in), open DevTools → Application → Cookies.
-  Copy the value of {BOLD}__Secure-next-auth.session-token{RESET}. If you see
-  two cookies named {BOLD}.session-token.0{RESET} and {BOLD}.session-token.1{RESET}
-  (NextAuth splits the token when it overflows 4 KB), pass {BOLD}both{RESET}:
+  On chatgpt.com → Settings → Data controls → Export data. You'll get
+  an email with a ZIP. Run:
 
-    chatgpt-web-token-usage --set-cookie <value-0> [<value-1>] [--account <name>]
+    chatgpt-web-token-usage --import path/to/export.zip [--account <name>]
 
-  Multiple accounts (e.g. perso + work) are supported — each shows up as
-  a separate row under CONSUMPTION BY PROJECT.
-
-  Or export {BOLD}TOKSTAT_CHATGPT_SESSION{RESET} = the raw Cookie header
-  string ("name=val; name=val") for a one-shot single-account run.
-
-{BOLD}PACING{RESET}
-  /backend-api/conversation/{{id}} is rate-limited account-wide. tokstat
-  enforces a {BOLD}min interval of 2 s{RESET} between requests by default to
-  avoid 429s. Tune with {BOLD}TOKSTAT_CHATGPT_MIN_INTERVAL{RESET} (seconds) and
-  {BOLD}TOKSTAT_WEB_WORKERS{RESET} (default 2). Initial sync of ~1000 convs
-  takes ~30 min; subsequent runs only refetch what changed.
+  --account labels the import so multiple accounts (perso + work)
+  appear as separate rows under CONSUMPTION BY PROJECT.
 
 {BOLD}MODES{RESET}
   chatgpt-web-token-usage                          Aggregated overview
@@ -708,28 +344,15 @@ def show_help():
   chatgpt-web-token-usage --plan                   Cost breakdown + tips
   chatgpt-web-token-usage --export   [file]        Export exchanges to JSON
   chatgpt-web-token-usage --import <zip|json|dir>  Load the official export
-                              [--account <name>]   (no scraping needed)
-  chatgpt-web-token-usage --set-cookie <v0> [<v1>] Store session cookie
-                              [--account <name>]   ...for a named account
-  chatgpt-web-token-usage --clear-cookie           Forget all accounts
-                              [--account <name>]   ...or just one
-  chatgpt-web-token-usage --list-accounts          Show configured accounts
-  chatgpt-web-token-usage --refresh                Re-fetch updated convs
-                                                   (otherwise cache = fresh)
-
-{BOLD}OFFICIAL EXPORT (recommended){RESET}
-  On chatgpt.com → Settings → Data controls → Export data. You'll get
-  an email with a ZIP. Run:
-    chatgpt-web-token-usage --import path/to/export.zip
-  This populates the local cache without any HTTP traffic — no rate
-  limits, no cookies, no ToS gray area. Subsequent runs read the cache.
+                              [--account <name>]
+  chatgpt-web-token-usage --list-accounts          Show imported accounts
 
 {BOLD}FILTERS{RESET}
   --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
 
 {BOLD}DATA SOURCE{RESET}
-  {GREEN}chatgpt.com{RESET}  private endpoints under https://chatgpt.com/backend-api/
-                ✓ Conversations · ✓ Models · ~ Tokens (estimated)
+  {GREEN}chatgpt.com export{RESET} — local cache under
+  {DIM}~/.cache/tokstat/web/chatgpt.com/{RESET}
 """)
 
 
@@ -745,67 +368,28 @@ def cli():
     if "--import" in args:
         idx = args.index("--import")
         if idx + 1 >= len(args) or args[idx + 1].startswith("-"):
-            print(f"  {RED}--import requires a path "
-                  f"(ZIP, JSON, or extracted folder).{RESET}")
+            print(f"  {RED}--import requires a path (ZIP, JSON, or folder).{RESET}")
             sys.exit(1)
         account = _parse_account(args)
-        path = args[idx + 1]
         try:
-            n = _import_from_path(path, account)
+            n = _import_from_path(args[idx + 1], account)
         except Exception as e:
             print(f"  {RED}Import failed: {e}{RESET}")
             sys.exit(1)
         print(f"  Imported {BOLD}{n}{RESET} conversation(s) into account "
               f"{BOLD}{account}{RESET} "
               f"({DIM}cache: ~/.cache/tokstat/web/{_SERVICE}/{RESET}).")
-        print(f"  Run {BOLD}chatgpt-web-token-usage --period all{RESET} "
-              f"to view the data.")
+        print(f"  Run {BOLD}chatgpt-web-token-usage --period all{RESET} to view.")
         return
 
     if "--list-accounts" in args:
-        accounts = get_accounts(_SERVICE)
-        if not accounts:
-            print(f"  {DIM}No chatgpt.com accounts configured.{RESET}")
+        accs = imported_accounts(_SERVICE)
+        if not accs:
+            print(f"  {DIM}No imported chatgpt.com accounts.{RESET}")
         else:
-            print(f"  {BOLD}chatgpt.com accounts:{RESET}")
-            for name in sorted(accounts.keys()):
+            print(f"  {BOLD}chatgpt.com imported accounts:{RESET}")
+            for name in accs:
                 print(f"    {GREEN}●{RESET} {name}")
-        return
-
-    if "--set-cookie" in args:
-        idx = args.index("--set-cookie")
-        if idx + 1 >= len(args):
-            print(f"  {RED}--set-cookie requires a value.{RESET}")
-            sys.exit(1)
-        account = _parse_account(args)
-        # Treat the value immediately following --set-cookie as part 0, and
-        # an optional second positional as part 1, ignoring --account/<name>.
-        positional: list[str] = []
-        i = idx + 1
-        while i < len(args) and not args[i].startswith("-"):
-            positional.append(args[i].strip())
-            i += 1
-        if not positional:
-            print(f"  {RED}--set-cookie requires at least one value.{RESET}")
-            sys.exit(1)
-        value: object = positional if len(positional) > 1 else positional[0]
-        set_session(_SERVICE, value, account=account)
-        _clear_access_token(account)  # force refresh next run
-        parts_msg = "1 cookie" if len(positional) == 1 else "2 cookie parts (.0 + .1)"
-        print(f"  {BOLD}chatgpt.com{RESET} session stored for account "
-              f"{BOLD}{account}{RESET} — {parts_msg} "
-              f"({DIM}~/.config/tokstat/web-auth.json{RESET}).")
-        return
-    if "--clear-cookie" in args:
-        if "--account" in args:
-            account = _parse_account(args)
-            clear_session(_SERVICE, account=account)
-            _clear_access_token(account)
-            print(f"  chatgpt.com account {BOLD}{account}{RESET} cleared.")
-        else:
-            clear_session(_SERVICE)
-            _clear_access_token()
-            print(f"  chatgpt.com: all accounts cleared.")
         return
 
     unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]
@@ -816,10 +400,6 @@ def cli():
 
     period = _parse_period(args)
     tool = _parse_tool(args)
-
-    if "--refresh" in args:
-        global _STRICT_FRESHNESS
-        _STRICT_FRESHNESS = True
 
     if "--prompts" in args or "-p" in args:
         show_prompts(_collect_all_exchanges, period, tool)
