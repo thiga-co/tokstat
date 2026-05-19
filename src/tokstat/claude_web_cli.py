@@ -46,6 +46,20 @@ _BASE    = "https://claude.ai/api"
 _PROJECT = "claude.ai (web)"   # placeholder project for grouping
 
 
+def _anon_id() -> str:
+    """Stable per-install UUID used as Anthropic-Anonymous-Id, matching what
+    the web UI stores in localStorage. Persisted in web-auth.json."""
+    import uuid as _uuid
+    from tokstat._web import _load_config, _save_config
+    cfg = _load_config()
+    aid = cfg.get("claude_ai_anonymous_id")
+    if not aid:
+        aid = str(_uuid.uuid4())
+        cfg["claude_ai_anonymous_id"] = aid
+        _save_config(cfg)
+    return aid
+
+
 def _auth_headers() -> dict:
     sess = get_session(_SERVICE)
     if not sess:
@@ -53,7 +67,14 @@ def _auth_headers() -> dict:
             "No claude.ai session cookie configured. "
             "Run: claude-web-token-usage --set-cookie <sessionKey-value>"
         )
-    return {"Cookie": f"sessionKey={sess}", "Referer": "https://claude.ai/"}
+    return {
+        "Cookie":                   f"sessionKey={sess}",
+        "Origin":                   "https://claude.ai",
+        "Referer":                  "https://claude.ai/",
+        "Anthropic-Anonymous-Id":   _anon_id(),
+        "Anthropic-Client-Sha":     "unknown",
+        "Anthropic-Client-Version": "unknown",
+    }
 
 
 # ─── Fetchers ────────────────────────────────────────────────────────────────
@@ -79,14 +100,26 @@ def _get_conversation(org_uuid: str, conv_uuid: str) -> dict:
 
 def _sync_all() -> list[dict]:
     """Walk every org/conversation, returning the cached or freshly-fetched
-    conversation payloads with their messages."""
+    conversation payloads with their messages. Orgs that return 403 (or any
+    other error) are skipped — a single account often lists multiple orgs
+    (personal, team, free placeholder) and only some grant API access.
+    """
     orgs = _list_organizations()
     out: list[dict] = []
+    ok_orgs: list[str] = []
+    failed_orgs: list[tuple[str, str]] = []
     for org in orgs:
         org_uuid = org.get("uuid")
+        org_name = org.get("name") or org_uuid or "?"
         if not org_uuid:
             continue
-        for entry in _list_conversations(org_uuid):
+        try:
+            convs = _list_conversations(org_uuid)
+        except Exception as e:
+            failed_orgs.append((org_name, str(e).split(":", 1)[0]))
+            continue
+        ok_orgs.append(org_name)
+        for entry in convs:
             conv_id = entry.get("uuid")
             if not conv_id:
                 continue
@@ -104,6 +137,18 @@ def _sync_all() -> list[dict]:
             detail["_updated_at"] = updated
             cache_save(_SERVICE, conv_id, detail)
             out.append(detail)
+
+    if failed_orgs and not ok_orgs:
+        # All orgs failed — surface the first error so the user can act.
+        names = ", ".join(n for n, _ in failed_orgs)
+        raise RuntimeError(
+            f"all listed organizations refused access ({names}). "
+            f"First error: {failed_orgs[0][1]}. "
+            f"The sessionKey cookie may be stale — re-copy it from claude.ai."
+        )
+    if failed_orgs:
+        skipped = ", ".join(f"{n} ({e})" for n, e in failed_orgs)
+        print(f"  {DIM}Skipped orgs: {skipped}{RESET}")
     return out
 
 
