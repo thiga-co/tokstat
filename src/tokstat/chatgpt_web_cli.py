@@ -199,12 +199,16 @@ _next_allowed_at = [0.0]
 
 def _throttle(extra_wait: float = 0.0) -> None:
     """Block until the next request is allowed. `extra_wait` extends the
-    cooldown after a 429 — callers pass the Retry-After value here."""
+    cooldown after a 429 — callers pass the Retry-After value here. A
+    notice is printed when the wait is long enough to look like a hang."""
     with _rate_lock:
         now = time.monotonic()
         wait = _next_allowed_at[0] - now
         if extra_wait > wait:
             wait = extra_wait
+        if wait > 5.0:
+            print(f"\n  {DIM}  ↳ rate-limited, waiting {wait:.0f}s...{RESET}",
+                  flush=True)
         if wait > 0:
             time.sleep(wait)
         _next_allowed_at[0] = time.monotonic() + _MIN_INTERVAL
@@ -303,8 +307,17 @@ def _sync_account(account: str) -> list[dict]:
         cache_save(_SERVICE, cache_id, detail)
         return ("ok", detail, None)
 
+    def _fmt_eta(secs: float) -> str:
+        secs = max(int(secs), 0)
+        if secs < 60:
+            return f"{secs}s"
+        if secs < 3600:
+            return f"{secs // 60}m{secs % 60:02d}s"
+        return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
+
     done = failed = 0
     sample_errors: list[str] = []
+    start = time.monotonic()
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {ex.submit(_fetch_one, it): it for it in to_fetch}
         try:
@@ -314,18 +327,20 @@ def _sync_account(account: str) -> list[dict]:
                 if status == "fail":
                     failed += 1
                     if err and len(sample_errors) < 3:
-                        # Dump the first few errors live so Ctrl+C still
-                        # leaves the user with something actionable.
                         print(f"\n  {DIM}  e{len(sample_errors) + 1}: "
                               f"{err}{RESET}", flush=True)
                         sample_errors.append(err)
                 if r is not None:
                     out.append(r)
-                if done == total or done % max(1, total // 40) == 0:
-                    pct = done * 100 // total
-                    print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
-                          f"— {failed} failed{RESET}",
-                          end="", flush=True)
+                pct = done * 100 // total
+                elapsed = time.monotonic() - start
+                rate = done / elapsed if elapsed > 0 else 0
+                remaining = total - done
+                eta = remaining / rate if rate > 0 else 0
+                print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
+                      f"— {failed} failed · {rate:.2f}/s · "
+                      f"ETA {_fmt_eta(eta)}    {RESET}",
+                      end="", flush=True)
         except KeyboardInterrupt:
             print(f"\n  {YELLOW}Interrupted at {done}/{total} "
                   f"({failed} failed).{RESET}")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time as _time_mod
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -190,8 +191,17 @@ def _sync_account(account: str) -> list[dict]:
             cache_save(_SERVICE, cache_id, detail)
             return ("ok", detail, None)
 
+        def _fmt_eta(secs: float) -> str:
+            secs = max(int(secs), 0)
+            if secs < 60:
+                return f"{secs}s"
+            if secs < 3600:
+                return f"{secs // 60}m{secs % 60:02d}s"
+            return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
+
         done = failed = 0
         sample_errors: list[str] = []
+        start = _time_mod.monotonic()
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
             futures = [ex.submit(_fetch_one, it) for it in to_fetch]
             try:
@@ -206,10 +216,14 @@ def _sync_account(account: str) -> list[dict]:
                             sample_errors.append(err)
                     if r is not None:
                         out.append(r)
-                    if done == total or done % max(1, total // 40) == 0:
-                        pct = done * 100 // total
-                        print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
-                              f"— {failed} failed{RESET}", end="", flush=True)
+                    pct = done * 100 // total
+                    elapsed = _time_mod.monotonic() - start
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate if rate > 0 else 0
+                    print(f"\r  {DIM}[{account}] {done}/{total} ({pct}%) "
+                          f"— {failed} failed · {rate:.2f}/s · "
+                          f"ETA {_fmt_eta(eta)}    {RESET}",
+                          end="", flush=True)
             except KeyboardInterrupt:
                 print(f"\n  {YELLOW}Interrupted at {done}/{total} "
                       f"({failed} failed).{RESET}")
