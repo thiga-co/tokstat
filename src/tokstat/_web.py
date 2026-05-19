@@ -54,36 +54,76 @@ def _save_config(cfg: dict) -> None:
         pass
 
 
-def get_session(service: str):
-    """Return the session secret(s) for the named service, or None.
+def get_accounts(service: str) -> dict[str, object]:
+    """Return {account_name: session_value} for the named service.
 
-    May return a plain string (single cookie / token) or a list of strings
-    (cookie split across multiple parts, like NextAuth's
-    `__Secure-next-auth.session-token.0` / `.1`). Env vars take precedence
-    over the on-disk config and are always returned as strings.
+    `session_value` is either a string (single cookie / token) or a list
+    (NextAuth-style split cookie). The env var override is always exposed
+    under the account name "env".
+
+    Backward compat: if the on-disk config has a bare string/list under
+    `service` instead of a dict, treat it as a single "default" account.
     """
+    out: dict[str, object] = {}
     env_key = {
         "claude.ai":   "TOKSTAT_CLAUDE_AI_SESSION",
         "chatgpt.com": "TOKSTAT_CHATGPT_SESSION",
     }.get(service)
     if env_key and os.environ.get(env_key):
-        return os.environ[env_key].strip() or None
+        out["env"] = os.environ[env_key].strip()
+        return out
     val = _load_config().get(service)
+    if val is None:
+        return out
+    if isinstance(val, dict):
+        for name, v in val.items():
+            if not v:
+                continue
+            if isinstance(v, list):
+                v = [x for x in v if x]
+                if not v:
+                    continue
+            out[name] = v
+        return out
+    # Legacy: single string or list under the service key.
     if isinstance(val, list):
         cleaned = [v for v in val if v]
-        return cleaned or None
-    return val
+        if cleaned:
+            out["default"] = cleaned
+    elif isinstance(val, str) and val:
+        out["default"] = val
+    return out
 
 
-def set_session(service: str, value) -> None:
+def get_session(service: str, account: str = "default"):
+    """Return the session secret(s) for a single (service, account)."""
+    return get_accounts(service).get(account)
+
+
+def set_session(service: str, value, account: str = "default") -> None:
+    """Store the session secret(s) for one account, migrating the legacy
+    flat representation to the dict form on first multi-account write."""
     cfg = _load_config()
-    cfg[service] = value
+    existing = cfg.get(service)
+    if not isinstance(existing, dict):
+        bucket: dict[str, object] = {}
+        if isinstance(existing, (str, list)) and existing:
+            bucket["default"] = existing
+        existing = bucket
+    existing[account] = value
+    cfg[service] = existing
     _save_config(cfg)
 
 
-def clear_session(service: str) -> None:
+def clear_session(service: str, account: str | None = None) -> None:
+    """Forget one account, or every account when `account` is None."""
     cfg = _load_config()
-    cfg.pop(service, None)
+    if account is None or not isinstance(cfg.get(service), dict):
+        cfg.pop(service, None)
+    else:
+        cfg[service].pop(account, None)
+        if not cfg[service]:
+            cfg.pop(service)
     _save_config(cfg)
 
 

@@ -34,7 +34,7 @@ from tokstat._core import (
     export_conversations, _parse_period, print_update_notice,
 )
 from tokstat._web import (
-    get_session, set_session, clear_session,
+    get_accounts, get_session, set_session, clear_session,
     http_get_json, cache_load, cache_save, cache_is_fresh,
 )
 
@@ -43,7 +43,11 @@ TOOL_COLORS[TOOL_NAME] = MAGENTA
 
 _SERVICE = "claude.ai"
 _BASE    = "https://claude.ai/api"
-_PROJECT = "claude.ai (web)"   # placeholder project for grouping
+
+
+def _project_label(account: str) -> str:
+    """Project label distinguishing per-account scans in the breakdown."""
+    return f"claude.ai ({account})"
 
 
 def _anon_id() -> str:
@@ -60,12 +64,12 @@ def _anon_id() -> str:
     return aid
 
 
-def _auth_headers() -> dict:
-    sess = get_session(_SERVICE)
+def _auth_headers(account: str) -> dict:
+    sess = get_session(_SERVICE, account)
     if not sess:
         raise RuntimeError(
-            "No claude.ai session cookie configured. "
-            "Run: claude-web-token-usage --set-cookie <sessionKey-value>"
+            f"No claude.ai session cookie configured for account '{account}'. "
+            f"Run: claude-web-token-usage --set-cookie <sessionKey> [--account {account}]"
         )
     return {
         "Cookie":                   f"sessionKey={sess}",
@@ -79,32 +83,38 @@ def _auth_headers() -> dict:
 
 # ─── Fetchers ────────────────────────────────────────────────────────────────
 
-def _list_organizations() -> list[dict]:
-    return http_get_json(f"{_BASE}/organizations", headers=_auth_headers()) or []
+def _list_organizations(account: str) -> list[dict]:
+    return http_get_json(f"{_BASE}/organizations",
+                         headers=_auth_headers(account)) or []
 
 
-def _list_conversations(org_uuid: str) -> list[dict]:
+def _list_conversations(account: str, org_uuid: str) -> list[dict]:
     return http_get_json(
         f"{_BASE}/organizations/{org_uuid}/chat_conversations",
-        headers=_auth_headers(),
+        headers=_auth_headers(account),
     ) or []
 
 
-def _get_conversation(org_uuid: str, conv_uuid: str) -> dict:
+def _get_conversation(account: str, org_uuid: str, conv_uuid: str) -> dict:
     return http_get_json(
         f"{_BASE}/organizations/{org_uuid}/chat_conversations/{conv_uuid}"
         "?tree=True&rendering_mode=raw",
-        headers=_auth_headers(),
+        headers=_auth_headers(account),
     )
 
 
-def _sync_all() -> list[dict]:
-    """Walk every org/conversation, returning the cached or freshly-fetched
-    conversation payloads with their messages. Orgs that return 403 (or any
-    other error) are skipped — a single account often lists multiple orgs
-    (personal, team, free placeholder) and only some grant API access.
+def _cache_id(account: str, conv_id: str) -> str:
+    # Namespace cache files by account so two accounts can't collide on the
+    # same conversation UUID space.
+    return f"{account}__{conv_id}"
+
+
+def _sync_account(account: str) -> list[dict]:
+    """Walk every org/conversation for a single account, returning the
+    cached or freshly-fetched conversation payloads. Orgs returning 403
+    (or any other error) are skipped.
     """
-    orgs = _list_organizations()
+    orgs = _list_organizations(account)
     out: list[dict] = []
     ok_orgs: list[str] = []
     failed_orgs: list[tuple[str, str]] = []
@@ -114,7 +124,7 @@ def _sync_all() -> list[dict]:
         if not org_uuid:
             continue
         try:
-            convs = _list_conversations(org_uuid)
+            convs = _list_conversations(account, org_uuid)
         except Exception as e:
             failed_orgs.append((org_name, str(e).split(":", 1)[0]))
             continue
@@ -124,31 +134,47 @@ def _sync_all() -> list[dict]:
             if not conv_id:
                 continue
             updated = entry.get("updated_at")
-            cached = cache_load(_SERVICE, conv_id)
+            cache_id = _cache_id(account, conv_id)
+            cached = cache_load(_SERVICE, cache_id)
             if cache_is_fresh(cached, updated):
+                cached["_account"] = account
                 out.append(cached)
                 continue
             try:
-                detail = _get_conversation(org_uuid, conv_id)
+                detail = _get_conversation(account, org_uuid, conv_id)
             except Exception:
                 if cached:
+                    cached["_account"] = account
                     out.append(cached)
                 continue
             detail["_updated_at"] = updated
-            cache_save(_SERVICE, conv_id, detail)
+            detail["_account"] = account
+            cache_save(_SERVICE, cache_id, detail)
             out.append(detail)
 
     if failed_orgs and not ok_orgs:
-        # All orgs failed — surface the first error so the user can act.
         names = ", ".join(n for n, _ in failed_orgs)
         raise RuntimeError(
-            f"all listed organizations refused access ({names}). "
-            f"First error: {failed_orgs[0][1]}. "
+            f"account '{account}': all listed organizations refused access "
+            f"({names}). First error: {failed_orgs[0][1]}. "
             f"The sessionKey cookie may be stale — re-copy it from claude.ai."
         )
     if failed_orgs:
         skipped = ", ".join(f"{n} ({e})" for n, e in failed_orgs)
-        print(f"  {DIM}Skipped orgs: {skipped}{RESET}")
+        print(f"  {DIM}[{account}] Skipped orgs: {skipped}{RESET}")
+    return out
+
+
+def _sync_all() -> list[dict]:
+    """Sync every configured account; each conversation is tagged with the
+    `_account` it came from for downstream display."""
+    accounts = get_accounts(_SERVICE)
+    out: list[dict] = []
+    for name in sorted(accounts.keys()):
+        try:
+            out.extend(_sync_account(name))
+        except Exception as e:
+            print(f"  {RED}[{name}] {e}{RESET}", file=sys.stderr)
     return out
 
 
@@ -201,6 +227,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
     """One record per assistant message, tokens estimated from char count."""
     records = []
     for conv in convs:
+        account = conv.get("_account") or "default"
         for msg in _conv_messages(conv):
             if msg["sender"] != "assistant":
                 continue
@@ -213,7 +240,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
             records.append({
                 "tool":    TOOL_NAME,
                 "model":   model,
-                "project": _PROJECT,
+                "project": _project_label(account),
                 "ts":      msg["ts"],
                 **tokens,
                 "cost":    compute_cost({"input": 0, "output": out_tokens,
@@ -224,7 +251,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
 
 
 def scan_claude_web() -> list[dict]:
-    if not get_session(_SERVICE):
+    if not get_accounts(_SERVICE):
         return []
     try:
         convs = _sync_all()
@@ -235,7 +262,7 @@ def scan_claude_web() -> list[dict]:
 
 
 def _extract_exchanges_claude_web() -> list[dict]:
-    if not get_session(_SERVICE):
+    if not get_accounts(_SERVICE):
         return []
     try:
         convs = _sync_all()
@@ -244,6 +271,8 @@ def _extract_exchanges_claude_web() -> list[dict]:
 
     exchanges: list[dict] = []
     for conv in convs:
+        account = conv.get("_account") or "default"
+        project = _project_label(account)
         msgs = _conv_messages(conv)
         current = None
         for m in msgs:
@@ -257,7 +286,7 @@ def _extract_exchanges_claude_web() -> list[dict]:
                     "tools_used":      defaultdict(int),
                     "num_turns":       0,
                     "model":           m["model"] + " [est]",
-                    "project":         _PROJECT,
+                    "project":         project,
                     "ts":              m["ts"],
                     "tokens":          {"input": max(len(m["text"]) // 4, 0),
                                         "output": 0,
@@ -309,14 +338,17 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     if PRICING:
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
 
-    if not get_session(_SERVICE):
+    accounts = get_accounts(_SERVICE)
+    if not accounts:
         print(f"\n  {YELLOW}No claude.ai session cookie configured.{RESET}")
         print(f"  Open claude.ai in a logged-in browser, DevTools → "
               f"Application → Cookies → copy {BOLD}sessionKey{RESET}, then:\n")
-        print(f"    {BOLD}claude-web-token-usage --set-cookie <value>{RESET}\n")
+        print(f"    {BOLD}claude-web-token-usage --set-cookie <value>"
+              f" [--account <name>]{RESET}\n")
         return
 
-    print(f"{DIM}  Syncing conversations from claude.ai...{RESET}\n")
+    names = ", ".join(sorted(accounts.keys()))
+    print(f"{DIM}  Syncing claude.ai accounts: {names}...{RESET}\n")
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
@@ -349,8 +381,17 @@ _TOOL_ALIASES = {"claude.ai": TOOL_NAME, "claude-web": TOOL_NAME, "claudeai": TO
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
-    "--set-cookie", "--clear-cookie",
+    "--set-cookie", "--clear-cookie", "--account", "--list-accounts",
 }
+
+
+def _parse_account(args: list[str]) -> str:
+    if "--account" not in args:
+        return "default"
+    idx = args.index("--account")
+    if idx + 1 >= len(args):
+        return "default"
+    return args[idx + 1].strip() or "default"
 
 
 def _parse_tool(args: list[str]) -> str | None:
@@ -371,17 +412,23 @@ def show_help():
 
 {BOLD}SETUP{RESET}
   Copy the {BOLD}sessionKey{RESET} cookie value from claude.ai in your browser, then:
-    claude-web-token-usage --set-cookie <value>
+    claude-web-token-usage --set-cookie <value> [--account <name>]
   Or export {BOLD}TOKSTAT_CLAUDE_AI_SESSION{RESET}=<value>.
 
+  Multiple accounts (e.g. perso + work) are supported. Each account
+  shows up as a separate row under CONSUMPTION BY PROJECT.
+
 {BOLD}MODES{RESET}
-  claude-web-token-usage                      Aggregated overview
-  claude-web-token-usage --prompts  [-p]      Per-exchange detail
-  claude-web-token-usage --anomalies          Anomaly detection
-  claude-web-token-usage --plan               Cost breakdown + tips
-  claude-web-token-usage --export   [file]    Export exchanges to JSON
-  claude-web-token-usage --set-cookie <v>     Store sessionKey cookie
-  claude-web-token-usage --clear-cookie       Forget sessionKey cookie
+  claude-web-token-usage                          Aggregated overview
+  claude-web-token-usage --prompts  [-p]          Per-exchange detail
+  claude-web-token-usage --anomalies              Anomaly detection
+  claude-web-token-usage --plan                   Cost breakdown + tips
+  claude-web-token-usage --export   [file]        Export exchanges to JSON
+  claude-web-token-usage --set-cookie <v>         Store sessionKey cookie
+                              [--account <name>]  ...for a named account
+  claude-web-token-usage --clear-cookie           Forget all accounts
+                              [--account <name>]  ...or just one
+  claude-web-token-usage --list-accounts          Show configured accounts
 
 {BOLD}FILTERS{RESET}
   --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
@@ -401,18 +448,35 @@ def cli():
         show_help()
         return
 
+    if "--list-accounts" in args:
+        accounts = get_accounts(_SERVICE)
+        if not accounts:
+            print(f"  {DIM}No claude.ai accounts configured.{RESET}")
+        else:
+            print(f"  {BOLD}claude.ai accounts:{RESET}")
+            for name in sorted(accounts.keys()):
+                print(f"    {MAGENTA}●{RESET} {name}")
+        return
+
     if "--set-cookie" in args:
         idx = args.index("--set-cookie")
         if idx + 1 >= len(args):
             print(f"  {RED}--set-cookie requires a value.{RESET}")
             sys.exit(1)
-        set_session(_SERVICE, args[idx + 1].strip())
-        print(f"  {BOLD}claude.ai{RESET} session cookie stored "
+        account = _parse_account(args)
+        set_session(_SERVICE, args[idx + 1].strip(), account=account)
+        print(f"  {BOLD}claude.ai{RESET} session cookie stored for account "
+              f"{BOLD}{account}{RESET} "
               f"({DIM}~/.config/tokstat/web-auth.json{RESET}).")
         return
     if "--clear-cookie" in args:
-        clear_session(_SERVICE)
-        print(f"  claude.ai session cookie cleared.")
+        if "--account" in args:
+            account = _parse_account(args)
+            clear_session(_SERVICE, account=account)
+            print(f"  claude.ai account {BOLD}{account}{RESET} cleared.")
+        else:
+            clear_session(_SERVICE)
+            print(f"  claude.ai: all accounts cleared.")
         return
 
     unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]

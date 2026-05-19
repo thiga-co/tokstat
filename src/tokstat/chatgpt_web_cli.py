@@ -33,7 +33,7 @@ from tokstat._core import (
     export_conversations, _parse_period, print_update_notice,
 )
 from tokstat._web import (
-    get_session, set_session, clear_session,
+    get_accounts, get_session, set_session, clear_session,
     http_get_json, cache_load, cache_save, cache_is_fresh,
     _CONFIG_PATH, _load_config, _save_config,
 )
@@ -43,17 +43,24 @@ TOOL_COLORS[TOOL_NAME] = GREEN
 
 _SERVICE = "chatgpt.com"
 _BASE    = "https://chatgpt.com"
-_PROJECT = "chatgpt.com (web)"
+
+
+def _project_label(account: str) -> str:
+    return f"chatgpt.com ({account})"
 
 
 # ─── Access-token cache ──────────────────────────────────────────────────────
 # We piggyback on the same web-auth.json file as the session cookie. Token
 # entry shape: {"chatgpt_access_token": "...", "chatgpt_access_token_exp": 0}
 
-def _load_access_token() -> str | None:
+def _tok_key(account: str) -> str:
+    return f"chatgpt_access_token__{account}"
+
+
+def _load_access_token(account: str) -> str | None:
     cfg = _load_config()
-    tok = cfg.get("chatgpt_access_token")
-    exp = cfg.get("chatgpt_access_token_exp") or 0
+    tok = cfg.get(_tok_key(account))
+    exp = cfg.get(_tok_key(account) + "_exp") or 0
     if not tok:
         return None
     if exp and time.time() > exp - 60:
@@ -61,66 +68,79 @@ def _load_access_token() -> str | None:
     return tok
 
 
-def _save_access_token(token: str, expires_at_epoch: float) -> None:
+def _save_access_token(account: str, token: str, expires_at_epoch: float) -> None:
     cfg = _load_config()
-    cfg["chatgpt_access_token"] = token
-    cfg["chatgpt_access_token_exp"] = int(expires_at_epoch)
+    cfg[_tok_key(account)] = token
+    cfg[_tok_key(account) + "_exp"] = int(expires_at_epoch)
     _save_config(cfg)
 
 
-def _cookie_header() -> str:
-    """Build the Cookie header. The chatgpt.com session token can be split
-    by NextAuth across `__Secure-next-auth.session-token.0` and `.1` when
-    it overflows 4 KB. We support both single-value and multi-part storage.
+def _clear_access_token(account: str | None = None) -> None:
+    cfg = _load_config()
+    if account is None:
+        for k in list(cfg.keys()):
+            if k.startswith("chatgpt_access_token__"):
+                cfg.pop(k, None)
+    else:
+        cfg.pop(_tok_key(account), None)
+        cfg.pop(_tok_key(account) + "_exp", None)
+    _save_config(cfg)
+
+
+def _cookie_header(account: str) -> str:
+    """Build the Cookie header for the given account. Supports a single
+    string, a list (NextAuth-split parts), or a pre-baked "name=val; ..."
+    string under the account entry.
     """
-    sess = get_session(_SERVICE)
+    sess = get_session(_SERVICE, account)
     if not sess:
         raise RuntimeError(
-            "No chatgpt.com session cookie configured. "
-            "Run: chatgpt-web-token-usage --set-cookie <value> [<value-part-1>]"
+            f"No chatgpt.com session cookie configured for account '{account}'. "
+            f"Run: chatgpt-web-token-usage --set-cookie <value-0> [<value-1>] "
+            f"[--account {account}]"
         )
     if isinstance(sess, list):
         parts = [(f"__Secure-next-auth.session-token.{i}", v.strip())
                  for i, v in enumerate(sess) if v]
     else:
-        # If the user pasted a raw "name=value; name=value" string, pass through.
         if "=" in sess and ";" in sess:
             return sess
         parts = [("__Secure-next-auth.session-token", sess.strip())]
     return "; ".join(f"{name}={val}" for name, val in parts)
 
 
-def _refresh_access_token() -> str:
+def _refresh_access_token(account: str) -> str:
     data = http_get_json(
         f"{_BASE}/api/auth/session",
-        headers={"Cookie": _cookie_header(),
+        headers={"Cookie": _cookie_header(account),
                  "Referer": f"{_BASE}/"},
     )
     if not data or not data.get("accessToken"):
-        raise RuntimeError("chatgpt.com /api/auth/session returned no access token "
-                           "— cookie likely expired; re-run --set-cookie.")
-    # `expires` is ISO 8601; epoch fallback if missing
+        raise RuntimeError(
+            f"chatgpt.com /api/auth/session returned no access token for "
+            f"account '{account}' — cookie likely expired; re-run --set-cookie."
+        )
     expires_str = data.get("expires") or ""
     try:
         epoch = datetime.fromisoformat(expires_str.replace("Z", "+00:00")).timestamp()
     except (ValueError, AttributeError):
         epoch = time.time() + 3600
-    _save_access_token(data["accessToken"], epoch)
+    _save_access_token(account, data["accessToken"], epoch)
     return data["accessToken"]
 
 
-def _bearer() -> str:
-    return _load_access_token() or _refresh_access_token()
+def _bearer(account: str) -> str:
+    return _load_access_token(account) or _refresh_access_token(account)
 
 
-def _auth_headers() -> dict:
-    return {"Authorization": f"Bearer {_bearer()}",
+def _auth_headers(account: str) -> dict:
+    return {"Authorization": f"Bearer {_bearer(account)}",
             "Referer": f"{_BASE}/"}
 
 
 # ─── Fetchers ────────────────────────────────────────────────────────────────
 
-def _list_conversations() -> list[dict]:
+def _list_conversations(account: str) -> list[dict]:
     items: list[dict] = []
     offset = 0
     page_size = 100
@@ -128,12 +148,11 @@ def _list_conversations() -> list[dict]:
         url = (f"{_BASE}/backend-api/conversations"
                f"?offset={offset}&limit={page_size}&order=updated")
         try:
-            data = http_get_json(url, headers=_auth_headers())
+            data = http_get_json(url, headers=_auth_headers(account))
         except RuntimeError as e:
-            # If we hit 401, force-refresh token once and retry.
             if "HTTP 401" in str(e) and offset == 0:
-                _refresh_access_token()
-                data = http_get_json(url, headers=_auth_headers())
+                _refresh_access_token(account)
+                data = http_get_json(url, headers=_auth_headers(account))
             else:
                 raise
         batch = (data or {}).get("items") or []
@@ -141,39 +160,58 @@ def _list_conversations() -> list[dict]:
         if len(batch) < page_size:
             break
         offset += page_size
-        if offset > 5000:  # safety
+        if offset > 5000:
             break
     return items
 
 
-def _get_conversation(conv_id: str) -> dict:
+def _get_conversation(account: str, conv_id: str) -> dict:
     return http_get_json(
         f"{_BASE}/backend-api/conversation/{conv_id}",
-        headers=_auth_headers(),
+        headers=_auth_headers(account),
     )
 
 
-def _sync_all() -> list[dict]:
-    entries = _list_conversations()
+def _cache_id(account: str, conv_id: str) -> str:
+    return f"{account}__{conv_id}"
+
+
+def _sync_account(account: str) -> list[dict]:
+    entries = _list_conversations(account)
     out: list[dict] = []
     for entry in entries:
         conv_id = entry.get("id")
         if not conv_id:
             continue
         updated = str(entry.get("update_time", ""))
-        cached = cache_load(_SERVICE, conv_id)
+        cache_id = _cache_id(account, conv_id)
+        cached = cache_load(_SERVICE, cache_id)
         if cache_is_fresh(cached, updated):
+            cached["_account"] = account
             out.append(cached)
             continue
         try:
-            detail = _get_conversation(conv_id)
+            detail = _get_conversation(account, conv_id)
         except Exception:
             if cached:
+                cached["_account"] = account
                 out.append(cached)
             continue
         detail["_updated_at"] = updated
-        cache_save(_SERVICE, conv_id, detail)
+        detail["_account"] = account
+        cache_save(_SERVICE, cache_id, detail)
         out.append(detail)
+    return out
+
+
+def _sync_all() -> list[dict]:
+    accounts = get_accounts(_SERVICE)
+    out: list[dict] = []
+    for name in sorted(accounts.keys()):
+        try:
+            out.extend(_sync_account(name))
+        except Exception as e:
+            print(f"  {RED}[{name}] {e}{RESET}", file=sys.stderr)
     return out
 
 
@@ -231,6 +269,7 @@ def _conv_messages(conv: dict) -> list[dict]:
 def _to_records(convs: list[dict]) -> list[dict]:
     records = []
     for conv in convs:
+        account = conv.get("_account") or "default"
         for msg in _conv_messages(conv):
             if msg["sender"] != "assistant":
                 continue
@@ -243,7 +282,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
             records.append({
                 "tool":    TOOL_NAME,
                 "model":   model,
-                "project": _PROJECT,
+                "project": _project_label(account),
                 "ts":      msg["ts"],
                 **tokens,
                 "cost":    compute_cost(tokens, msg["model"]),
@@ -252,7 +291,7 @@ def _to_records(convs: list[dict]) -> list[dict]:
 
 
 def scan_chatgpt_web() -> list[dict]:
-    if not get_session(_SERVICE):
+    if not get_accounts(_SERVICE):
         return []
     try:
         convs = _sync_all()
@@ -263,7 +302,7 @@ def scan_chatgpt_web() -> list[dict]:
 
 
 def _extract_exchanges_chatgpt_web() -> list[dict]:
-    if not get_session(_SERVICE):
+    if not get_accounts(_SERVICE):
         return []
     try:
         convs = _sync_all()
@@ -272,6 +311,8 @@ def _extract_exchanges_chatgpt_web() -> list[dict]:
 
     exchanges: list[dict] = []
     for conv in convs:
+        account = conv.get("_account") or "default"
+        project = _project_label(account)
         msgs = _conv_messages(conv)
         current = None
         for m in msgs:
@@ -285,7 +326,7 @@ def _extract_exchanges_chatgpt_web() -> list[dict]:
                     "tools_used":      defaultdict(int),
                     "num_turns":       0,
                     "model":           m["model"] + " [est]",
-                    "project":         _PROJECT,
+                    "project":         project,
                     "ts":              m["ts"],
                     "tokens":          {"input": max(len(m["text"]) // 4, 0),
                                         "output": 0,
@@ -337,14 +378,18 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     if PRICING:
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
 
-    if not get_session(_SERVICE):
+    accounts = get_accounts(_SERVICE)
+    if not accounts:
         print(f"\n  {YELLOW}No chatgpt.com session cookie configured.{RESET}")
         print(f"  Open chatgpt.com in a logged-in browser, DevTools → "
-              f"Application → Cookies → copy {BOLD}__Secure-next-auth.session-token{RESET}, then:\n")
-        print(f"    {BOLD}chatgpt-web-token-usage --set-cookie <value>{RESET}\n")
+              f"Application → Cookies → copy {BOLD}__Secure-next-auth.session-token{RESET}"
+              f" (or its .0 / .1 split), then:\n")
+        print(f"    {BOLD}chatgpt-web-token-usage --set-cookie <v0> [<v1>]"
+              f" [--account <name>]{RESET}\n")
         return
 
-    print(f"{DIM}  Syncing conversations from chatgpt.com...{RESET}\n")
+    names = ", ".join(sorted(accounts.keys()))
+    print(f"{DIM}  Syncing chatgpt.com accounts: {names}...{RESET}\n")
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
     except ValueError as e:
@@ -377,8 +422,17 @@ _TOOL_ALIASES = {"chatgpt": TOOL_NAME, "chatgpt.com": TOOL_NAME, "chatgpt-web": 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
-    "--set-cookie", "--clear-cookie",
+    "--set-cookie", "--clear-cookie", "--account", "--list-accounts",
 }
+
+
+def _parse_account(args: list[str]) -> str:
+    if "--account" not in args:
+        return "default"
+    idx = args.index("--account")
+    if idx + 1 >= len(args):
+        return "default"
+    return args[idx + 1].strip() or "default"
 
 
 def _parse_tool(args: list[str]) -> str | None:
@@ -403,19 +457,25 @@ def show_help():
   two cookies named {BOLD}.session-token.0{RESET} and {BOLD}.session-token.1{RESET}
   (NextAuth splits the token when it overflows 4 KB), pass {BOLD}both{RESET}:
 
-    chatgpt-web-token-usage --set-cookie <value-0> [<value-1>]
+    chatgpt-web-token-usage --set-cookie <value-0> [<value-1>] [--account <name>]
+
+  Multiple accounts (e.g. perso + work) are supported — each shows up as
+  a separate row under CONSUMPTION BY PROJECT.
 
   Or export {BOLD}TOKSTAT_CHATGPT_SESSION{RESET} = the raw Cookie header
-  string ("name=val; name=val") if you'd rather configure it that way.
+  string ("name=val; name=val") for a one-shot single-account run.
 
 {BOLD}MODES{RESET}
-  chatgpt-web-token-usage                      Aggregated overview
-  chatgpt-web-token-usage --prompts  [-p]      Per-exchange detail
-  chatgpt-web-token-usage --anomalies          Anomaly detection
-  chatgpt-web-token-usage --plan               Cost breakdown + tips
-  chatgpt-web-token-usage --export   [file]    Export exchanges to JSON
-  chatgpt-web-token-usage --set-cookie <v>     Store session cookie
-  chatgpt-web-token-usage --clear-cookie       Forget session cookie
+  chatgpt-web-token-usage                          Aggregated overview
+  chatgpt-web-token-usage --prompts  [-p]          Per-exchange detail
+  chatgpt-web-token-usage --anomalies              Anomaly detection
+  chatgpt-web-token-usage --plan                   Cost breakdown + tips
+  chatgpt-web-token-usage --export   [file]        Export exchanges to JSON
+  chatgpt-web-token-usage --set-cookie <v0> [<v1>] Store session cookie
+                              [--account <name>]   ...for a named account
+  chatgpt-web-token-usage --clear-cookie           Forget all accounts
+                              [--account <name>]   ...or just one
+  chatgpt-web-token-usage --list-accounts          Show configured accounts
 
 {BOLD}FILTERS{RESET}
   --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
@@ -435,35 +495,50 @@ def cli():
         show_help()
         return
 
+    if "--list-accounts" in args:
+        accounts = get_accounts(_SERVICE)
+        if not accounts:
+            print(f"  {DIM}No chatgpt.com accounts configured.{RESET}")
+        else:
+            print(f"  {BOLD}chatgpt.com accounts:{RESET}")
+            for name in sorted(accounts.keys()):
+                print(f"    {GREEN}●{RESET} {name}")
+        return
+
     if "--set-cookie" in args:
         idx = args.index("--set-cookie")
         if idx + 1 >= len(args):
             print(f"  {RED}--set-cookie requires a value.{RESET}")
             sys.exit(1)
-        # Accept an optional second positional value for the .1 part when
-        # NextAuth has split the token across two cookies.
-        part0 = args[idx + 1].strip()
-        part1 = (args[idx + 2].strip()
-                 if idx + 2 < len(args) and not args[idx + 2].startswith("-")
-                 else None)
-        value: object = [part0, part1] if part1 else part0
-        set_session(_SERVICE, value)
-        # Force a token refresh on the next run.
-        cfg = _load_config()
-        cfg.pop("chatgpt_access_token", None)
-        cfg.pop("chatgpt_access_token_exp", None)
-        _save_config(cfg)
-        parts_msg = "1 cookie" if part1 is None else "2 cookie parts (.0 + .1)"
-        print(f"  {BOLD}chatgpt.com{RESET} session stored — {parts_msg} "
+        account = _parse_account(args)
+        # Treat the value immediately following --set-cookie as part 0, and
+        # an optional second positional as part 1, ignoring --account/<name>.
+        positional: list[str] = []
+        i = idx + 1
+        while i < len(args) and not args[i].startswith("-"):
+            positional.append(args[i].strip())
+            i += 1
+        if not positional:
+            print(f"  {RED}--set-cookie requires at least one value.{RESET}")
+            sys.exit(1)
+        value: object = positional if len(positional) > 1 else positional[0]
+        set_session(_SERVICE, value, account=account)
+        _clear_access_token(account)  # force refresh next run
+        parts_msg = "1 cookie" if len(positional) == 1 else "2 cookie parts (.0 + .1)"
+        print(f"  {BOLD}chatgpt.com{RESET} session stored for account "
+              f"{BOLD}{account}{RESET} — {parts_msg} "
               f"({DIM}~/.config/tokstat/web-auth.json{RESET}).")
         return
     if "--clear-cookie" in args:
-        clear_session(_SERVICE)
-        cfg = _load_config()
-        cfg.pop("chatgpt_access_token", None)
-        cfg.pop("chatgpt_access_token_exp", None)
-        _save_config(cfg)
-        print(f"  chatgpt.com session cookie cleared.")
+        if "--account" in args:
+            account = _parse_account(args)
+            clear_session(_SERVICE, account=account)
+            _clear_access_token(account)
+            print(f"  chatgpt.com account {BOLD}{account}{RESET} cleared.")
+        else:
+            clear_session(_SERVICE)
+            _clear_access_token()
+            print(f"  chatgpt.com: all accounts cleared.")
         return
 
     unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]
