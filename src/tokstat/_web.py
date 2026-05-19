@@ -145,9 +145,23 @@ def http_get(url: str, *, headers: dict | None = None,
         return e.code, (e.read() or b""), dict(e.headers or {})
 
 
+class RateLimited(Exception):
+    """Raised when the server returned HTTP 429. `retry_after` is in seconds."""
+    def __init__(self, retry_after: float, body: bytes = b""):
+        super().__init__(f"HTTP 429 (retry after {retry_after:g}s)")
+        self.retry_after = retry_after
+        self.body = body
+
+
 def http_get_json(url: str, *, headers: dict | None = None,
                   timeout: float = 30.0) -> Any:
-    status, body, _ = http_get(url, headers=headers, timeout=timeout)
+    status, body, resp_headers = http_get(url, headers=headers, timeout=timeout)
+    if status == 429:
+        try:
+            retry_after = float(resp_headers.get("Retry-After", "0"))
+        except (ValueError, TypeError):
+            retry_after = 0.0
+        raise RateLimited(retry_after or 30.0, body)
     if status >= 400:
         raise RuntimeError(f"HTTP {status} fetching {url}: {body[:200]!r}")
     return json.loads(body.decode("utf-8", errors="replace") or "null")

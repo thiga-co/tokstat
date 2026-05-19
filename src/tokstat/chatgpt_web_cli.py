@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,6 +39,7 @@ from tokstat._web import (
     get_accounts, get_session, set_session, clear_session,
     http_get_json, cache_load, cache_save, cache_is_fresh,
     _CONFIG_PATH, _load_config, _save_config,
+    RateLimited,
 )
 
 TOOL_NAME = "ChatGPT"
@@ -186,7 +188,30 @@ def _list_conversations(account: str) -> list[dict]:
     return items
 
 
+# Global request throttle. ChatGPT's /backend-api/conversation/{id} endpoint
+# is tightly rate-limited (~a few req/s account-wide), so even one worker
+# triggers 429s without spacing. Defaults to one request every 2 s; override
+# via TOKSTAT_CHATGPT_MIN_INTERVAL.
+_MIN_INTERVAL = float(os.environ.get("TOKSTAT_CHATGPT_MIN_INTERVAL", "2.0"))
+_rate_lock = threading.Lock()
+_next_allowed_at = [0.0]
+
+
+def _throttle(extra_wait: float = 0.0) -> None:
+    """Block until the next request is allowed. `extra_wait` extends the
+    cooldown after a 429 — callers pass the Retry-After value here."""
+    with _rate_lock:
+        now = time.monotonic()
+        wait = _next_allowed_at[0] - now
+        if extra_wait > wait:
+            wait = extra_wait
+        if wait > 0:
+            time.sleep(wait)
+        _next_allowed_at[0] = time.monotonic() + _MIN_INTERVAL
+
+
 def _get_conversation(account: str, conv_id: str) -> dict:
+    _throttle()
     return http_get_json(
         f"{_BASE}/backend-api/conversation/{conv_id}",
         headers=_auth_headers(account),
@@ -194,13 +219,17 @@ def _get_conversation(account: str, conv_id: str) -> dict:
 
 
 def _get_conversation_with_retry(account: str, conv_id: str,
-                                 max_attempts: int = 4) -> dict:
-    """Same as _get_conversation but retries 429/5xx and 401 (after token
-    refresh) with exponential backoff. Lets 4xx-other propagate."""
+                                 max_attempts: int = 5) -> dict:
+    """Retries 429 (honoring Retry-After), 5xx, and 401 (after token refresh)
+    with exponential backoff. Lets 4xx-other propagate."""
     last_err: Exception | None = None
     for attempt in range(max_attempts):
         try:
             return _get_conversation(account, conv_id)
+        except RateLimited as e:
+            last_err = e
+            # Push the global cooldown so other workers also back off.
+            _throttle(extra_wait=max(e.retry_after, 5.0 * (attempt + 1)))
         except RuntimeError as e:
             msg = str(e)
             last_err = e
@@ -209,7 +238,7 @@ def _get_conversation_with_retry(account: str, conv_id: str,
                     _refresh_access_token(account)
                 except Exception:
                     pass
-            elif "HTTP 429" in msg or "HTTP 5" in msg:
+            elif "HTTP 5" in msg:
                 time.sleep(min(2 ** attempt, 8) + 0.25 * attempt)
             else:
                 raise
@@ -225,7 +254,9 @@ def _cache_id(account: str, conv_id: str) -> str:
     return f"{account}__{conv_id}"
 
 
-_MAX_WORKERS = int(os.environ.get("TOKSTAT_WEB_WORKERS", "8") or "8")
+# Few workers is fine: the global throttle (~1 req per _MIN_INTERVAL s) is
+# what actually paces the sync. Override with TOKSTAT_WEB_WORKERS.
+_MAX_WORKERS = int(os.environ.get("TOKSTAT_WEB_WORKERS", "2") or "2")
 
 
 def _sync_account(account: str) -> list[dict]:
@@ -568,6 +599,13 @@ def show_help():
 
   Or export {BOLD}TOKSTAT_CHATGPT_SESSION{RESET} = the raw Cookie header
   string ("name=val; name=val") for a one-shot single-account run.
+
+{BOLD}PACING{RESET}
+  /backend-api/conversation/{{id}} is rate-limited account-wide. tokstat
+  enforces a {BOLD}min interval of 2 s{RESET} between requests by default to
+  avoid 429s. Tune with {BOLD}TOKSTAT_CHATGPT_MIN_INTERVAL{RESET} (seconds) and
+  {BOLD}TOKSTAT_WEB_WORKERS{RESET} (default 2). Initial sync of ~1000 convs
+  takes ~30 min; subsequent runs only refetch what changed.
 
 {BOLD}MODES{RESET}
   chatgpt-web-token-usage                          Aggregated overview
