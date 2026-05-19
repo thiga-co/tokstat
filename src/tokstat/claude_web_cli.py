@@ -36,6 +36,7 @@ from tokstat._core import (
 )
 from tokstat._web import (
     cache_iter, cache_save, imported_accounts,
+    cache_orphans, clean_orphans,
 )
 
 TOOL_NAME = "Claude.ai"
@@ -289,7 +290,7 @@ _TOOL_ALIASES = {"claude.ai": TOOL_NAME, "claude-web": TOOL_NAME, "claudeai": TO
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--export", "--period", "--since", "--tool",
-    "--import", "--account", "--list-accounts",
+    "--import", "--account", "--list-accounts", "--clean-cache",
 }
 
 
@@ -380,6 +381,16 @@ def cli():
             print(f"  {BOLD}claude.ai imported accounts:{RESET}")
             for name in accs:
                 print(f"    {MAGENTA}●{RESET} {name}")
+        orphans = cache_orphans(_SERVICE)
+        if orphans:
+            print(f"  {DIM}{len(orphans)} orphan cache file(s) from older "
+                  f"versions — run --clean-cache to remove.{RESET}")
+        return
+
+    if "--clean-cache" in args:
+        n = clean_orphans(_SERVICE)
+        print(f"  Removed {BOLD}{n}{RESET} orphan cache file(s) from "
+              f"{DIM}~/.cache/tokstat/web/{_SERVICE}/{RESET}.")
         return
 
     unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]

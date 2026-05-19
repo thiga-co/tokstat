@@ -45,21 +45,24 @@ def cache_save(service: str, conv_id: str, data: dict) -> None:
 
 
 def cache_iter(service: str):
-    """Yield every cached conversation payload, tagging each with `_account`
-    decoded from its `<account>__<id>.json` filename."""
+    """Yield cached conversation payloads. Only files named
+    `<account>__<id>.json` are emitted — bare-uuid files from the
+    pre-multi-account scraper era are ignored to avoid double-counting
+    conversations that have since been re-imported under an account."""
     d = _CACHE_BASE / service
     if not d.exists():
         return
     for f in d.glob("*.json"):
+        if "__" not in f.stem:
+            continue
         try:
             data = json.loads(f.read_text(errors="replace"))
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(data, dict):
             continue
-        name = f.stem
-        if "__" in name and not data.get("_account"):
-            data["_account"] = name.split("__", 1)[0]
+        if not data.get("_account"):
+            data["_account"] = f.stem.split("__", 1)[0]
         yield data
 
 
@@ -70,7 +73,27 @@ def imported_accounts(service: str) -> list[str]:
         return []
     seen = set()
     for f in d.glob("*.json"):
-        name = f.stem
-        if "__" in name:
-            seen.add(name.split("__", 1)[0])
+        if "__" in f.stem:
+            seen.add(f.stem.split("__", 1)[0])
     return sorted(seen)
+
+
+def cache_orphans(service: str) -> list[Path]:
+    """Return bare-uuid cache files (no `<account>__` prefix). These are
+    leftovers from older versions that wrote conversations without
+    account namespacing — they're invisible to `cache_iter`."""
+    d = _CACHE_BASE / service
+    if not d.exists():
+        return []
+    return [f for f in d.glob("*.json") if "__" not in f.stem]
+
+
+def clean_orphans(service: str) -> int:
+    """Delete every orphaned (un-namespaced) cache file. Returns the count."""
+    orphans = cache_orphans(service)
+    for f in orphans:
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    return len(orphans)
