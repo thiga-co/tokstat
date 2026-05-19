@@ -230,6 +230,23 @@ def normalize_project(path: str) -> str:
         _worktree_cache[path] = synthetic
         return synthetic
 
+    # Collapse any deeper subdirectory whose ancestor is itself a known
+    # project. Catches patterns like
+    #   ~/Code/benchmark/results/20260423_212607/sonnet-4-6
+    # being attributed to ~/Code/benchmark when claude is launched from
+    # an output subdirectory.
+    p_obj = _Path(path)
+    best_ancestor: str | None = None
+    for ancestor in p_obj.parents:
+        a_str = str(ancestor)
+        if a_str in _all_known_paths and a_str != path:
+            # Prefer the deepest matching ancestor.
+            if best_ancestor is None or len(a_str) > len(best_ancestor):
+                best_ancestor = a_str
+    if best_ancestor:
+        _worktree_cache[path] = best_ancestor
+        return best_ancestor
+
     _worktree_cache[path] = path
     return path
 
