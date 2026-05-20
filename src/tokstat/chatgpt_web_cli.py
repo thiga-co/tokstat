@@ -49,16 +49,7 @@ _SERVICE = "chatgpt.com"
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _project_label(account: str, conv: dict | None = None) -> str:
-    """Per-conversation project label. Each ChatGPT chat shows up as its
-    own row under CONSUMPTION BY PROJECT, prefixed with the account so
-    multiple imported accounts stay distinguishable."""
-    if conv is None:
-        return f"chatgpt.com ({account})"
-    title = (conv.get("title") or "").strip() or "(untitled)"
-    if len(title) > 60:
-        title = title[:57] + "..."
-    prefix = "chatgpt" if account == "default" else f"chatgpt/{account}"
-    return f"{prefix}: {title}"
+    return f"chatgpt.com ({account})"
 
 
 def _cache_id(account: str, conv_id: str) -> str:
