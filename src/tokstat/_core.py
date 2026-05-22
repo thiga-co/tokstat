@@ -101,6 +101,35 @@ def add_bucket(a, b):
 ZERO_PRICE = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
 
+# Provider identification by model string — used by show_plan to recommend
+# the right subscription per provider rather than aggregating across all
+# vendors. Keep the keyword lists narrow to avoid false positives (e.g.
+# "claude-via-openrouter" should still be Anthropic).
+_PROVIDER_HINTS = (
+    ("Anthropic", ("claude",)),
+    ("OpenAI",    ("gpt", "o1-", "o3-", "o4-", "chatgpt", "davinci", "codex")),
+    ("Google",    ("gemini", "gemma")),
+    ("Local",     ("llama", "qwen", "mistral", "ministral", "glm", "kimi",
+                   "minimax", "nemotron", "grok", "ollama", "deepseek")),
+)
+
+
+def _model_provider(model_name: str) -> str:
+    """Return the upstream provider for a given model string.
+
+    Used to scope plan recommendations: spend on Anthropic models drives
+    the Anthropic plan reco, spend on OpenAI models the ChatGPT one, etc.
+    Returns "Other" when nothing matches.
+    """
+    if not model_name:
+        return "Other"
+    n = model_name.lower()
+    for provider, keywords in _PROVIDER_HINTS:
+        if any(k in n for k in keywords):
+            return provider
+    return "Other"
+
+
 def match_model(model_name: str) -> dict:
     if not model_name or not PRICING:
         return ZERO_PRICE
@@ -968,6 +997,63 @@ def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str 
 
 # ─── Shared display: plan ─────────────────────────────────────────────────
 
+def _reco_anthropic(mp: float) -> None:
+    """Print the Anthropic plan recommendation for `mp` $/month projected."""
+    head = f"    {BOLD}Anthropic (Claude){RESET} — "
+    proj = f"{DIM}{fmt_cost(mp)}/mo projected{RESET}"
+    if mp <= 5:
+        print(head + f"{GREEN}Free tier{RESET} covers it. {proj}")
+    elif mp <= 18:
+        print(head + f"{GREEN}Pro ($20/mo){RESET} covers it. {proj}")
+    elif mp <= 100:
+        if mp > 30:
+            print(head + f"{BYELLOW}Max 5x ($100/mo){RESET} recommended. {proj}")
+        else:
+            print(head + f"{GREEN}Pro ($20/mo){RESET} ok, approaching Max. {proj}")
+    elif mp <= 200:
+        print(head + f"{BYELLOW}Max 5x ($100/mo){RESET} or "
+              f"{BOLD}Max 20x ($200/mo){RESET} recommended. {proj}")
+        print(f"      {DIM}Max 5x saves ~{fmt_cost(mp - 100)}/mo vs API{RESET}")
+    else:
+        print(head + f"{BRED}Max 20x ($200/mo){RESET} strongly recommended. {proj}")
+        print(f"      {DIM}Saves ~{fmt_cost(mp - 200)}/mo vs API{RESET}")
+        if mp > 500:
+            print(f"      {BRED}Consider Enterprise / Team for volume{RESET}")
+
+
+def _reco_openai(mp: float) -> None:
+    """OpenAI side: ChatGPT (Plus/Pro) for chat usage, API for Codex etc."""
+    head = f"    {BOLD}OpenAI (GPT){RESET} — "
+    proj = f"{DIM}{fmt_cost(mp)}/mo projected{RESET}"
+    if mp <= 5:
+        print(head + f"{GREEN}Free tier{RESET} likely covers it. {proj}")
+    elif mp <= 20:
+        print(head + f"{GREEN}ChatGPT Plus ($20/mo){RESET} covers chat usage. {proj}")
+        print(f"      {DIM}For Codex/API: pay-per-token cheaper at this volume{RESET}")
+    elif mp <= 200:
+        print(head + f"{BYELLOW}ChatGPT Plus ($20/mo){RESET} or "
+              f"{BOLD}Pro ($200/mo){RESET} depending on usage type. {proj}")
+        print(f"      {DIM}Pro = higher ChatGPT quotas; Codex stays API-billed{RESET}")
+    else:
+        print(head + f"{BRED}ChatGPT Pro ($200/mo){RESET} for chat, "
+              f"API direct for Codex. {proj}")
+        if mp > 500:
+            print(f"      {DIM}Consider OpenAI Business / Enterprise{RESET}")
+
+
+def _reco_google(mp: float) -> None:
+    """Google side: Gemini Advanced for chat, API for Gemini CLI."""
+    head = f"    {BOLD}Google (Gemini){RESET} — "
+    proj = f"{DIM}{fmt_cost(mp)}/mo projected{RESET}"
+    if mp <= 5:
+        print(head + f"{GREEN}Free tier{RESET} covers it. {proj}")
+    elif mp <= 20:
+        print(head + f"{GREEN}Gemini Advanced ($20/mo){RESET} covers chat. {proj}")
+    else:
+        print(head + f"{BYELLOW}Gemini Advanced{RESET} for chat, "
+              f"API for Gemini CLI. {proj}")
+
+
 def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
     """Recommend plan and optimization strategies based on usage patterns."""
     print(f"\n{BOLD} Plan & Optimization Recommendations{RESET}")
@@ -1026,10 +1112,13 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
 
         model_costs = defaultdict(float)
         model_calls = defaultdict(int)
+        provider_costs = defaultdict(float)
         for e in period_exs:
             m = e.get("model") or "?"
-            model_costs[m] += e.get("cost", 0)
+            cost = e.get("cost", 0)
+            model_costs[m] += cost
             model_calls[m] += 1
+            provider_costs[_model_provider(m)] += cost
 
         daily_costs_map = defaultdict(float)
         for e in period_exs:
@@ -1057,6 +1146,7 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
             "total_output": total_output,
             "total_cache_r": total_cache_r, "total_cache_w": total_cache_w,
             "model_costs": model_costs, "model_calls": model_calls,
+            "provider_costs": dict(provider_costs),
             "max_daily": max_daily,
             "high_cost_prompts": len(high_cost_prompts),
             "heavy_tool_prompts": len(heavy_tool_prompts),
@@ -1091,31 +1181,29 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
     print_table(headers, rows, aligns)
     print()
 
-    mp = a["monthly_projected"]
+    # ─── Plan recommendation, scoped per upstream provider ─────────────
     print(f"  {BOLD}Plan{RESET} {DIM}(based on {pname}){RESET}")
     print(f"  {'─' * 60}")
-    if mp <= 5:
-        print(f"    {GREEN}Free tier{RESET} covers your usage.")
-        print(f"    {DIM}Projected: {fmt_cost(mp)}/mo vs $5 included{RESET}")
-    elif mp <= 18:
-        print(f"    {GREEN}Pro ($20/mo){RESET} covers your usage.")
-        print(f"    {DIM}Projected: {fmt_cost(mp)}/mo vs ~$18 included{RESET}")
-    elif mp <= 100:
-        if mp > 30:
-            print(f"    {BYELLOW}Max 5x ($100/mo){RESET} recommended.")
-            print(f"    {DIM}Projected API cost: {fmt_cost(mp)}/mo — Pro ($20) would be exceeded{RESET}")
+    provider_costs = a["provider_costs"]
+    # Skip Local (no subscription) and providers with negligible spend.
+    relevant = sorted(
+        ((p, c) for p, c in provider_costs.items()
+         if p in ("Anthropic", "OpenAI", "Google", "Other") and c > 0.10),
+        key=lambda x: -x[1],
+    )
+    if not relevant:
+        print(f"    {DIM}No billable usage (local models / zero-cost only).{RESET}\n")
+    for provider, total in relevant:
+        mp = total / a["days_span"] * 30
+        if provider == "Anthropic":
+            _reco_anthropic(mp)
+        elif provider == "OpenAI":
+            _reco_openai(mp)
+        elif provider == "Google":
+            _reco_google(mp)
         else:
-            print(f"    {GREEN}Pro ($20/mo){RESET} still reasonable, approaching Max territory.")
-            print(f"    {DIM}Projected: {fmt_cost(mp)}/mo{RESET}")
-    elif mp <= 200:
-        print(f"    {BYELLOW}Max 5x ($100/mo){RESET} or {BOLD}Max 20x ($200/mo){RESET} recommended.")
-        print(f"    {DIM}Projected API cost: {fmt_cost(mp)}/mo{RESET}")
-        print(f"    {DIM}Max 5x saves ~{fmt_cost(mp - 100)}/mo vs API pricing{RESET}")
-    else:
-        print(f"    {BRED}Max 20x ($200/mo){RESET} strongly recommended.")
-        print(f"    {DIM}Projected API cost: {fmt_cost(mp)}/mo — you'd save ~{fmt_cost(mp - 200)}/mo{RESET}")
-        if mp > 500:
-            print(f"    {BRED}Consider Enterprise or Team + Max for volume discount{RESET}")
+            print(f"    {BOLD}{provider}{RESET}: "
+                  f"{fmt_cost(mp)}/mo projected ({fmt_cost(total)} in period)")
     print()
 
     alerts = []
