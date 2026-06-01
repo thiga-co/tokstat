@@ -2,7 +2,7 @@
 
 CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each tool scans local data, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints color-coded terminal tables.
 
-> On our test account, Tokstat’s estimation matched Anthropic billing with approximately 95% accuracy over 30 days of usage. That said, Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
+> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Gemini CLI and opencode read exact token counts, while Cursor, Kiro and the web exports are estimated. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
 
 ## Installation
 
@@ -54,6 +54,15 @@ The two web tools work from the **official data export** each provider lets you 
 
 Multiple accounts (perso + work) can coexist — add `--account <name>` on each `--import`. Each shows up as a separate row under **CONSUMPTION BY PROJECT**.
 
+Cache management for the web tools:
+
+```sh
+claude-web-token-usage  --list-accounts          # show imported accounts
+chatgpt-web-token-usage --clear-imports          # drop all imported conversations
+chatgpt-web-token-usage --clear-imports --account work
+chatgpt-web-token-usage --clean-cache            # drop legacy pre-import cache files
+```
+
 Token counts are **estimated** from message text length (`chars / 4`); models shown carry a `[est]` suffix. Real billing may differ.
 
 ## Modes
@@ -64,9 +73,25 @@ All tools support the same modes:
 <tool>                          # Aggregated overview (period, project, model, speed)
 <tool> --prompts   [-p]         # Per-exchange detail (text, turns, tokens, tools, cost)
 <tool> --anomalies              # Technical anomaly detection
-<tool> --plan                   # Cost breakdown + plan recommendation
+<tool> --plan                   # Cost breakdown + per-provider plan recommendation
 <tool> --export    [file.json]  # Export all exchanges to JSON
+<tool> --version   [-V]         # Print version
+<tool> --help      [-h]         # Usage
 ```
+
+The overview, project, and model tables include **Prompts** (user inputs),
+**Turns** (assistant turns per exchange), and **API** (raw API calls) columns,
+plus a **GRAND TOTAL** block with the rolling-hour token rate and the active
+agents.
+
+`tokstat` additionally supports a live mode:
+
+```sh
+tokstat --watch        [-w]     # Refresh the overview in place (default 5s)
+tokstat --watch 10              # ...every 10 seconds
+```
+
+Changed rows are flagged with a ◆ between refreshes; press Ctrl+C to stop.
 
 ### Default — aggregated overview
 
@@ -109,25 +134,29 @@ Thresholds are computed dynamically from your own data (median, P90).
 
 ### `--plan` — plan & optimization recommendations
 
-Cost breakdown by model, plan recommendation, and data-driven optimization advice.
+Cost breakdown by model, a plan recommendation **per upstream provider**
+(Anthropic, OpenAI, Google — local/no-cost models are ignored), and
+data-driven optimization advice. With `tokstat` this spans every tool; with a
+per-tool command it's scoped to that one.
 
 ```sh
-claude-token-usage --plan
+tokstat --plan --period "30 days"
 claude-token-usage --plan --period all
 ```
 
 ```
-  All time — 17 active days / 30
+  Last 30 days — 21 active days / 30
 
   Model              Calls     Cost   Avg/day  Projected/mo  Cache  Share
   ─────────────────  ─────  ───────  ────────  ────────────  ─────  ─────
-  claude-opus-4-6      321  $475.19  $15.84/d    $475.19/mo    96%   100%
-  claude-sonnet-4-6      8   $0.811  $0.027/d     $0.811/mo    96%     0%
-  TOTAL                329  $476.00  $15.87/d    $476.00/mo    96%
+  gpt-5.5 [xhigh]     1132  $783.28   $26.11/d    $783.28/mo    98%    51%
+  claude-opus-4-7      298  $277.99    $9.27/d    $277.99/mo    98%    18%
+  ...
+  TOTAL               1176  $1290.51  $44.50/d   $1335.01/mo    98%
 
-  Plan (based on All time)
-    Max 20x ($200/mo) strongly recommended.
-    Projected API cost: $476.00/mo — you'd save ~$276.00/mo
+  Plan (based on Last 30 days)
+    OpenAI (GPT)        — ChatGPT Pro ($200/mo) for chat, API direct for Codex. $1056.32/mo projected
+    Anthropic (Claude)  — Max 20x ($200/mo) strongly recommended. $277.99/mo projected
 ```
 
 ### `--export` — conversation export
@@ -160,6 +189,10 @@ All modes support `--period`:
 --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
                      default: today — partial match works ("7" = "Last 7 days")
 ```
+
+With `--period all`, the **CONSUMPTION BY PERIOD** table shows every window from
+*Last hour* through *Last year*, plus a **Forever** row aggregating the entire
+available history.
 
 ## Pricing
 
