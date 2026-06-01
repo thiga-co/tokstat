@@ -1148,7 +1148,6 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
         days_span = max(1, min(data_span, period_span) if data_span > 0 else period_span)
 
         daily_cost = total_cost / days_span
-        monthly_projected = daily_cost * 30
         api_calls   = len(period_exs)
         daily_calls = api_calls / days_span
         active_days = len(set(e["ts"].strftime("%Y-%m-%d") for e in period_exs))
@@ -1156,15 +1155,32 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
         cache_ratio = (total_cache_r / (total_cache_r + total_cache_w)
                        if (total_cache_r + total_cache_w) > 0 else 0)
 
+        # Monthly projection: base it on the most recent 30 days of *data*
+        # rather than the whole calendar span. Over a long --period all
+        # (e.g. a 3-year chat export) dividing by ~1200 days produces an
+        # absurdly low figure that understates real recent spend.
+        recent_cutoff = last_ts - timedelta(days=30)
+        recent_exs = [e for e in period_exs if e["ts"] >= recent_cutoff]
+        recent_days = max(1, min(30, (last_ts - min(e["ts"] for e in recent_exs)).days + 1)) \
+            if recent_exs else 1
+        recent_cost = sum(e.get("cost", 0) for e in recent_exs)
+        monthly_projected = recent_cost / recent_days * 30
+
         model_costs = defaultdict(float)
         model_calls = defaultdict(int)
+        model_cache = defaultdict(lambda: [0, 0])  # model -> [cache_r, cache_w]
         provider_costs = defaultdict(float)
+        provider_recent = defaultdict(float)
         for e in period_exs:
             m = e.get("model") or "?"
             cost = e.get("cost", 0)
             model_costs[m] += cost
             model_calls[m] += 1
+            model_cache[m][0] += e["tokens"]["cache_read"]
+            model_cache[m][1] += e["tokens"]["cache_write"]
             provider_costs[_model_provider(m)] += cost
+        for e in recent_exs:
+            provider_recent[_model_provider(e.get("model") or "?")] += e.get("cost", 0)
 
         daily_costs_map = defaultdict(float)
         for e in period_exs:
@@ -1192,7 +1208,10 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
             "total_output": total_output,
             "total_cache_r": total_cache_r, "total_cache_w": total_cache_w,
             "model_costs": model_costs, "model_calls": model_calls,
+            "model_cache": {m: tuple(v) for m, v in model_cache.items()},
             "provider_costs": dict(provider_costs),
+            "provider_recent": dict(provider_recent),
+            "recent_days": recent_days,
             "max_daily": max_daily,
             "high_cost_prompts": len(high_cost_prompts),
             "heavy_tool_prompts": len(heavy_tool_prompts),
@@ -1216,9 +1235,11 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
         calls = a["model_calls"][model]
         share = mc / a["total_cost"] * 100 if a["total_cost"] else 0
         daily = mc / a["days_span"]
+        cr, cw = a["model_cache"].get(model, (0, 0))
+        m_cache = f"{cr / (cr + cw) * 100:.0f}%" if (cr + cw) > 0 else "—"
         rows.append([model, str(calls), fmt_cost(mc),
                      f"{fmt_cost(daily)}/d", f"{fmt_cost(daily*30)}/mo",
-                     f"{a['cache_ratio']*100:.0f}%", f"{share:.0f}%"])
+                     m_cache, f"{share:.0f}%"])
     rows.append([f"{BOLD}TOTAL{RESET}", f"{BOLD}{a['api_calls']}{RESET}",
                  f"{BOLD}{fmt_cost(a['total_cost'])}{RESET}",
                  f"{BOLD}{fmt_cost(a['daily_cost'])}/d{RESET}",
@@ -1228,19 +1249,23 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
     print()
 
     # ─── Plan recommendation, scoped per upstream provider ─────────────
-    print(f"  {BOLD}Plan{RESET} {DIM}(based on {pname}){RESET}")
+    # Projections use spend over the most recent 30 days of data, so a long
+    # historical period doesn't dilute the recommendation.
+    print(f"  {BOLD}Plan{RESET} {DIM}(projected from last {a['recent_days']}d of activity){RESET}")
     print(f"  {'─' * 60}")
-    provider_costs = a["provider_costs"]
+    provider_recent = a["provider_recent"]
+    recent_days = a["recent_days"]
     # Skip Local (no subscription) and providers with negligible spend.
     relevant = sorted(
-        ((p, c) for p, c in provider_costs.items()
+        ((p, c) for p, c in provider_recent.items()
          if p in ("Anthropic", "OpenAI", "Google", "Other") and c > 0.10),
         key=lambda x: -x[1],
     )
     if not relevant:
-        print(f"    {DIM}No billable usage (local models / zero-cost only).{RESET}\n")
-    for provider, total in relevant:
-        mp = total / a["days_span"] * 30
+        print(f"    {DIM}No billable usage in the recent window "
+              f"(local models / zero-cost only).{RESET}\n")
+    for provider, recent in relevant:
+        mp = recent / recent_days * 30
         if provider == "Anthropic":
             _reco_anthropic(mp)
         elif provider == "OpenAI":
@@ -1248,8 +1273,7 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
         elif provider == "Google":
             _reco_google(mp)
         else:
-            print(f"    {BOLD}{provider}{RESET}: "
-                  f"{fmt_cost(mp)}/mo projected ({fmt_cost(total)} in period)")
+            print(f"    {BOLD}{provider}{RESET}: {fmt_cost(mp)}/mo projected")
     print()
 
     alerts = []
