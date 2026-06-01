@@ -891,12 +891,38 @@ def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str 
         print(f"  {YELLOW}No token data found in exchanges.{RESET}\n")
         return
 
-    costs  = [p["cost"] for p in all_prompts if p["cost"] > 0]
-    turns  = [p["num_turns"] for p in all_prompts if p["num_turns"] > 0]
-    median_cost  = sorted(costs)[len(costs) // 2] if costs else 0
-    median_turns = sorted(turns)[len(turns) // 2] if turns else 1
-    p90_cost  = sorted(costs)[min(len(costs) - 1, len(costs) * 9 // 10)] if costs else 0
-    p90_turns = sorted(turns)[min(len(turns) - 1, len(turns) * 9 // 10)] if turns else 1
+    # Thresholds (cost / turns medians and P90) are computed PER TOOL.
+    # Mixing e.g. Claude Code (cache-heavy, costly) with web-export ChatGPT
+    # (output-only, near-zero estimated cost) into one global median makes
+    # every tool's anomaly bar wrong. A "10x median Codex prompt" should be
+    # judged against Codex, not against the whole fleet.
+    def _stats(values, default=0):
+        if not values:
+            return default, default
+        s = sorted(values)
+        med = s[len(s) // 2]
+        p90 = s[min(len(s) - 1, len(s) * 9 // 10)]
+        return med, p90
+
+    per_tool_stats: dict[str, dict] = {}
+    by_tool = defaultdict(list)
+    for p in all_prompts:
+        by_tool[p.get("tool", "?")].append(p)
+    for tname, prompts in by_tool.items():
+        c_med, c_p90 = _stats([p["cost"] for p in prompts if p["cost"] > 0])
+        t_med, t_p90 = _stats([p["num_turns"] for p in prompts if p["num_turns"] > 0], 1)
+        # Input/output ratio is structural per tool — Codex routinely sends
+        # huge inputs for tiny outputs. Flag "context bloat" only when a
+        # prompt is an outlier *for its own tool*, not against a fixed 50:1.
+        ratios = [p["tokens"]["input"] / p["tokens"]["output"]
+                  for p in prompts
+                  if p["tokens"]["input"] > 10_000 and p["tokens"]["output"] > 0]
+        _, r_p90 = _stats(ratios)
+        per_tool_stats[tname] = {
+            "median_cost": c_med or 0, "p90_cost": c_p90 or 0,
+            "median_turns": t_med or 1, "p90_turns": t_p90 or 1,
+            "p90_ratio": r_p90 or 0,
+        }
 
     _warm_worktree_cache(set(p.get("project") or "unknown" for p in all_prompts))
 
@@ -904,6 +930,12 @@ def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str 
 
     for p in all_prompts:
         tool_name = p.get("tool", "?")
+        st = per_tool_stats.get(tool_name, {})
+        median_cost  = st.get("median_cost", 0)
+        p90_cost     = st.get("p90_cost", 0)
+        median_turns = st.get("median_turns", 1)
+        p90_turns    = st.get("p90_turns", 1)
+        p90_ratio    = st.get("p90_ratio", 0)
         model = p.get("model") or "?"
         project = normalize_project(p.get("project") or "unknown")
         ts = p["ts"]
@@ -916,35 +948,49 @@ def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str 
         def _add(sev, atype, detail):
             anomalies.append((sev, atype, detail, project, tool_name, model, ts, prompt_short))
 
+        def _x_median(value, med):
+            return f"{value/med:.0f}x median" if med > 0 else "no baseline"
+
         if p["cost"] > 0 and p90_cost > 0 and p["cost"] > p90_cost * 10:
-            _add("high", "Runaway cost", f"{fmt_cost(p['cost'])} ({p['cost']/median_cost:.0f}x median)")
+            _add("high", "Runaway cost", f"{fmt_cost(p['cost'])} ({_x_median(p['cost'], median_cost)})")
         elif p["cost"] > 0 and p90_cost > 0 and p["cost"] > p90_cost * 5:
-            _add("medium", "High cost", f"{fmt_cost(p['cost'])} ({p['cost']/median_cost:.0f}x median)")
+            _add("medium", "High cost", f"{fmt_cost(p['cost'])} ({_x_median(p['cost'], median_cost)})")
         if total_tools > 30:
             _add("high" if total_tools > 60 else "medium", "Tool storm", f"{total_tools} tool calls")
         if p["num_turns"] > 0 and p90_turns > 0 and p["num_turns"] > p90_turns * 5:
             _add("high" if p["num_turns"] > p90_turns * 10 else "medium", "Turn spiral",
-                 f"{p['num_turns']} turns ({p['num_turns']/median_turns:.0f}x median)")
+                 f"{p['num_turns']} turns ({_x_median(p['num_turns'], median_turns)})")
         if tok["cache_write"] > 50_000 and tok["cache_read"] < tok["cache_write"] * 0.5:
             ratio = tok["cache_read"] / tok["cache_write"] if tok["cache_write"] > 0 else 0
             _add("medium", "Cache thrashing",
                  f"{fmt_tokens(tok['cache_write'])} written, only {ratio:.0%} read back")
-        if tok["input"] > 10_000 and tok["output"] > 0 and tok["input"] / tok["output"] > 50:
+        # Context bloat: outlier vs this tool's own P90 ratio (and >2x it),
+        # so a tool that's always input-heavy doesn't flag every prompt.
+        if (tok["input"] > 10_000 and tok["output"] > 0 and p90_ratio > 0
+                and tok["input"] / tok["output"] > max(p90_ratio * 2, 50)):
             _add("low", "Context bloat",
                  f"{fmt_tokens(tok['input'])} in / {fmt_tokens(tok['output'])} out "
-                 f"(ratio {tok['input']/tok['output']:.0f}:1)")
+                 f"(ratio {tok['input']/tok['output']:.0f}:1, tool P90 {p90_ratio:.0f}:1)")
         if p["num_turns"] > 5 and tok["output"] < 100:
             _add("medium", "Empty exchange",
                  f"{p['num_turns']} turns but only {tok['output']} output tokens")
 
+    def _stats_summary() -> str:
+        parts = []
+        for tname in sorted(per_tool_stats, key=lambda t: -len(by_tool[t])):
+            st = per_tool_stats[tname]
+            parts.append(f"{tname}: med {fmt_cost(st['median_cost'])} / "
+                         f"P90 {fmt_cost(st['p90_cost'])}")
+        return "  ·  ".join(parts)
+
     if not anomalies:
         print(f"  {DIM}No anomalies detected.{RESET}")
-        print(f"  {DIM}Stats: {len(all_prompts)} exchanges, median cost {fmt_cost(median_cost)}, "
-              f"P90 cost {fmt_cost(p90_cost)}{RESET}\n")
+        print(f"  {DIM}{len(all_prompts)} exchanges — per-tool cost baseline: "
+              f"{_stats_summary()}{RESET}\n")
         return
 
-    print(f"  {DIM}{len(all_prompts)} exchanges analyzed — median cost {fmt_cost(median_cost)}, "
-          f"P90 {fmt_cost(p90_cost)}, median turns {median_turns}, P90 turns {p90_turns}{RESET}\n")
+    print(f"  {DIM}{len(all_prompts)} exchanges analyzed (thresholds per tool) — "
+          f"{_stats_summary()}{RESET}\n")
 
     by_project = defaultdict(list)
     for a in anomalies:

@@ -122,15 +122,18 @@ claude-token-usage --anomalies --period "30 days"
 
 | Anomaly | Trigger | Severity |
 |---------|---------|----------|
-| Runaway cost | Prompt costs 10x+ the P90 | HIGH |
-| High cost | Prompt costs 5x+ the P90 | MEDIUM |
+| Runaway cost | Prompt costs 10x+ the tool's P90 | HIGH |
+| High cost | Prompt costs 5x+ the tool's P90 | MEDIUM |
 | Tool storm | 30+ tool calls in a single prompt | HIGH >60, MEDIUM >30 |
-| Turn spiral | API turns 5x+ the P90 | HIGH >10x, MEDIUM >5x |
+| Turn spiral | API turns 5x+ the tool's P90 | HIGH >10x, MEDIUM >5x |
 | Cache thrashing | High cache writes with <50% read-back | MEDIUM |
-| Context bloat | Input/output ratio >50:1 with >10K input | LOW |
+| Context bloat | Input/output ratio 2x+ the tool's P90 (min 50:1) | LOW |
 | Empty exchange | 5+ turns but <100 output tokens | MEDIUM |
 
-Thresholds are computed dynamically from your own data (median, P90).
+Thresholds are computed dynamically **per tool** (median, P90) — a costly
+Codex prompt is judged against Codex, not against the whole fleet — so
+structurally input-heavy or expensive tools don't drown the report in
+false positives.
 
 ### `--plan` — plan & optimization recommendations
 
