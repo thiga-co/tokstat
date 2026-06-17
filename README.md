@@ -19,7 +19,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `tokstat` | **all of the below** | combined | mixed | ✓ | new |
 | `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | stable |
-| `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | ✓ exact / n.a. | ~ | stable |
+| `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | ✓ exact / n.a. | ✓ / n.a. | stable |
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ✗ activity only | ✗ | stable |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
