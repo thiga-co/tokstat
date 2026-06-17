@@ -148,6 +148,24 @@ Codex prompt is judged against Codex, not against the whole fleet — so
 structurally input-heavy or expensive tools don't drown the report in
 false positives.
 
+### `--activity` — activity calendar
+
+A GitHub-style contribution calendar: one cell per day, colored by prompts/day,
+with a summary of total prompts / turns / tokens and the busiest day.
+
+```sh
+tokstat --activity --period all
+tokstat --activity --tool claude --period "30 days"
+```
+
+> **⚠️ History depth depends on each tool's retention.** tokstat can only show
+> days whose transcripts are still on disk. **Claude Code prunes its transcripts
+> after `cleanupPeriodDays` (default 30 days)** — so by default the Claude
+> activity calendar goes back ~30 days only, and older days are gone for good.
+> To keep more, raise the limit in `~/.claude/settings.json`, e.g.
+> `{ "cleanupPeriodDays": 365 }`. Codex, by contrast, keeps all sessions (no
+> automatic cleanup).
+
 ### `--plan` — plan & optimization recommendations
 
 Cost breakdown by model, a plan recommendation **per upstream provider**
