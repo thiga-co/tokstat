@@ -204,6 +204,20 @@ def scan_speed_codex() -> list[dict]:
     return results
 
 
+# Codex stores several synthetic messages with role=user that aren't real
+# prompts: environment/context injections, shell-command echoes, AGENTS.md
+# instructions, etc. They must not be counted as exchanges.
+_CODEX_SYNTHETIC_PREFIXES = (
+    "<environment_context>", "<user_shell_command>", "<user_instructions>",
+    "<context>", "# AGENTS.md", "<editor_context>", "<attached_files>",
+)
+
+
+def _is_synthetic_user_text(text: str) -> bool:
+    t = (text or "").lstrip()
+    return any(t.startswith(p) for p in _CODEX_SYNTHETIC_PREFIXES)
+
+
 def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
     """Parse a Codex rollout JSONL transcript into exchanges."""
     try:
@@ -259,13 +273,18 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 current_cwd = payload["cwd"]
 
         elif rec_type == "response_item" and payload.get("role") == "user":
-            if current:
-                exchanges.append(current)
             text = ""
             for c in payload.get("content", []):
                 if isinstance(c, dict) and c.get("type") == "input_text":
                     text = c.get("text", "").strip()
                     break
+            # Skip Codex's synthetic context/shell/AGENTS injections — they
+            # carry role=user but aren't real prompts. Tokens from later
+            # turn_context turns still accrue to the current real exchange.
+            if _is_synthetic_user_text(text):
+                continue
+            if current:
+                exchanges.append(current)
             current = {
                 "user_text": text, "assistant_texts": [], "tool_errors": [],
                 "tools_used": {}, "num_turns": 0,
