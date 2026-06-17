@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **unreleased** — `--activity` mode: a GitHub-style contribution calendar of daily activity over the period, colored by prompts/day, with total prompts / turns / tokens and the busiest day.
 - **1.5.1** — Codex token accounting fixed (cached input and reasoning tokens no longer double-counted); Cursor rewritten onto its SQLite store (exact counts where recorded, `⚠ no data` otherwise — never estimated); Kiro rewritten onto its per-session format (activity only); `⚠ no data` flag for rows without reliable token data; per-tool anomaly thresholds; per-provider plan recommendations. codex / cursor / kiro promoted to stable.
 - **1.5.0** — Unified `tokstat` command across all tools; `--watch` live mode; Prompts / Turns / API columns + GRAND TOTAL block; added `opencode-token-usage`, `claude-web-token-usage`, `chatgpt-web-token-usage` (official-export import).
 - **1.4.x** — `--version` flag; subagent sessions included in the Claude Code scan; update-check fix.
@@ -83,6 +84,7 @@ All tools support the same modes:
 <tool>                          # Aggregated overview (period, project, model, speed)
 <tool> --prompts   [-p]         # Per-exchange detail (text, turns, tokens, tools, cost)
 <tool> --anomalies              # Technical anomaly detection
+<tool> --activity               # GitHub-style activity calendar (by day) + tokens
 <tool> --plan                   # Cost breakdown + per-provider plan recommendation
 <tool> --export    [file.json]  # Export all exchanges to JSON
 <tool> --version   [-V]         # Print version

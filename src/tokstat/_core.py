@@ -1406,6 +1406,133 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
     print()
 
 
+# ─── Shared display: activity calendar ────────────────────────────────────
+
+# GitHub-style 5-level intensity ramp (256-color greens, dark → bright).
+_ACTIVITY_COLORS = ("\033[38;5;238m", "\033[38;5;22m", "\033[38;5;28m",
+                    "\033[38;5;34m", "\033[38;5;40m")
+_ACTIVITY_GLYPH = "■"
+
+
+def _activity_level(count: int, thresholds: list[int]) -> int:
+    """Map a daily count to a 0-4 intensity level using precomputed thresholds."""
+    if count <= 0:
+        return 0
+    for i, t in enumerate(thresholds):
+        if count <= t:
+            return i + 1
+    return 4
+
+
+def show_activity(collect_fn, period_name: str | None = None,
+                  tool_filter: str | None = None):
+    """Render a GitHub-style contribution calendar of activity over the period.
+
+    Cells are colored by the number of prompts per day; the summary reports
+    total prompts, turns and tokens. Respects --period and --tool.
+    """
+    print(f"\n{BOLD} Activity Overview{RESET}")
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+
+    try:
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+
+    label = f"  Period: {BOLD}{period_label}{RESET}"
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
+    print(label + "\n")
+
+    all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_exchanges = [e for e in all_exchanges if e.get("ts")]
+    if not all_exchanges:
+        print(f"  {YELLOW}No activity found.{RESET}\n")
+        return
+
+    # Per-day aggregation (local date).
+    day_prompts: dict[str, int] = defaultdict(int)
+    day_turns:   dict[str, int] = defaultdict(int)
+    day_tokens:  dict[str, int] = defaultdict(int)
+    for e in all_exchanges:
+        d = e["ts"].astimezone().strftime("%Y-%m-%d")
+        day_prompts[d] += 1
+        day_turns[d]   += e.get("num_turns", 0) or 0
+        tok = e.get("tokens") or {}
+        day_tokens[d]  += (tok.get("input", 0) + tok.get("output", 0)
+                           + tok.get("cache_read", 0) + tok.get("cache_write", 0))
+
+    # Date range: clamp to the data, but no more than ~53 weeks (GitHub width).
+    from datetime import date as _date, timedelta as _td
+    first = min(e["ts"].astimezone() for e in all_exchanges).date()
+    last  = max(e["ts"].astimezone() for e in all_exchanges).date()
+    max_span = _td(weeks=53)
+    if last - first > max_span:
+        first = last - max_span
+
+    # Align the grid to start on a Monday (rows Mon..Sun, columns = weeks).
+    grid_start = first - _td(days=first.weekday())
+    grid_end   = last + _td(days=(6 - last.weekday()))
+    n_weeks = ((grid_end - grid_start).days // 7) + 1
+
+    # Intensity thresholds from the nonzero daily prompt counts (quartiles).
+    counts = sorted(c for c in day_prompts.values() if c > 0)
+    if counts:
+        def q(p):
+            return counts[min(len(counts) - 1, int(len(counts) * p))]
+        thresholds = [max(1, q(0.25)), max(2, q(0.50)), max(3, q(0.75))]
+    else:
+        thresholds = [1, 2, 3]
+
+    # Month labels row: mark the column where each month first appears.
+    month_row = [" "] * (n_weeks * 2)
+    last_month = None
+    for w in range(n_weeks):
+        col_date = grid_start + _td(weeks=w)
+        if col_date.month != last_month:
+            lbl = col_date.strftime("%b")
+            for i, ch in enumerate(lbl):
+                if w * 2 + i < len(month_row):
+                    month_row[w * 2 + i] = ch
+            last_month = col_date.month
+    print("       " + "".join(month_row))
+
+    # Day rows.
+    day_labels = ["Mon", "   ", "Wed", "   ", "Fri", "   ", "Sun"]
+    today = _date.today()
+    for dow in range(7):
+        cells = []
+        for w in range(n_weeks):
+            cell_date = grid_start + _td(weeks=w, days=dow)
+            if cell_date > today or cell_date > last or cell_date < first:
+                cells.append("  ")
+                continue
+            key = cell_date.strftime("%Y-%m-%d")
+            lvl = _activity_level(day_prompts.get(key, 0), thresholds)
+            cells.append(f"{_ACTIVITY_COLORS[lvl]}{_ACTIVITY_GLYPH}{RESET} ")
+        print(f"  {DIM}{day_labels[dow]}{RESET}  " + "".join(cells))
+
+    # Legend.
+    ramp = " ".join(f"{c}{_ACTIVITY_GLYPH}{RESET}" for c in _ACTIVITY_COLORS)
+    print(f"\n  {DIM}Less{RESET} {ramp} {DIM}More{RESET}  "
+          f"{DIM}(intensity = prompts/day){RESET}")
+
+    # Summary.
+    total_prompts = sum(day_prompts.values())
+    total_turns   = sum(day_turns.values())
+    total_tokens  = sum(day_tokens.values())
+    active_days   = len(day_prompts)
+    busiest = max(day_prompts.items(), key=lambda kv: kv[1])
+    print(f"\n  {BOLD}{total_prompts}{RESET} prompts · {BOLD}{total_turns}{RESET} turns · "
+          f"{BOLD}{fmt_tokens(total_tokens)}{RESET} tokens "
+          f"over {BOLD}{active_days}{RESET} active day(s)")
+    print(f"  {DIM}Busiest day: {busiest[0]} ({busiest[1]} prompts){RESET}\n")
+
+
 # ─── Shared display: export ───────────────────────────────────────────────
 
 def export_conversations(collect_fn, output_path: str,

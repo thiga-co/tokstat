@@ -25,6 +25,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
+    show_activity,
     export_conversations, _parse_period, print_update_notice,
 )
 
@@ -407,7 +408,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -438,6 +439,7 @@ def show_help():
   codex-token-usage                            Aggregated overview (period, project, model, speed)
   codex-token-usage --prompts  [-p]            Per-exchange detail (text, model, turns, tokens)
   codex-token-usage --anomalies                Technical anomaly detection (cost, cache, tool storms)
+  codex-token-usage --activity                 Activity calendar (GitHub-style, by day)
   codex-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   codex-token-usage --export   [file.json]     Export all exchanges to JSON
   codex-token-usage --help     [-h]            This help
@@ -496,6 +498,8 @@ def cli():
         show_prompts(_collect_all_exchanges, period, tool)
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
+    elif "--activity" in args:
+        show_activity(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

@@ -57,6 +57,7 @@ from tokstat._core import (
     resolve_period,
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
+    show_activity,
     export_conversations, _parse_period, print_update_notice,
     compute_overview_state,
 )
@@ -244,7 +245,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--export", "--period", "--since", "--tool", "--watch", "-w",
+    "--plan", "--activity", "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
 _DEFAULT_WATCH_INTERVAL = 5.0
@@ -300,6 +301,7 @@ def show_help():
   tokstat                                  Aggregated overview (period, project, model)
   tokstat --prompts  [-p]                  Per-exchange detail across all tools
   tokstat --anomalies                      Technical anomaly detection
+  tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --plan                           Cost breakdown + optimization tips
   tokstat --export   [file.json]           Export all exchanges to JSON
   tokstat --watch    [-w] [SECONDS]        Refresh overview live (default 5s, Ctrl+C to stop)
@@ -362,6 +364,8 @@ def cli():
         show_prompts(_collect_all_exchanges, period, tool)
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
+    elif "--activity" in args:
+        show_activity(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:
