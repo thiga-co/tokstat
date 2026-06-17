@@ -79,10 +79,15 @@ def scan_codex() -> list[dict]:
                             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                         except (ValueError, AttributeError):
                             continue
+                        # Codex's input_tokens is the FULL prompt and already
+                        # includes cached_input_tokens; subtract so the cached
+                        # portion isn't billed at the full input rate too.
+                        cached = usage.get("cached_input_tokens", 0) or 0
+                        raw_in = usage.get("input_tokens", 0) or 0
                         tokens = {
-                            "input":       usage.get("input_tokens", 0),
+                            "input":       max(raw_in - cached, 0),
                             "output":      usage.get("output_tokens", 0),
-                            "cache_read":  usage.get("cached_input_tokens", 0),
+                            "cache_read":  cached,
                             "cache_write": 0,
                         }
                         model = current_model
@@ -157,8 +162,8 @@ def scan_speed_codex() -> list[dict]:
                 if ptype == "token_count" and p.get("info"):
                     info = p["info"]
                     last_usage = info.get("last_token_usage") or {}
-                    out = (last_usage.get("output_tokens", 0)
-                           + last_usage.get("reasoning_output_tokens", 0))
+                    # output_tokens already includes reasoning_output_tokens.
+                    out = last_usage.get("output_tokens", 0) or 0
                     if out < 10:
                         after_tool_call = False
                         continue
@@ -270,9 +275,11 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
             info = payload.get("info") or {}
             last = info.get("last_token_usage") or {}
             if last:
-                inp     = last.get("input_tokens", 0)
-                out     = last.get("output_tokens", 0) + last.get("reasoning_output_tokens", 0)
-                cached  = last.get("cached_input_tokens", 0)
+                cached  = last.get("cached_input_tokens", 0) or 0
+                # input_tokens includes cached → subtract; output_tokens
+                # already includes reasoning_output_tokens → don't re-add.
+                inp     = max((last.get("input_tokens", 0) or 0) - cached, 0)
+                out     = last.get("output_tokens", 0) or 0
                 current["tokens"]["input"]      += inp
                 current["tokens"]["output"]     += out
                 current["tokens"]["cache_read"] += cached
