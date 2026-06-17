@@ -16,6 +16,7 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -74,38 +75,95 @@ def _query(db: Path, sql: str) -> list[tuple]:
         return []
 
 
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_PROJECTS_DIR = Path.home() / ".cursor" / "projects"
+
+
+def _decode_project_dirname(dirname: str) -> str:
+    """Decode a ~/.cursor/projects dir name to a filesystem path.
+
+    Cursor maps both '/' separators and literal '-' in names to '-', so the
+    encoding is ambiguous; reconstruct greedily by probing which paths exist.
+    """
+    direct = "/" + dirname.replace("-", "/")
+    if Path(direct).exists():
+        return direct
+    parts = dirname.split("-")
+    current = Path("/")
+    i = 0
+    while i < len(parts):
+        matched = False
+        for j in range(len(parts), i, -1):
+            for sep in ("-", " "):
+                name = sep.join(parts[i:j])
+                if (current / name).exists():
+                    current, i, matched = current / name, j, True
+                    break
+            if matched:
+                break
+        if not matched:
+            return direct
+    return str(current)
+
+
 def _composer_project_map() -> dict[str, str]:
-    """Return {composerId: project_path} by joining each workspace's folder
-    with the composer IDs that workspace owns."""
+    """Return {composerId: project_path}.
+
+    Primary source: each workspace's state.vscdb lists the composers it owns,
+    and workspace.json gives the folder. Some composers (background agents,
+    chats Cursor didn't persist into a workspace) aren't listed there, so we
+    fall back to ~/.cursor/projects/<encoded-dir>/{agent-transcripts,canvases}
+    whose names embed both the project path and the composer UUID.
+    """
     import urllib.parse
     out: dict[str, str] = {}
-    if not _WORKSPACE_BASE.exists():
-        return out
-    for ws_dir in _WORKSPACE_BASE.iterdir():
-        if not ws_dir.is_dir():
-            continue
-        wj = ws_dir / "workspace.json"
-        folder = None
-        if wj.exists():
-            try:
-                uri = json.loads(wj.read_text()).get("folder", "")
-                if uri.startswith("file://"):
-                    folder = urllib.parse.unquote(uri[len("file://"):])
-            except Exception:
-                folder = None
-        if not folder:
-            continue
-        rows = _query(ws_dir / "state.vscdb",
-                      "SELECT value FROM ItemTable WHERE key='composer.composerData'")
-        for (val,) in rows:
-            try:
-                data = json.loads(val)
-            except (json.JSONDecodeError, TypeError):
+
+    if _WORKSPACE_BASE.exists():
+        for ws_dir in _WORKSPACE_BASE.iterdir():
+            if not ws_dir.is_dir():
                 continue
-            for c in data.get("allComposers", []) or []:
-                cid = c.get("composerId")
-                if cid:
-                    out[cid] = folder
+            wj = ws_dir / "workspace.json"
+            folder = None
+            if wj.exists():
+                try:
+                    uri = json.loads(wj.read_text()).get("folder", "")
+                    if uri.startswith("file://"):
+                        folder = urllib.parse.unquote(uri[len("file://"):])
+                except Exception:
+                    folder = None
+            if not folder:
+                continue
+            for (val,) in _query(ws_dir / "state.vscdb",
+                                 "SELECT value FROM ItemTable WHERE key='composer.composerData'"):
+                try:
+                    data = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                for c in data.get("allComposers", []) or []:
+                    cid = c.get("composerId")
+                    if cid:
+                        out[cid] = folder
+
+    # Fallback: ~/.cursor/projects/<dir>/{agent-transcripts,canvases}/...
+    if _PROJECTS_DIR.exists():
+        for proj_dir in _PROJECTS_DIR.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            decoded = None
+            for sub in ("agent-transcripts", "canvases"):
+                subdir = proj_dir / sub
+                if not subdir.exists():
+                    continue
+                for entry in subdir.iterdir():
+                    m = _UUID_RE.search(entry.name)
+                    if not m:
+                        continue
+                    cid = m.group(0)
+                    if cid in out:
+                        continue
+                    if decoded is None:
+                        decoded = _decode_project_dirname(proj_dir.name)
+                    out[cid] = decoded
     return out
 
 
