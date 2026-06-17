@@ -495,7 +495,9 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
             return f"{BOLD}{s}{RESET}" if bold else s
         no_tok = (b["input"] == 0 and b["output"] == 0
                   and b["cache_read"] == 0 and b["cache_write"] == 0)
-        cost_cell = "—" if no_tok else fmt_cost(b["cost"])
+        # No local token data (Kiro, recent Cursor) → flag it explicitly in
+        # the cost column instead of a bare dash.
+        cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
         cells = [label, tool_disp]
         if show_activity:
             cells += [F(str(b["prompts"])), F(str(b["turns"])), F(str(b["api_calls"]))]
@@ -674,7 +676,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         if key in marked_keys:
             any_model_changed = True
         no_tok = d["input"] == 0 and d["output"] == 0
-        cost_cell = "—" if no_tok else fmt_cost(d["cost"])
+        cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(d["cost"])
         row = [f"{mark}{model}", f"{color}{d['tool']}{RESET}"]
         if show_activity:
             row += [str(d["prompts"]), str(d["turns"]), str(d["api_calls"])]
