@@ -222,7 +222,16 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
     exchanges = []
     current = None
     current_model = None
+    current_effort = ""
     current_cwd = None
+
+    def _label(model, effort):
+        """Same display name scan_codex uses, so token rows and prompt/turn
+        rows land on a single model line."""
+        m = model or "codex-unknown"
+        if effort and effort != "medium":
+            m = f"{m} [{effort}]"
+        return m
 
     for rec in lines:
         rec_type = rec.get("type")
@@ -243,7 +252,9 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 current_cwd = payload["cwd"]
 
         elif rec_type == "turn_context":
-            current_model = payload.get("model")
+            if payload.get("model"):
+                current_model = payload["model"]
+            current_effort = payload.get("effort", "") or ""
             if payload.get("cwd"):
                 current_cwd = payload["cwd"]
 
@@ -257,7 +268,8 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                     break
             current = {
                 "user_text": text, "assistant_texts": [], "tool_errors": [],
-                "tools_used": {}, "num_turns": 0, "model": current_model,
+                "tools_used": {}, "num_turns": 0,
+                "model": _label(current_model, current_effort),
                 "project": current_cwd, "ts": ts,
                 "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                 "cost": 0.0,
