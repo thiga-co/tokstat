@@ -2,7 +2,7 @@
 
 CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each tool scans local data, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints color-coded terminal tables.
 
-> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Gemini CLI and opencode read exact token counts; Cursor reads exact counts where it still records them locally and flags the rest as `⚠ no data`; Kiro exposes no token counts at all (activity only); the web exports are estimated from text length. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
+> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Gemini CLI and opencode read exact token counts; Cursor reads exact counts where they're recorded locally and flags the rest as `⚠ no data`; Kiro exposes no token counts at all (activity only); the web exports are estimated from text length. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
 
 ## Installation
 
@@ -30,7 +30,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 
 > **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
 >
-> **Cursor note:** tokstat reads Cursor's local SQLite store (`globalStorage/state.vscdb`). Older sessions carry exact token counts (`[exact]`). Recent sessions track billing server-side and store no local token data (`[no tokens]`) — tokstat counts them as activity (prompts/turns) but does **not** estimate their tokens or cost. For authoritative totals use [cursor.com/settings/usage](https://cursor.com/settings/usage).
+> **Cursor note:** tokstat reads Cursor's local SQLite store (`globalStorage/state.vscdb`). Some sessions have token counts recorded locally — these are reported exactly (`[exact]`). Others store no token counts (the local values are zero); those are tagged `[no tokens]`, counted as activity (prompts/turns), and never estimated — their cost shows `⚠ no data`. For authoritative totals use [cursor.com/settings/usage](https://cursor.com/settings/usage).
 >
 > **Kiro note:** Kiro stores no usable token counts locally (its token log is always zero), so `kiro-token-usage` reports **activity only** — prompts and turns — with tokens and cost left blank. It does not estimate.
 >
