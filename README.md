@@ -22,7 +22,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 
 | Command | Agent | Data source | Tokens | Cost | Status |
 |---------|-------|-------------|--------|------|--------|
-| `tokstat` | **all of the below** | combined | mixed | ✓ | stable |
+| `tokstat` | **all of the below** | combined | all of the below | ✓ | stable |
 | `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | stable |
 | `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | n.a. | n.a. | stable |
