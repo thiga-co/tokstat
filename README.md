@@ -31,6 +31,10 @@ Requires Python 3.7+. No dependencies. MIT License.
 > **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
 >
 > **Cursor note:** tokstat reads Cursor's local SQLite store (`globalStorage/state.vscdb`). Older sessions carry exact token counts (`[exact]`). Recent sessions track billing server-side and store no local token data (`[no tokens]`) — tokstat counts them as activity (prompts/turns) but does **not** estimate their tokens or cost. For authoritative totals use [cursor.com/settings/usage](https://cursor.com/settings/usage).
+>
+> **Kiro note:** Kiro stores no usable token counts locally (its token log is always zero), so `kiro-token-usage` reports **activity only** — prompts and turns — with tokens and cost left blank. It does not estimate.
+>
+> **No-data flag:** any row whose tool/session has activity but no reliable local token data shows `⚠ no data` in the cost column (instead of a misleading `$0.00`). This is normal for Kiro and recent Cursor sessions.
 
 ### Web exports (claude.ai / chatgpt.com)
 
@@ -82,7 +86,8 @@ All tools support the same modes:
 The overview, project, and model tables include **Prompts** (user inputs),
 **Turns** (assistant turns per exchange), and **API** (raw API calls) columns,
 plus a **GRAND TOTAL** block with the rolling-hour token rate and the active
-agents.
+agents. Rows that have activity but no reliable local token data show
+`⚠ no data` in the cost column rather than a misleading `$0.00`.
 
 `tokstat` additionally supports a live mode:
 
