@@ -332,7 +332,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
                          tool_filter, all_exchanges=exchanges)
     print(f"  {DIM}⚠ [exact] = real token counts recorded by Cursor. [no tokens] = "
           f"recent sessions (billing tracked server-side, not stored locally) — "
-          f"counted as activity only, tokens/cost shown as 0.{RESET}\n")
+          f"counted as activity only; tokens/cost left blank (—).{RESET}\n")
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────

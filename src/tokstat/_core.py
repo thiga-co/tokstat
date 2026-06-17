@@ -493,12 +493,15 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     def _row(label, tool_disp, b, *, bold=False):
         def F(s):
             return f"{BOLD}{s}{RESET}" if bold else s
+        no_tok = (b["input"] == 0 and b["output"] == 0
+                  and b["cache_read"] == 0 and b["cache_write"] == 0)
+        cost_cell = "—" if no_tok else fmt_cost(b["cost"])
         cells = [label, tool_disp]
         if show_activity:
             cells += [F(str(b["prompts"])), F(str(b["turns"])), F(str(b["api_calls"]))]
         cells += [F(fmt_tokens(b["input"])), F(fmt_tokens(b["output"])),
                   F(fmt_tokens(b["cache_read"])), F(fmt_tokens(b["cache_write"])),
-                  F(fmt_cost(b["cost"]))]
+                  F(cost_cell)]
         return cells
 
     for period in period_order:
@@ -660,10 +663,12 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         mark = _mark(key)
         if key in marked_keys:
             any_model_changed = True
+        no_tok = d["input"] == 0 and d["output"] == 0
+        cost_cell = "—" if no_tok else fmt_cost(d["cost"])
         row = [f"{mark}{model}", f"{color}{d['tool']}{RESET}"]
         if show_activity:
             row += [str(d["prompts"]), str(d["turns"]), str(d["api_calls"])]
-        row += [fmt_tokens(d["input"]), fmt_tokens(d["output"]), fmt_cost(d["cost"])]
+        row += [fmt_tokens(d["input"]), fmt_tokens(d["output"]), cost_cell]
         rows.append(row)
 
     total_cost = sum(d["cost"] for d in model_data.values())
