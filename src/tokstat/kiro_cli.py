@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-kiro-token-usage — Aggregate and display token consumption from Kiro.
+kiro-token-usage — Aggregate and display activity from Kiro.
 
-Data sources:
-  - Tokens:    ~/Library/Application Support/Kiro/.../dev_data/devdata.sqlite
-  - Project:   ~/Library/Application Support/Kiro/.../workspace-sessions/
-  - Exchanges: ~/Library/Application Support/Kiro/.../{hash}/*.chat
+Data source: per-session JSON under
+  ~/Library/Application Support/Kiro/.../kiro.kiroagent/workspace-sessions/
+      <base64(project path)>/<sessionId>.json   (history)
+      <base64(project path)>/sessions.json       (dateCreated, project)
+
+Kiro records no usable token counts (its tokens_generated log is always
+zero with no per-message data), so tokstat reports activity only —
+prompts/turns — with token/cost left at 0 ([no tokens]). It does NOT
+estimate, to avoid misleading figures.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -35,77 +40,22 @@ TOOL_COLORS["Kiro"] = YELLOW
 
 _KIRO_BASE = (Path.home() / "Library" / "Application Support" / "Kiro"
               / "User" / "globalStorage" / "kiro.kiroagent")
-_DB_PATH = _KIRO_BASE / "dev_data" / "devdata.sqlite"
-
-# Kiro uses Anthropic models; default for pricing when model is "agent"/"auto"
-_KIRO_DEFAULT_MODEL = "claude-sonnet-4-5"
-
-
-# ─── Project resolution ───────────────────────────────────────────────────────
-
-def _load_project_map() -> dict[str, str]:
-    """Return {sessionId: workspaceDirectory} from all workspace-sessions."""
-    result: dict[str, str] = {}
-    sessions_dir = _KIRO_BASE / "workspace-sessions"
-    if not sessions_dir.exists():
-        return result
-    for ws_dir in sessions_dir.iterdir():
-        if not ws_dir.is_dir():
-            continue
-        sj = ws_dir / "sessions.json"
-        if not sj.exists():
-            continue
-        try:
-            for s in json.loads(open(sj).read()):
-                sid = s.get("sessionId")
-                wd = s.get("workspaceDirectory", "")
-                if sid and wd:
-                    result[sid] = wd
-        except Exception:
-            pass
-    return result
-
-
-def _most_recent_project() -> str:
-    """Return the most recently active workspace directory."""
-    sessions_dir = _KIRO_BASE / "workspace-sessions"
-    if not sessions_dir.exists():
-        return "unknown"
-    best_ts = 0
-    best_path = "unknown"
-    for ws_dir in sessions_dir.iterdir():
-        sj = ws_dir / "sessions.json"
-        if not sj.exists():
-            continue
-        try:
-            sessions = json.loads(open(sj).read())
-            for s in sessions:
-                ts = int(s.get("dateCreated", 0))
-                wd = s.get("workspaceDirectory", "")
-                if ts > best_ts and wd:
-                    best_ts = ts
-                    best_path = wd
-        except Exception:
-            pass
-    return best_path
+_SESSIONS_DIR = _KIRO_BASE / "workspace-sessions"
 
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
 
 def scan_kiro() -> list[dict]:
-    """Scan Kiro .chat files for token usage.
-
-    Each exchange (deduplicated by user text) becomes one record.
-    Input and output are estimated from conversation text length.
-    """
-    exchanges = _extract_exchanges_kiro()
+    """One record per assistant turn. Kiro does not store real token counts
+    (its tokens_generated log is always zero), so token/cost are left at 0
+    rather than estimated — see _extract_exchanges_kiro."""
     records = []
-    for ex in exchanges:
+    for ex in _extract_exchanges_kiro():
         if ex["ts"] is None:
             continue
         records.append({
             "tool":        "Kiro",
-            "model":       ex.get("model", _KIRO_DEFAULT_MODEL),
+            "model":       ex["model"],
             "project":     ex["project"],
             "ts":          ex["ts"],
             "input":       ex["tokens"]["input"],
@@ -117,153 +67,92 @@ def scan_kiro() -> list[dict]:
     return records
 
 
-def _normalize_model(model: str, provider: str) -> str:
-    """Map Kiro's internal model names to pricing-compatible names."""
-    if model in ("agent", "auto", "") or not model:
-        return _KIRO_DEFAULT_MODEL
-    # Kiro uses names like "claude-sonnet-4.5" → map to "claude-sonnet-4-5"
-    name = model.replace(".", "-")
-    return name
+def _session_text(content) -> str:
+    """Flatten a Kiro history message content (str or list of parts)."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return " ".join(c.get("text", "") for c in content
+                         if isinstance(c, dict) and c.get("type") == "text").strip()
+    return ""
 
 
 def _extract_exchanges_kiro() -> list[dict]:
-    """Extract exchanges from Kiro .chat files.
+    """Extract exchanges from Kiro's per-session JSON files.
 
-    Each .chat file is one agent action. We deduplicate by workflowId,
-    keeping the most complete version (most messages).
+    Modern Kiro stores each conversation at
+      workspace-sessions/<base64(path)>/<sessionId>.json
+    with a `history` array, `workspaceDirectory`, and a model title. The old
+    {hash}/*.chat layout is gone. Kiro records no usable token counts
+    (tokens_generated.jsonl has generatedTokens=0 and no per-message data),
+    so we do NOT estimate — exchanges are counted as activity (prompts/turns)
+    with token/cost left at 0, tagged [no tokens].
     """
-    if not _KIRO_BASE.exists():
+    sessions_dir = _KIRO_BASE / "workspace-sessions"
+    if not sessions_dir.exists():
         return []
 
-    project_map = _load_project_map()
-
-    # Collect all .chat files, deduplicate by user_text prefix.
-    # Kiro creates one .chat file per retry/step — all share the same user
-    # prompt. Keep the version with the most assistant text (most complete).
-    seen: dict[str, dict] = {}  # user_text[:200] -> best exchange
-
-    for hash_dir in _KIRO_BASE.iterdir():
-        if not (hash_dir.is_dir() and len(hash_dir.name) == 32):
+    exchanges: list[dict] = []
+    for ws_dir in sessions_dir.iterdir():
+        if not ws_dir.is_dir():
             continue
-        for chat_file in hash_dir.rglob("*.chat"):
+        # Map sessionId -> (dateCreated_ms, workspaceDirectory, title)
+        meta: dict[str, tuple] = {}
+        sj = ws_dir / "sessions.json"
+        if sj.exists():
             try:
-                data = json.loads(open(chat_file, errors="replace").read())
+                for s in json.loads(sj.read_text(errors="replace")):
+                    sid = s.get("sessionId")
+                    if sid:
+                        meta[sid] = (int(s.get("dateCreated", 0) or 0),
+                                     s.get("workspaceDirectory", "") or "unknown",
+                                     s.get("title", ""))
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+
+        for sess_file in ws_dir.glob("*.json"):
+            if sess_file.name == "sessions.json":
+                continue
+            try:
+                data = json.loads(sess_file.read_text(errors="replace"))
             except (json.JSONDecodeError, OSError):
                 continue
+            sid = data.get("sessionId") or sess_file.stem
+            ms, wd, _title = meta.get(sid, (0, "", ""))
+            project = data.get("workspaceDirectory") or wd or "unknown"
+            ts = (datetime.fromtimestamp(ms / 1000, tz=timezone.utc) if ms
+                  else datetime.fromtimestamp(sess_file.stat().st_mtime, tz=timezone.utc))
 
-            meta = data.get("metadata") or {}
-            chat = data.get("chat", [])
-            if not chat:
-                continue
-
-            workflow_id = meta.get("workflowId", str(chat_file))
-            start_ms = meta.get("startTime")
-            ts = (datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-                  if start_ms else None)
-
-            model_id = meta.get("modelId", "")
-            model_name = _normalize_model(model_id, meta.get("modelProvider", ""))
-
-            # Extract user text (first non-system human message)
-            user_text = ""
-            assistant_texts = []
-            tools_used: dict[str, int] = defaultdict(int)
-
-            for msg in chat:
+            history = data.get("history") or []
+            current = None
+            for item in history:
+                msg = item.get("message") or {}
                 role = msg.get("role", "")
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    text = " ".join(c.get("text", "") for c in content
-                                    if isinstance(c, dict) and c.get("type") == "text")
-                else:
-                    text = str(content)
+                text = _session_text(msg.get("content", ""))
+                if role == "user":
+                    if current:
+                        exchanges.append(current)
+                    current = {
+                        "user_text":       text[:500],
+                        "assistant_texts": [],
+                        "tool_errors":     [],
+                        "tools_used":      defaultdict(int),
+                        "num_turns":       0,
+                        "model":           "Kiro Agent [no tokens]",
+                        "project":         project,
+                        "ts":              ts,
+                        "tokens":          {"input": 0, "output": 0,
+                                            "cache_read": 0, "cache_write": 0},
+                        "cost":            0.0,
+                    }
+                elif role == "assistant" and current is not None:
+                    current["num_turns"] += 1
+                    if text:
+                        current["assistant_texts"].append(text[:500])
+            if current:
+                exchanges.append(current)
 
-                if role == "human" and not user_text:
-                    # Skip system injection (identity/instructions)
-                    if not text.strip().startswith("<identity>"):
-                        user_text = text.strip()[:500]
-                elif role == "bot" and text.strip():
-                    assistant_texts.append(text.strip())
-                    # Detect tool calls in bot content
-                    if isinstance(content, list):
-                        for c in content:
-                            if isinstance(c, dict) and c.get("type") not in ("text", None):
-                                tools_used[c.get("type", "tool")] += 1
-
-            if not user_text and not assistant_texts:
-                continue
-
-            # Estimate tokens from text length
-            all_text_len = sum(len(m.get("content", "")) for m in chat
-                               if isinstance(m.get("content"), str))
-            out_text_len = sum(len(t) for t in assistant_texts)
-            inp_est = max(all_text_len - out_text_len, 0) // 4
-            out_est = out_text_len // 4
-
-            tokens = {"input": inp_est, "output": out_est, "cache_read": 0, "cache_write": 0}
-            cost = compute_cost(tokens, model_name)
-
-            exchange = {
-                "user_text":       user_text,
-                "assistant_texts": assistant_texts,
-                "tool_errors":     [],
-                "tools_used":      dict(tools_used),
-                "num_turns":       len([m for m in chat if m.get("role") == "bot"]),
-                "model":           model_name,
-                "project":         "unknown",
-                "ts":              ts,
-                "tokens":          tokens,
-                "cost":            cost,
-            }
-
-            key = user_text[:200]
-            prev = seen.get(key)
-            prev_len = sum(len(t) for t in (prev or {}).get("assistant_texts", []))
-            cur_len  = sum(len(t) for t in assistant_texts)
-            if not prev or cur_len > prev_len:
-                seen[key] = exchange
-
-    exchanges = list(seen.values())
-
-    # Resolve projects: try to match via timestamp to workspace sessions
-    _assign_projects(exchanges, project_map)
-
-    return exchanges
-
-
-def _assign_projects(exchanges: list[dict], project_map: dict[str, str]) -> None:
-    """Assign project paths to exchanges using workspace-sessions timestamps."""
-    # Build sorted list of (dateCreated_ms, workspaceDirectory)
-    sessions_dir = _KIRO_BASE / "workspace-sessions"
-    timeline: list[tuple[int, str]] = []
-    if sessions_dir.exists():
-        for ws_dir in sessions_dir.iterdir():
-            sj = ws_dir / "sessions.json"
-            if not sj.exists():
-                continue
-            try:
-                for s in json.loads(open(sj).read()):
-                    ts = int(s.get("dateCreated", 0))
-                    wd = s.get("workspaceDirectory", "")
-                    if ts and wd:
-                        timeline.append((ts, wd))
-            except Exception:
-                pass
-    timeline.sort()
-
-    for ex in exchanges:
-        if ex["ts"] is None:
-            ex["project"] = _most_recent_project()
-            continue
-        ex_ms = int(ex["ts"].timestamp() * 1000)
-        # Find the active session at this timestamp
-        project = timeline[0][1] if timeline else "unknown"
-        for ts_ms, wd in timeline:
-            if ts_ms <= ex_ms:
-                project = wd
-            else:
-                break
-        ex["project"] = project
+    return [e for e in exchanges if e.get("user_text") or e["num_turns"] > 0]
 
 
 def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
@@ -305,7 +194,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    if not _DB_PATH.exists():
+    if not (_KIRO_BASE / "workspace-sessions").exists():
         print(f"  {DIM}Kiro not found at {_KIRO_BASE}{RESET}\n")
         return
 
@@ -367,11 +256,9 @@ def show_help():
 {BOLD}FILTERS{RESET}
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
 
-{BOLD}DATA SOURCES{RESET}
-  {YELLOW}Kiro{RESET}
-    Tokens:    {DIM}{_DB_PATH}{RESET}
-    Exchanges: {DIM}{_KIRO_BASE}/{{hash}}/*.chat{RESET}
-    Projects:  {DIM}{_KIRO_BASE}/workspace-sessions/{RESET}
+{BOLD}DATA SOURCE{RESET}
+  {YELLOW}Kiro{RESET}    {DIM}{_SESSIONS_DIR}/<project>/<sessionId>.json{RESET}
+          {DIM}Kiro stores no token counts → activity only ([no tokens]){RESET}
 """)
 
 

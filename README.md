@@ -20,7 +20,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | experimental |
 | `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | ✓ exact / n.a. | ~ | experimental |
-| `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
+| `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ✗ activity only | ✗ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
 | `claude-web-token-usage` | claude.ai (web export) | `--import` of official ZIP | ~ estimated | ~ | experimental |
