@@ -240,29 +240,33 @@ def _extract_exchanges_cursor() -> list[dict]:
                 current["num_turns"] += 1
                 if text:
                     current["assistant_texts"].append(text[:500])
+                # Only count tokens Cursor actually recorded. Recent sessions
+                # zero them out (billing is server-side) — we do NOT estimate,
+                # since text-length guesses proved badly misleading. Such
+                # exchanges still count as activity (prompts/turns).
                 if exact_in or exact_out:
                     current["tokens"]["input"] += exact_in
                     current["tokens"]["output"] += exact_out
                     current["_exact"] = True
-                else:
-                    current["tokens"]["output"] += len(text) // 4
         if current is not None:
             exchanges.append(current)
 
-    # Finalize: estimate input for non-exact exchanges, set model tag + cost.
+    # Finalize: tag model and cost. Exact sessions get real cost; sessions
+    # with no local token data are tagged [no tokens] and cost stays $0.
     for ex in exchanges:
         exact = ex.pop("_exact", False)
         raw_model = ex.pop("_raw_model", _CURSOR_DEFAULT_MODEL)
-        if not exact:
-            # rough input estimate: accumulated user+assistant text already in
-            # output for assistants; approximate prompt context from user text.
-            ex["tokens"]["input"] = max(ex["tokens"]["input"],
-                                        len(ex.get("user_text", "")) // 4)
-        ex["model"] = f"{raw_model} [{'exact' if exact else 'est'}]"
-        ex["cost"] = compute_cost(ex["tokens"], _price_model(raw_model))
+        if exact:
+            ex["model"] = f"{raw_model} [exact]"
+            ex["cost"] = compute_cost(ex["tokens"], _price_model(raw_model))
+        else:
+            ex["model"] = f"{raw_model} [no tokens]"
+            ex["cost"] = 0.0
 
+    # Keep every exchange that has at least a prompt or a turn — even those
+    # with no token data, so activity (prompts/turns) is still reported.
     exchanges = [e for e in exchanges
-                 if e["tokens"]["input"] or e["tokens"]["output"]]
+                 if e.get("user_text") or e["num_turns"] > 0]
     return exchanges
 
 
@@ -293,7 +297,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 def main(period_name: str | None = None, tool_filter: str | None = None):
     print(f"\n{BOLD} Token Usage — Cursor{RESET}")
-    print(f"{DIM}  Note: tokens [exact] where Cursor recorded them, else [est] from text{RESET}")
+    print(f"{DIM}  Note: tokens [exact] where Cursor recorded them; recent sessions [no tokens]{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
@@ -326,8 +330,9 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     show_overview_tables(records, [], cutoff, cutoff_end, period_label,
                          tool_filter, all_exchanges=exchanges)
-    print(f"  {DIM}⚠ [exact] = token counts recorded by Cursor; [est] = estimated "
-          f"from text length (recent sessions track billing server-side).{RESET}\n")
+    print(f"  {DIM}⚠ [exact] = real token counts recorded by Cursor. [no tokens] = "
+          f"recent sessions (billing tracked server-side, not stored locally) — "
+          f"counted as activity only, tokens/cost shown as 0.{RESET}\n")
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -366,8 +371,9 @@ def show_help():
 {BOLD}cursor-token-usage{RESET} — Analyze Cursor agent session activity.
 
 {BOLD}NOTE{RESET}  {DIM}Reads Cursor's local SQLite store. Older sessions carry exact token
-      counts ([exact]); recent ones track billing server-side and are
-      estimated from text length ([est], can be lower than reality).
+      counts ([exact]). Recent sessions track billing server-side and store
+      no local token data ([no tokens]) — they're counted as activity
+      (prompts/turns) but tokens/cost are not estimated.
       For authoritative totals: cursor.com/settings/usage.{RESET}
 
 {BOLD}MODES{RESET}
@@ -383,7 +389,7 @@ def show_help():
 
 {BOLD}DATA SOURCE{RESET}
   {BLUE}Cursor{RESET}    {DIM}~/Library/Application Support/Cursor/User/globalStorage/state.vscdb{RESET}
-            {DIM}tokens exact where recorded, else estimated ([exact] / [est]){RESET}
+            {DIM}tokens exact where recorded ([exact]), else [no tokens] (not estimated){RESET}
 """)
 
 
