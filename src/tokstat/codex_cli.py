@@ -230,9 +230,17 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
         except (ValueError, AttributeError):
             ts = None
 
-        if rec_type == "turn_context":
+        if rec_type == "session_meta":
+            # cwd is established once per session here; turn_context may or
+            # may not repeat it. Use it as the baseline project so exchanges
+            # before the first turn_context aren't attributed to "unknown".
+            if payload.get("cwd"):
+                current_cwd = payload["cwd"]
+
+        elif rec_type == "turn_context":
             current_model = payload.get("model")
-            current_cwd = payload.get("cwd")
+            if payload.get("cwd"):
+                current_cwd = payload["cwd"]
 
         elif rec_type == "response_item" and payload.get("role") == "user":
             if current:
