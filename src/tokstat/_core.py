@@ -509,8 +509,12 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         any_changed_here = False
         for tool in active_tools:
             b = tool_period[tool].get(period)
-            if not b or (b["input"] == 0 and b["output"] == 0):
+            if not b:
                 continue
+            if b["input"] == 0 and b["output"] == 0:
+                has_activity = show_activity and (b["prompts"] or b["turns"] or b["api_calls"])
+                if not has_activity:
+                    continue
             color = TOOL_COLORS.get(tool, "")
             key = ("period", period, tool)
             mark = _mark(key)
@@ -591,8 +595,14 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         short = shorten_path(proj, 38)
         for tool in active_tools:
             b = proj_tool[proj].get(tool)
-            if not b or (b["input"] == 0 and b["output"] == 0):
+            if not b:
                 continue
+            if b["input"] == 0 and b["output"] == 0:
+                # No tokens: still show the tool row if it has activity
+                # (prompts/turns/calls), e.g. Kiro / Cursor [no tokens].
+                has_activity = show_activity and (b["prompts"] or b["turns"] or b["api_calls"])
+                if not has_activity:
+                    continue
             color = TOOL_COLORS.get(tool, "")
             key = ("project", proj, tool)
             mark = _mark(key)
