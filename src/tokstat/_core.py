@@ -1424,64 +1424,6 @@ def _activity_level(count: int, thresholds: list[int]) -> int:
     return 4
 
 
-# Durable per-day, per-tool activity counters. Source tools (Claude Code,
-# Cursor, Kiro…) prune their transcripts, so the activity calendar would lose
-# history over time. We snapshot what each scan sees into this store and keep
-# the per-(tool, day) maximum ever observed, so the calendar survives cleanup.
-_ACTIVITY_STORE = Path.home() / ".cache" / "tokstat" / "activity_history.json"
-_ACTIVITY_METRICS = ("prompts", "turns", "tokens")
-
-
-def _load_activity_store() -> dict:
-    try:
-        return json.loads(_ACTIVITY_STORE.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _save_activity_store(store: dict) -> None:
-    try:
-        _ACTIVITY_STORE.parent.mkdir(parents=True, exist_ok=True)
-        _ACTIVITY_STORE.write_text(json.dumps(store))
-    except OSError:
-        pass
-
-
-def _merge_activity_store(store: dict, fresh: dict) -> dict:
-    """Merge freshly-scanned {tool: {day: {metric: n}}} into the store,
-    keeping the per-(tool, day, metric) maximum so a later run that sees
-    fewer transcripts (after a cleanup) never lowers recorded history."""
-    for tool, days in fresh.items():
-        td = store.setdefault(tool, {})
-        for day, m in days.items():
-            cur = td.get(day) or {}
-            td[day] = {k: max(int(cur.get(k, 0)), int(m.get(k, 0)))
-                       for k in _ACTIVITY_METRICS}
-    return store
-
-
-def _claude_stats_cache_daily() -> dict[str, int]:
-    """Read ~/.claude/stats-cache.json → {day: messageCount}.
-
-    Claude Code keeps this rolling daily-activity cache independently of the
-    transcripts it prunes, so it's the only surviving signal for older days.
-    It counts messages (not user prompts) and has no token data — used purely
-    as a best-effort activity backfill for the calendar, never as ground truth.
-    """
-    p = _Path.home() / ".claude" / "stats-cache.json"
-    out: dict[str, int] = {}
-    try:
-        data = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
-        return out
-    for entry in data.get("dailyActivity", []) or []:
-        d = entry.get("date")
-        n = entry.get("messageCount", 0) or 0
-        if d and n:
-            out[d] = int(n)
-    return out
-
-
 def show_activity(collect_fn, period_name: str | None = None,
                   tool_filter: str | None = None):
     """Render a GitHub-style contribution calendar of activity over the period.
@@ -1510,69 +1452,24 @@ def show_activity(collect_fn, period_name: str | None = None,
 
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
     all_exchanges = [e for e in all_exchanges if e.get("ts")]
-
-    # 1. Aggregate the freshly-scanned exchanges per (tool, day) and merge
-    #    them into the durable store (keeping the max ever seen per day).
-    fresh: dict[str, dict] = {}
-    for e in all_exchanges:
-        tool = e.get("tool", "?")
-        d = e["ts"].astimezone().strftime("%Y-%m-%d")
-        tok = e.get("tokens") or {}
-        td = fresh.setdefault(tool, {})
-        cur = td.setdefault(d, {"prompts": 0, "turns": 0, "tokens": 0})
-        cur["prompts"] += 1
-        cur["turns"]   += e.get("num_turns", 0) or 0
-        cur["tokens"]  += (tok.get("input", 0) + tok.get("output", 0)
-                           + tok.get("cache_read", 0) + tok.get("cache_write", 0))
-    store = _merge_activity_store(_load_activity_store(), fresh)
-    _save_activity_store(store)
-
-    # 2. Build the per-day series for rendering FROM THE STORE (so days whose
-    #    transcripts have since been pruned still appear), scoped to the
-    #    requested tool and period window.
-    cutoff_d = cutoff.astimezone().date()
-    cutoff_end_d = cutoff_end.astimezone().date() if cutoff_end else None
-    day_prompts: dict[str, int] = defaultdict(int)
-    day_turns:   dict[str, int] = defaultdict(int)
-    day_tokens:  dict[str, int] = defaultdict(int)
-    for tool, days in store.items():
-        if tool_filter and tool != tool_filter:
-            continue
-        for day, m in days.items():
-            try:
-                dd = datetime.strptime(day, "%Y-%m-%d").date()
-            except ValueError:
-                continue
-            if dd < cutoff_d or (cutoff_end_d and dd >= cutoff_end_d):
-                continue
-            day_prompts[day] += m.get("prompts", 0)
-            day_turns[day]   += m.get("turns", 0)
-            day_tokens[day]  += m.get("tokens", 0)
-
-    # 3. Best-effort backfill for Claude Code days that predate tokstat's
-    #    store (transcripts already pruned): use Claude's own stats cache.
-    #    Its messageCount isn't comparable to prompt counts and has no
-    #    tokens, so these days are kept SEPARATE — shown at a fixed
-    #    intensity, excluded from thresholds and totals.
-    backfill_days: set[str] = set()
-    if not tool_filter or tool_filter == "Claude Code":
-        for day, msg_count in _claude_stats_cache_daily().items():
-            if day in day_prompts:
-                continue
-            try:
-                dd = datetime.strptime(day, "%Y-%m-%d").date()
-            except ValueError:
-                continue
-            if dd < cutoff_d or (cutoff_end_d and dd >= cutoff_end_d):
-                continue
-            backfill_days.add(day)
-
-    if not day_prompts and not backfill_days:
+    if not all_exchanges:
         print(f"  {YELLOW}No activity found.{RESET}\n")
         return
 
-    # Date range: clamp to the data (real + backfilled), max ~53 weeks.
-    all_days = sorted(set(day_prompts) | backfill_days)
+    # Per-day aggregation (local date) from the freshly-scanned exchanges.
+    day_prompts: dict[str, int] = defaultdict(int)
+    day_turns:   dict[str, int] = defaultdict(int)
+    day_tokens:  dict[str, int] = defaultdict(int)
+    for e in all_exchanges:
+        d = e["ts"].astimezone().strftime("%Y-%m-%d")
+        tok = e.get("tokens") or {}
+        day_prompts[d] += 1
+        day_turns[d]   += e.get("num_turns", 0) or 0
+        day_tokens[d]  += (tok.get("input", 0) + tok.get("output", 0)
+                           + tok.get("cache_read", 0) + tok.get("cache_write", 0))
+
+    # Date range: clamp to the data, but no more than ~53 weeks (GitHub width).
+    all_days = sorted(day_prompts)
     first = datetime.strptime(all_days[0], "%Y-%m-%d").date()
     last  = datetime.strptime(all_days[-1], "%Y-%m-%d").date()
     max_span = _td(weeks=53)
@@ -1617,39 +1514,25 @@ def show_activity(collect_fn, period_name: str | None = None,
                 cells.append("  ")
                 continue
             key = cell_date.strftime("%Y-%m-%d")
-            if key in day_prompts:
-                lvl = _activity_level(day_prompts[key], thresholds)
-                cells.append(f"{_ACTIVITY_COLORS[lvl]}{_ACTIVITY_GLYPH}{RESET} ")
-            elif key in backfill_days:
-                # Approximate (from Claude stats cache): distinct hollow glyph.
-                cells.append(f"{_ACTIVITY_COLORS[2]}▢{RESET} ")
-            else:
-                cells.append(f"{_ACTIVITY_COLORS[0]}{_ACTIVITY_GLYPH}{RESET} ")
+            lvl = _activity_level(day_prompts.get(key, 0), thresholds)
+            cells.append(f"{_ACTIVITY_COLORS[lvl]}{_ACTIVITY_GLYPH}{RESET} ")
         print(f"  {DIM}{day_labels[dow]}{RESET}  " + "".join(cells))
 
     # Legend.
     ramp = " ".join(f"{c}{_ACTIVITY_GLYPH}{RESET}" for c in _ACTIVITY_COLORS)
-    legend = (f"\n  {DIM}Less{RESET} {ramp} {DIM}More{RESET}  "
-              f"{DIM}(intensity = prompts/day){RESET}")
-    if backfill_days:
-        legend += f"   {_ACTIVITY_COLORS[2]}▢{RESET} {DIM}approx (stats cache){RESET}"
-    print(legend)
+    print(f"\n  {DIM}Less{RESET} {ramp} {DIM}More{RESET}  "
+          f"{DIM}(intensity = prompts/day){RESET}")
 
-    # Summary (real data only — backfilled days are excluded from totals).
+    # Summary.
     total_prompts = sum(day_prompts.values())
     total_turns   = sum(day_turns.values())
     total_tokens  = sum(day_tokens.values())
     active_days   = len(day_prompts)
+    busiest = max(day_prompts.items(), key=lambda kv: kv[1])
     print(f"\n  {BOLD}{total_prompts}{RESET} prompts · {BOLD}{total_turns}{RESET} turns · "
           f"{BOLD}{fmt_tokens(total_tokens)}{RESET} tokens "
           f"over {BOLD}{active_days}{RESET} active day(s)")
-    if day_prompts:
-        busiest = max(day_prompts.items(), key=lambda kv: kv[1])
-        print(f"  {DIM}Busiest day: {busiest[0]} ({busiest[1]} prompts){RESET}")
-    if backfill_days:
-        print(f"  {DIM}+ {len(backfill_days)} earlier Claude Code day(s) shown from "
-              f"Claude's stats cache (activity only — excluded from totals).{RESET}")
-    print()
+    print(f"  {DIM}Busiest day: {busiest[0]} ({busiest[1]} prompts){RESET}\n")
 
 
 # ─── Shared display: export ───────────────────────────────────────────────
