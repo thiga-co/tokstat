@@ -66,7 +66,8 @@ from tokstat._core import (
 _TOOLS = [
     ("Claude Code", scan_claude_code, scan_speed_claude_code, _collect_claude, "~/.claude/"),
     ("Codex",       scan_codex,       scan_speed_codex,       _collect_codex,  "~/.codex/"),
-    ("Cursor",      scan_cursor,      None,                   _collect_cursor, "~/.cursor/"),
+    ("Cursor",      scan_cursor,      None,                   _collect_cursor,
+     "~/Library/.../Cursor/"),
     ("Kiro",        scan_kiro,        None,                   _collect_kiro,
      "~/Library/Application Support/Kiro/"),
     ("Gemini CLI",  scan_gemini,      scan_speed_gemini,      _collect_gemini, "~/.gemini/"),

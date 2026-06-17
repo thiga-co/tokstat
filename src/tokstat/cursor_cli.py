@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-cursor-token-usage — Analyze Cursor agent session activity from local transcripts.
+cursor-token-usage — Analyze Cursor agent usage from its local SQLite store.
 
-Data source: ~/.cursor/projects/*/agent-transcripts/**/*.jsonl
-Token counts are estimated (real counts tracked server-side by Cursor).
-Estimates are 5-15x lower than reality — tool outputs not stored locally.
+Data source: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
+  composerData:<id>  + bubbleId:<id>:<bubble>  (+ workspaceStorage for projects)
+
+Tokens are EXACT where Cursor recorded them; recent sessions zero out local
+token counts (billing moved server-side), so those fall back to a text-length
+estimate. Models are tagged [exact] or [est] accordingly.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -13,7 +16,6 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import json
-import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -33,98 +35,133 @@ from tokstat._core import (
 
 TOOL_COLORS["Cursor"] = BLUE
 
-_TRANSCRIPTS_BASE = Path.home() / ".cursor" / "projects"
+# ─── SQLite sources ────────────────────────────────────────────────────────
+# Modern Cursor (late 2025+) stores conversations in the globalStorage SQLite
+# KV store, not in ~/.cursor/projects/*/agent-transcripts/ anymore:
+#   composerData:<composerId>          -> modelConfig.modelName, createdAt
+#   bubbleId:<composerId>:<bubbleId>   -> type (1=user, 2=assistant),
+#                                         tokenCount {inputTokens, outputTokens},
+#                                         text, createdAt (ISO)
+# Project attribution comes from each workspace's storage:
+#   workspaceStorage/<hash>/workspace.json          -> folder (file:// URI)
+#   workspaceStorage/<hash>/state.vscdb ItemTable
+#       composer.composerData -> allComposers[].composerId
+#
+# Token counts are EXACT where Cursor recorded them (older sessions). Recent
+# sessions zero out tokenCount locally (billing moved server-side), so we fall
+# back to a text-length estimate and tag the model accordingly.
 
-# ─── SQLite helpers ──────────────────────────────────────────────────────────
+_GLOBAL_DB = (Path.home() / "Library" / "Application Support" / "Cursor"
+              / "User" / "globalStorage" / "state.vscdb")
+_WORKSPACE_BASE = (Path.home() / "Library" / "Application Support" / "Cursor"
+                   / "User" / "workspaceStorage")
 
-_DB_PATH = (Path.home() / "Library" / "Application Support" / "Cursor"
-            / "User" / "globalStorage" / "state.vscdb")
+_CURSOR_DEFAULT_MODEL = "gpt-4o"   # for pricing fallback on Cursor-only names
 
 
-def _load_session_models() -> dict[str, str]:
-    """Return {session_uuid: model_name} from Cursor's SQLite composerData."""
-    models: dict[str, str] = {}
-    if not _DB_PATH.exists():
-        return models
+def _query(db: Path, sql: str) -> list[tuple]:
+    if not db.exists():
+        return []
     try:
         import sqlite3
-        conn = sqlite3.connect(str(_DB_PATH))
-        cur = conn.cursor()
-        cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
-        for key, val in cur.fetchall():
-            try:
-                d = json.loads(val)
-                cid = d.get("composerId", "")
-                mc = d.get("modelConfig") or {}
-                m = mc.get("modelName") or mc.get("model") or ""
-                if cid and m:
-                    models[cid] = m
-            except Exception:
-                pass
-        conn.close()
+        # read-only, tolerate the app holding a write lock
+        conn = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)
+        try:
+            return conn.execute(sql).fetchall()
+        finally:
+            conn.close()
     except Exception:
-        pass
-    return models
+        return []
 
 
-# ─── Token estimation heuristics ─────────────────────────────────────────────
-_CURSOR_SYSTEM_PROMPT_TOKENS = 3_000
-_TOOL_OUTPUT_TOKENS: dict[str, int] = {
-    "Shell":         3_000,
-    "ReadFile":      5_000,
-    "WebFetch":      7_000,
-    "Glob":            300,
-    "ApplyPatch":      500,
-    "ReadLints":       300,
-    "GenerateImage":   200,
-    "Search":        1_000,
-    "default":         800,
-}
-# Cursor default model for pricing (model=auto → gpt-4o equivalent)
-_CURSOR_DEFAULT_MODEL = "gpt-4o"
+def _composer_project_map() -> dict[str, str]:
+    """Return {composerId: project_path} by joining each workspace's folder
+    with the composer IDs that workspace owns."""
+    import urllib.parse
+    out: dict[str, str] = {}
+    if not _WORKSPACE_BASE.exists():
+        return out
+    for ws_dir in _WORKSPACE_BASE.iterdir():
+        if not ws_dir.is_dir():
+            continue
+        wj = ws_dir / "workspace.json"
+        folder = None
+        if wj.exists():
+            try:
+                uri = json.loads(wj.read_text()).get("folder", "")
+                if uri.startswith("file://"):
+                    folder = urllib.parse.unquote(uri[len("file://"):])
+            except Exception:
+                folder = None
+        if not folder:
+            continue
+        rows = _query(ws_dir / "state.vscdb",
+                      "SELECT value FROM ItemTable WHERE key='composer.composerData'")
+        for (val,) in rows:
+            try:
+                data = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for c in data.get("allComposers", []) or []:
+                cid = c.get("composerId")
+                if cid:
+                    out[cid] = folder
+    return out
 
 
-# ─── Project path decoding ────────────────────────────────────────────────────
+def _composer_meta() -> dict[str, dict]:
+    """Return {composerId: {model, created_dt}} from globalStorage composerData."""
+    out: dict[str, dict] = {}
+    for (val,) in _query(_GLOBAL_DB,
+                         "SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"):
+        try:
+            d = json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        cid = d.get("composerId")
+        if not cid:
+            continue
+        mc = d.get("modelConfig") or {}
+        created = d.get("createdAt")
+        created_dt = None
+        if isinstance(created, (int, float)):
+            try:
+                created_dt = datetime.fromtimestamp(created / 1000, tz=timezone.utc)
+            except (OSError, ValueError):
+                created_dt = None
+        out[cid] = {
+            "model": mc.get("modelName") or mc.get("model") or "",
+            "created": created_dt,
+        }
+    return out
 
-def _decode_project_path(dirname: str) -> str:
-    """Decode Cursor's project directory name to a filesystem path."""
-    candidate = "/" + dirname.replace("-", "/")
-    if Path(candidate).exists():
-        return candidate
-    parts = dirname.split("-")
-    current = Path("/")
-    i = 0
-    while i < len(parts):
-        matched = False
-        for j in range(len(parts), i, -1):
-            for sep in (" ", "-"):
-                name = sep.join(parts[i:j])
-                if (current / name).exists():
-                    current = current / name
-                    i = j
-                    matched = True
-                    break
-            if matched:
-                break
-        if not matched:
-            return "/" + dirname.replace("-", "/")
-    return str(current)
+
+def _parse_iso(s) -> datetime | None:
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _price_model(raw_model: str) -> str:
+    """Map a Cursor model name to one LiteLLM can price; fall back to gpt-4o."""
+    from tokstat._core import match_model, ZERO_PRICE
+    if raw_model and match_model(raw_model) != ZERO_PRICE:
+        return raw_model
+    return _CURSOR_DEFAULT_MODEL
 
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
 
 def scan_cursor() -> list[dict]:
-    """Scan Cursor agent-transcript JSONL files for token usage records.
-
-    Returns one record per exchange (user turn + assistant response).
-    Token counts are estimated from context accumulation + tool heuristics.
-    """
-    exchanges = _parse_all_transcripts()
+    """One record per assistant turn, from Cursor's SQLite KV store."""
     records = []
-    for ex in exchanges:
+    for ex in _extract_exchanges_cursor():
         records.append({
             "tool":        "Cursor",
-            "model":       ex.get("model", _CURSOR_DEFAULT_MODEL + " [est]"),
+            "model":       ex["model"],
             "project":     ex["project"],
             "ts":          ex["ts"],
             "input":       ex["tokens"]["input"],
@@ -136,146 +173,97 @@ def scan_cursor() -> list[dict]:
     return records
 
 
-def _parse_all_transcripts() -> list[dict]:
-    """Parse all Cursor agent-transcript JSONL files into exchange dicts."""
-    if not _TRANSCRIPTS_BASE.exists():
+def _extract_exchanges_cursor() -> list[dict]:
+    """Build exchanges from globalStorage bubbles, grouped per composer.
+
+    A user bubble (type 1) opens an exchange; subsequent assistant bubbles
+    (type 2) accumulate into it. Tokens are exact when Cursor stored them,
+    estimated from text length otherwise (model tagged [exact] / [est]).
+    """
+    rows = _query(_GLOBAL_DB,
+                  "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'")
+    if not rows:
         return []
 
-    session_models = _load_session_models()
-    exchanges = []
+    proj_map = _composer_project_map()
+    meta = _composer_meta()
 
-    for proj_dir in _TRANSCRIPTS_BASE.iterdir():
-        if not proj_dir.is_dir():
+    # Group bubbles by composer, keeping (createdAt, bubble) for ordering.
+    by_composer: dict[str, list] = defaultdict(list)
+    for key, val in rows:
+        parts = key.split(":")
+        if len(parts) < 3:
             continue
-
-        project_path = _decode_project_path(proj_dir.name)
-
-        tools_dir = proj_dir / "agent-tools"
-        webfetch_tokens = sum(
-            f.stat().st_size // 4 for f in tools_dir.iterdir() if f.is_file()
-        ) if tools_dir.exists() else 0
-
-        at_dir = proj_dir / "agent-transcripts"
-        if not at_dir.exists():
+        composer_id = parts[1]
+        try:
+            b = json.loads(val)
+        except (json.JSONDecodeError, TypeError):
             continue
+        if not isinstance(b, dict):
+            continue
+        by_composer[composer_id].append(b)
 
-        for session_dir in at_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            jsonl = session_dir / f"{session_dir.name}.jsonl"
-            if not jsonl.exists():
-                continue
+    exchanges: list[dict] = []
+    for composer_id, bubbles in by_composer.items():
+        bubbles.sort(key=lambda b: b.get("createdAt") or "")
+        cmeta = meta.get(composer_id, {})
+        raw_model = cmeta.get("model") or _CURSOR_DEFAULT_MODEL
+        project = proj_map.get(composer_id, "Cursor (unknown project)")
 
-            session_ts = datetime.fromtimestamp(jsonl.stat().st_mtime, tz=timezone.utc)
-            session_model = session_models.get(session_dir.name, _CURSOR_DEFAULT_MODEL)
+        current = None
+        for b in bubbles:
+            btype = b.get("type")
+            ts = _parse_iso(b.get("createdAt")) or cmeta.get("created")
+            text = (b.get("text") or "").strip()
+            tc = b.get("tokenCount") or {}
+            exact_in = int(tc.get("inputTokens", 0) or 0) if isinstance(tc, dict) else 0
+            exact_out = int(tc.get("outputTokens", 0) or 0) if isinstance(tc, dict) else 0
 
-            lines = []
-            for raw in open(jsonl, errors="replace"):
-                raw = raw.strip()
-                if raw:
-                    try:
-                        lines.append(json.loads(raw))
-                    except json.JSONDecodeError:
-                        pass
+            if btype == 1:  # user
+                if current is not None:
+                    exchanges.append(current)
+                current = {
+                    "tool":            "Cursor",
+                    "project":         project,
+                    "ts":              ts,
+                    "user_text":       text[:500],
+                    "assistant_texts": [],
+                    "tool_errors":     [],
+                    "tools_used":      defaultdict(int),
+                    "num_turns":       0,
+                    "tokens":          {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                    "cost":            0.0,
+                    "_exact":          False,
+                    "_raw_model":      raw_model,
+                }
+            elif btype == 2 and current is not None:  # assistant
+                current["num_turns"] += 1
+                if text:
+                    current["assistant_texts"].append(text[:500])
+                if exact_in or exact_out:
+                    current["tokens"]["input"] += exact_in
+                    current["tokens"]["output"] += exact_out
+                    current["_exact"] = True
+                else:
+                    current["tokens"]["output"] += len(text) // 4
+        if current is not None:
+            exchanges.append(current)
 
-            if not lines:
-                continue
-
-            current = None
-            context_chars = 0
-            webfetch_allocated = False
-
-            for rec in lines:
-                role = rec.get("role")
-                content = rec.get("message", {}).get("content", [])
-                if not isinstance(content, list):
-                    content = []
-                msg_chars = sum(len(str(c)) for c in content)
-
-                if role == "user":
-                    if current is not None:
-                        exchanges.append(current)
-
-                    user_text = ""
-                    for c in content:
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            t = c.get("text", "")
-                            t = re.sub(r"<user_info>.*?</user_info>", "", t, flags=re.DOTALL)
-                            t = re.sub(r"<agent_transcripts>.*?</agent_transcripts>", "", t, flags=re.DOTALL)
-                            t = re.sub(r"<user_query>\s*", "", t)
-                            t = re.sub(r"\s*</user_query>", "", t)
-                            t = t.strip()
-                            if t:
-                                user_text = t
-                                break
-
-                    current = {
-                        "tool":            "Cursor",
-                        "model":           session_model + " [est]",
-                        "project":         project_path,
-                        "ts":              session_ts,
-                        "user_text":       user_text,
-                        "assistant_texts": [],
-                        "tool_errors":     [],
-                        "tools_used":      defaultdict(int),
-                        "num_turns":       0,
-                        "tokens":          {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
-                        "cost":            0.0,
-                        "_ctx":            context_chars,
-                        "_wf":             webfetch_tokens,
-                        "_wf_used":        webfetch_allocated,
-                    }
-                    context_chars += msg_chars
-
-                elif role == "assistant" and current is not None:
-                    current["num_turns"] += 1
-                    for c in content:
-                        if isinstance(c, dict):
-                            if c.get("type") == "text":
-                                t = c.get("text", "").strip()
-                                if t:
-                                    current["assistant_texts"].append(t)
-                                    current["tokens"]["output"] += len(t) // 4
-                            elif c.get("type") == "tool_use":
-                                current["tools_used"][c.get("name", "unknown")] += 1
-                    context_chars += msg_chars
-
-            if current is not None:
-                exchanges.append(current)
-
-    # Compute input token estimates and costs
+    # Finalize: estimate input for non-exact exchanges, set model tag + cost.
     for ex in exchanges:
-        ctx = ex.pop("_ctx", 0) // 4
-        wf_tokens = ex.pop("_wf", 0)
-        wf_used = ex.pop("_wf_used", False)
+        exact = ex.pop("_exact", False)
+        raw_model = ex.pop("_raw_model", _CURSOR_DEFAULT_MODEL)
+        if not exact:
+            # rough input estimate: accumulated user+assistant text already in
+            # output for assistants; approximate prompt context from user text.
+            ex["tokens"]["input"] = max(ex["tokens"]["input"],
+                                        len(ex.get("user_text", "")) // 4)
+        ex["model"] = f"{raw_model} [{'exact' if exact else 'est'}]"
+        ex["cost"] = compute_cost(ex["tokens"], _price_model(raw_model))
 
-        inp = _CURSOR_SYSTEM_PROMPT_TOKENS + ctx
-        wf_count = 0
-        for tool_name, count in ex["tools_used"].items():
-            if tool_name == "WebFetch":
-                wf_count += count
-            else:
-                inp += _TOOL_OUTPUT_TOKENS.get(tool_name, _TOOL_OUTPUT_TOKENS["default"]) * count
-        if wf_count > 0:
-            if wf_tokens > 0 and not wf_used:
-                inp += wf_tokens
-            else:
-                inp += _TOOL_OUTPUT_TOKENS["WebFetch"] * wf_count
-
-        ex["tokens"]["input"] = inp
-        # For pricing: use real model name; fall back to default for Cursor-specific names
-        raw_model = ex["model"].replace(" [est]", "")
-        from tokstat._core import match_model, ZERO_PRICE
-        if match_model(raw_model) == ZERO_PRICE:
-            raw_model = _CURSOR_DEFAULT_MODEL
-        ex["cost"] = compute_cost(ex["tokens"], raw_model)
-
+    exchanges = [e for e in exchanges
+                 if e["tokens"]["input"] or e["tokens"]["output"]]
     return exchanges
-
-
-def _extract_exchanges_cursor() -> list[dict]:
-    """Return Cursor exchanges in standard format for display modes."""
-    return _parse_all_transcripts()
 
 
 def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
@@ -305,7 +293,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 def main(period_name: str | None = None, tool_filter: str | None = None):
     print(f"\n{BOLD} Token Usage — Cursor{RESET}")
-    print(f"{DIM}  Note: token counts are estimated [est] — real counts tracked server-side{RESET}")
+    print(f"{DIM}  Note: tokens [exact] where Cursor recorded them, else [est] from text{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
@@ -318,8 +306,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    if not _TRANSCRIPTS_BASE.exists():
-        print(f"  {DIM}Cursor not found at {_TRANSCRIPTS_BASE}{RESET}\n")
+    if not _GLOBAL_DB.exists():
+        print(f"  {DIM}Cursor not found at {_GLOBAL_DB}{RESET}\n")
         return
 
     records = scan_cursor()
@@ -338,7 +326,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     show_overview_tables(records, [], cutoff, cutoff_end, period_label,
                          tool_filter, all_exchanges=exchanges)
-    print(f"  {DIM}⚠ All token counts are estimates — Shell/ReadFile outputs not stored locally.{RESET}\n")
+    print(f"  {DIM}⚠ [exact] = token counts recorded by Cursor; [est] = estimated "
+          f"from text length (recent sessions track billing server-side).{RESET}\n")
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -376,10 +365,10 @@ def show_help():
     print(f"""
 {BOLD}cursor-token-usage{RESET} — Analyze Cursor agent session activity.
 
-{BOLD}NOTE{RESET}  {DIM}Cursor tracks token counts server-side. This tool shows estimated tokens
-      based on conversation text + tool output heuristics. Estimates can be
-      5-15x lower than reality (Shell/ReadFile outputs not stored locally).
-      For exact counts: cursor.com/settings/usage → Export CSV.{RESET}
+{BOLD}NOTE{RESET}  {DIM}Reads Cursor's local SQLite store. Older sessions carry exact token
+      counts ([exact]); recent ones track billing server-side and are
+      estimated from text length ([est], can be lower than reality).
+      For authoritative totals: cursor.com/settings/usage.{RESET}
 
 {BOLD}MODES{RESET}
   cursor-token-usage                            Aggregated overview (period, project, model)
@@ -393,7 +382,8 @@ def show_help():
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
 
 {BOLD}DATA SOURCE{RESET}
-  {BLUE}Cursor{RESET}    {DIM}~/.cursor/projects/*/agent-transcripts/{RESET}
+  {BLUE}Cursor{RESET}    {DIM}~/Library/Application Support/Cursor/User/globalStorage/state.vscdb{RESET}
+            {DIM}tokens exact where recorded, else estimated ([exact] / [est]){RESET}
 """)
 
 

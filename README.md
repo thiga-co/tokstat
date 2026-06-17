@@ -19,7 +19,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 | `tokstat` | **all of the below** | combined | mixed | ✓ | new |
 | `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | experimental |
-| `cursor-token-usage` | Cursor | `~/.cursor/projects/` | ~ estimated | ~ | experimental |
+| `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | ~ exact/est | ~ | experimental |
 | `kiro-token-usage` | Kiro | `~/Library/.../Kiro/` | ~ estimated | ~ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
@@ -30,7 +30,7 @@ Requires Python 3.7+. No dependencies. MIT License.
 
 > **Experimental tools** parse undocumented local formats that may change without notice. Data may be incomplete or inaccurate.
 >
-> **Cursor note:** token counts are tracked server-side and not stored locally. Estimates can be 5–15× lower than reality. For exact counts use [cursor.com/settings/usage](https://cursor.com/settings/usage).
+> **Cursor note:** tokstat reads Cursor's local SQLite store (`globalStorage/state.vscdb`). Older sessions carry exact token counts (`[exact]`); recent ones track billing server-side, so those are estimated from text length (`[est]`) and can be lower than reality. For authoritative totals use [cursor.com/settings/usage](https://cursor.com/settings/usage).
 
 ### Web exports (claude.ai / chatgpt.com)
 
