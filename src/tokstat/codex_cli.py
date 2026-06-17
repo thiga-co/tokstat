@@ -271,6 +271,11 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
             current_effort = payload.get("effort", "") or ""
             if payload.get("cwd"):
                 current_cwd = payload["cwd"]
+            # A real prompt can precede the first turn_context, so its model
+            # was unknown at creation. Backfill it once the model is known.
+            if (current is not None and current_model
+                    and current["model"].startswith("codex-unknown")):
+                current["model"] = _label(current_model, current_effort)
 
         elif rec_type == "response_item" and payload.get("role") == "user":
             text = ""
