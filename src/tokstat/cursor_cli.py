@@ -428,11 +428,11 @@ def show_help():
     print(f"""
 {BOLD}cursor-token-usage{RESET} — Analyze Cursor agent session activity.
 
-{BOLD}NOTE{RESET}  {DIM}Reads Cursor's local SQLite store. Older sessions carry exact token
-      counts ([exact]). Recent sessions track billing server-side and store
-      no local token data ([no tokens]) — they're counted as activity
-      (prompts/turns) but tokens/cost are not estimated.
-      For authoritative totals: cursor.com/settings/usage.{RESET}
+{BOLD}NOTE{RESET}  {DIM}Reads Cursor's local SQLite store. Sessions with token counts
+      recorded locally are reported exactly ([exact]); sessions that
+      store none are tagged [no tokens], counted as activity
+      (prompts/turns) and never estimated (cost shows "no data").
+      For authoritative totals: the Cursor dashboard (cursor.com/dashboard).{RESET}
 
 {BOLD}MODES{RESET}
   cursor-token-usage                            Aggregated overview (period, project, model)
