@@ -1491,17 +1491,23 @@ def show_activity(collect_fn, period_name: str | None = None,
         thresholds = [1, 2, 3]
 
     # Month labels row: mark the column where each month first appears.
-    month_row = [" "] * (n_weeks * 2)
+    # Append the 2-digit year when the year changes (and on the first label)
+    # so a grid spanning a year boundary isn't ambiguous (e.g. Jun '25 vs '26).
+    month_row = [" "] * (n_weeks * 2 + 4)
     last_month = None
+    last_year = None
     for w in range(n_weeks):
         col_date = grid_start + _td(weeks=w)
         if col_date.month != last_month:
             lbl = col_date.strftime("%b")
+            if col_date.year != last_year:
+                lbl += col_date.strftime(" '%y")
             for i, ch in enumerate(lbl):
                 if w * 2 + i < len(month_row):
                     month_row[w * 2 + i] = ch
             last_month = col_date.month
-    print("       " + "".join(month_row))
+            last_year = col_date.year
+    print("       " + "".join(month_row).rstrip())
 
     # Day rows.
     day_labels = ["Mon", "   ", "Wed", "   ", "Fri", "   ", "Sun"]
