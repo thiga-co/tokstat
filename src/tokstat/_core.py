@@ -649,8 +649,12 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     any_model_changed = False
     for model in sorted_models:
         d = model_data[model]
+        # Skip models with no tokens — unless we're showing activity and the
+        # model still has prompts/turns/calls (e.g. Cursor [no tokens] rows).
         if d["input"] == 0 and d["output"] == 0:
-            continue
+            has_activity = show_activity and (d["prompts"] or d["turns"] or d["api_calls"])
+            if not has_activity:
+                continue
         color = TOOL_COLORS.get(d["tool"], "")
         key = ("model", model)
         mark = _mark(key)
