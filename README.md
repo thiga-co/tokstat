@@ -245,7 +245,8 @@ claude-token-usage --export out.json --period "7 days"
 All modes support `--period`:
 
 ```sh
---period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
+--period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days",
+                     "1 month", "2 months", "3 months", "6 months", year
                      default: today — partial match works ("7" = "Last 7 days")
 ```
 

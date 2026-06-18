@@ -183,6 +183,10 @@ def period_boundaries() -> dict:
         "Yesterday":    (today_midnight - timedelta(days=1), today_midnight),
         "Last 7 days":  (now - timedelta(days=7),            None),
         "Last 30 days": (now - timedelta(days=30),           None),
+        "Last 1 month":  (now - timedelta(days=30),          None),
+        "Last 2 months": (now - timedelta(days=60),          None),
+        "Last 3 months": (now - timedelta(days=90),          None),
+        "Last 6 months": (now - timedelta(days=180),         None),
         "Last year":    (now - timedelta(days=365),          None),
         "Forever":      (datetime.min.replace(tzinfo=timezone.utc), None),
     }
@@ -440,7 +444,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     boundaries = period_boundaries()
     if period_label == "All time":
         period_order = ["Last hour", "Last 5 hours", "Today", "Yesterday",
-                        "Last 7 days", "Last 30 days", "Last year", "Forever"]
+                        "Last 7 days", "Last 30 days", "Last 2 months",
+                        "Last 3 months", "Last 6 months", "Last year", "Forever"]
     else:
         period_order = [period_label]
         boundaries = {period_label: (cutoff, cutoff_end)}
