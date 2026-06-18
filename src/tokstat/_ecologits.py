@@ -1,0 +1,219 @@
+"""Environmental-impact estimation for LLM usage, reusing the EcoLogits
+methodology and model database.
+
+We do NOT depend on the `ecologits` library — instead we fetch and cache its
+model database (parameter counts per model, including estimates + ranges for
+closed models like Anthropic/OpenAI) exactly like the LiteLLM pricing cache,
+and port its published usage-phase formula and constants.
+
+Scope: USAGE phase only (the electricity to run inference). The embodied
+(hardware-manufacturing) phase is intentionally excluded — it needs per-request
+GPU provisioning data tokstat doesn't have. Figures are order-of-magnitude
+estimates with a min/max range driven by the model's active-parameter range.
+
+Constants and formula ported from ecologits/impacts/llm.py
+(MPL-2.0, github.com/genai-impact/ecologits).
+
+SPDX-License-Identifier: MIT
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import urllib.request
+from datetime import datetime, timedelta
+from pathlib import Path
+
+ECOLOGITS_URL = ("https://raw.githubusercontent.com/genai-impact/ecologits/"
+                 "main/ecologits/data/models.json")
+ECOLOGITS_CACHE = Path.home() / ".cache" / "token-usage" / "ecologits_models.json"
+ECOLOGITS_CACHE_MAX_AGE = timedelta(hours=24)
+
+# ─── EcoLogits constants (ecologits/impacts/llm.py) ────────────────────────
+_GPU_ENERGY_ALPHA = 1.1665273170451914e-06
+_GPU_ENERGY_BETA  = -0.011205921025579175
+_GPU_ENERGY_GAMMA = 4.052928146734005e-05
+_LATENCY_ALPHA = 0.0006785088094353663
+_LATENCY_BETA  = 0.0003119310311688259
+_LATENCY_GAMMA = 0.019473717579473387
+_GPU_MEMORY  = 80      # GB per GPU
+_SERVER_GPUS = 8
+_SERVER_POWER = 1.2    # kW
+_BATCH_SIZE = 64
+_QUANT_BITS = 16
+
+# Defaults (overridable via config). World electricity mix ≈ EcoLogits value.
+DEFAULT_PUE = 1.2
+DEFAULT_MIX_GWP = 0.418   # kgCO2eq / kWh (world average)
+
+_DB: dict | None = None   # {model_name: {"active": (min,max), "total": float, "tps":, "ttft":}}
+
+
+# ─── Database load (fetch + 24h cache, stale fallback) ─────────────────────
+
+def _parse_params(arch: dict):
+    """Return (active_min, active_max, total) in billions, or None."""
+    if not isinstance(arch, dict):
+        return None
+    params = arch.get("parameters")
+    if params is None:
+        return None
+    if isinstance(params, (int, float)):
+        v = float(params)
+        return (v, v, v)
+    if isinstance(params, dict):
+        total = params.get("total")
+        active = params.get("active")
+        if isinstance(active, dict):
+            amin = active.get("min", active.get("max"))
+            amax = active.get("max", active.get("min"))
+        elif isinstance(active, (int, float)):
+            amin = amax = float(active)
+        elif "min" in params or "max" in params:
+            # dense model given as a bare {min, max} range (no active/total)
+            amin = params.get("min", params.get("max"))
+            amax = params.get("max", params.get("min"))
+        else:
+            amin = amax = total
+        if total is None:
+            total = amax
+        if amin is None or total is None:
+            return None
+        return (float(amin), float(amax), float(total))
+    return None
+
+
+def _build_db(raw: dict) -> dict:
+    db: dict = {}
+    for m in raw.get("models", []):
+        if not isinstance(m, dict):
+            continue
+        parsed = _parse_params(m.get("architecture") or {})
+        if not parsed:
+            continue
+        dep = m.get("deployment") or {}
+        entry = {
+            "active": (parsed[0], parsed[1]),
+            "total":  parsed[2],
+            "tps":    dep.get("tps"),
+            "ttft":   dep.get("ttft"),
+        }
+        name = m.get("name", "")
+        if name:
+            db[name.lower()] = entry
+    # aliases: name → alias target
+    for a in raw.get("aliases", []):
+        if not isinstance(a, dict):
+            continue
+        src = (a.get("name") or "").lower()
+        tgt = (a.get("alias") or "").lower()
+        if src and tgt in db and src not in db:
+            db[src] = db[tgt]
+    return db
+
+
+def load_ecologits_db() -> dict:
+    """Load the EcoLogits model DB, fetching+caching for 24h with stale
+    fallback (mirrors load_pricing). Returns {} on total failure."""
+    global _DB
+    if _DB is not None:
+        return _DB
+    # fresh cache?
+    if ECOLOGITS_CACHE.exists():
+        age = datetime.now() - datetime.fromtimestamp(ECOLOGITS_CACHE.stat().st_mtime)
+        if age < ECOLOGITS_CACHE_MAX_AGE:
+            try:
+                _DB = _build_db(json.loads(ECOLOGITS_CACHE.read_text()))
+                return _DB
+            except (OSError, json.JSONDecodeError):
+                pass
+    # fetch
+    try:
+        req = urllib.request.Request(ECOLOGITS_URL, headers={"User-Agent": "tokstat"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = json.loads(resp.read().decode())
+        ECOLOGITS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        ECOLOGITS_CACHE.write_text(json.dumps(raw))
+        _DB = _build_db(raw)
+        return _DB
+    except Exception:
+        # stale fallback
+        if ECOLOGITS_CACHE.exists():
+            try:
+                _DB = _build_db(json.loads(ECOLOGITS_CACHE.read_text()))
+                return _DB
+            except (OSError, json.JSONDecodeError):
+                pass
+    _DB = {}
+    return _DB
+
+
+# ─── Model resolution (tokstat name → EcoLogits entry) ─────────────────────
+
+def _normalize(model: str) -> str:
+    """Strip tokstat suffixes ([est], [xhigh], [no tokens], date stamps…)."""
+    m = model.lower().split("[")[0].strip()
+    return m
+
+
+def resolve_model(model: str) -> dict | None:
+    """Map a tokstat model string to an EcoLogits architecture entry.
+    Tries exact, then prefix, then family-class fallback."""
+    db = load_ecologits_db()
+    if not db:
+        return None
+    name = _normalize(model)
+    if name in db:
+        return db[name]
+    # longest known name that is a prefix of the model (or vice-versa)
+    cands = [k for k in db if name.startswith(k) or k.startswith(name)]
+    if cands:
+        return db[max(cands, key=len)]
+    return None
+
+
+# ─── Usage-phase impact (ported from EcoLogits) ────────────────────────────
+
+def _gpu_energy(output_tokens: float, active_params: float) -> float:
+    per = (_GPU_ENERGY_ALPHA * math.exp(_GPU_ENERGY_BETA * _BATCH_SIZE) * active_params
+           + _GPU_ENERGY_GAMMA) / 1000.0
+    return output_tokens * per
+
+
+def _generation_latency(output_tokens: float, active_params: float,
+                        tps, ttft) -> float:
+    if tps:
+        lpt = 1.0 / tps
+    else:
+        lpt = (_LATENCY_ALPHA * active_params + _LATENCY_BETA * _BATCH_SIZE
+               + _LATENCY_GAMMA)
+    return output_tokens * lpt + (ttft or 0.0)
+
+
+def _request_energy(output_tokens: float, active_params: float, total_params: float,
+                    tps, ttft, pue: float) -> float:
+    gpu_e = _gpu_energy(output_tokens, active_params)
+    mem = 1.2 * total_params * _QUANT_BITS / 8.0
+    gpu_nb = max(1, math.ceil(mem / _GPU_MEMORY))
+    gpu_req = 2 ** math.ceil(math.log2(gpu_nb))
+    lat = _generation_latency(output_tokens, active_params, tps, ttft)
+    server_e = (lat / 3600.0) * _SERVER_POWER * (gpu_req / _SERVER_GPUS) * (1.0 / _BATCH_SIZE)
+    it_energy = server_e + gpu_req * gpu_e
+    return pue * it_energy
+
+
+def impact_for(model: str, output_tokens: float,
+               pue: float = DEFAULT_PUE,
+               mix_gwp: float = DEFAULT_MIX_GWP) -> dict | None:
+    """Return usage-phase {energy:(min,max) kWh, gwp:(min,max) kgCO2eq} for
+    generating `output_tokens` with `model`, or None if the model is unknown."""
+    arch = resolve_model(model)
+    if not arch or output_tokens <= 0:
+        return None
+    amin, amax = arch["active"]
+    total = arch["total"]
+    e1 = _request_energy(output_tokens, amin, total, arch.get("tps"), arch.get("ttft"), pue)
+    e2 = _request_energy(output_tokens, amax, total, arch.get("tps"), arch.get("ttft"), pue)
+    e_lo, e_hi = min(e1, e2), max(e1, e2)
+    return {"energy": (e_lo, e_hi), "gwp": (e_lo * mix_gwp, e_hi * mix_gwp)}

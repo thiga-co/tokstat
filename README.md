@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **unreleased** — `--impact` mode: energy (kWh) and CO₂e estimate of the observed activity, reusing the EcoLogits methodology and model database (fetched + cached locally, no dependency). Usage phase only, with a min–max range and a configurable electricity mix.
 - **1.7.0** — `--total` mode: a compact badge of total tokens + cost for the selected period/tool, with the data's actual date span and a per-tool breakdown (each tool's own date range). New `--period` options: `1 month`, `2 months`, `3 months`, `6 months` (unquoted `--period 3 months` works too). `--activity` shows the year on its own row above the months.
 - **1.6.0** — `--activity` mode: a GitHub-style contribution calendar of daily activity over the period, colored by prompts/day, with the year shown at year boundaries and a summary of total prompts / turns / tokens and the busiest day. Reads directly from the scanned exchanges (history depth is limited by what each tool keeps on disk — see each tool's retention, e.g. Claude Code's `cleanupPeriodDays`, default 30).
 - **1.5.1** — Codex token accounting fixed (cached input and reasoning tokens no longer double-counted); Cursor rewritten onto its SQLite store (exact counts where recorded, `⚠ no data` otherwise — never estimated); Kiro rewritten onto its per-session format (activity only); `⚠ no data` flag for rows without reliable token data; per-tool anomaly thresholds; per-provider plan recommendations. codex / cursor / kiro promoted to stable.
@@ -87,6 +88,7 @@ All tools support the same modes:
 <tool> --anomalies              # Technical anomaly detection
 <tool> --activity               # GitHub-style activity calendar (by day) + tokens
 <tool> --total                  # Compact totals (tokens + cost + data span)
+<tool> --impact                 # Energy & CO₂ estimate (EcoLogits methodology)
 <tool> --plan                   # Cost breakdown + per-provider plan recommendation
 <tool> --export    [file.json]  # Export all exchanges to JSON
 <tool> --version   [-V]         # Print version
@@ -193,6 +195,46 @@ tokstat --total --tool codex --period all
     Claude Code    $517.32   717.8M tokens · 422 prompts · 2026-05-19 → 2026-06-18
     Codex          $179.70   235.3M tokens · 147 prompts · 2026-05-23 → 2026-06-15
 ```
+
+### `--impact` — energy & CO₂ estimate
+
+Estimates the **environmental impact** of the observed activity, reusing the
+[EcoLogits](https://github.com/genai-impact/ecologits) methodology and model
+database (fetched and cached locally, like the pricing data — no extra
+dependency).
+
+```sh
+tokstat --impact --period "30 days"
+tokstat --impact --tool claude --period all
+```
+
+```
+  ╭───────────────────────────────────────────╮
+  │ ENERGY & CO₂ · Last 30 days                │
+  │                                            │
+  │ 11.46 kWh    4.79 kg CO₂e                   │
+  │ energy 7.81–15.11 kWh · CO₂e 3.26–6.32 kg  │
+  │                                            │
+  │ ≈ 40 km by car · 955 phone charges         │
+  │ mix: world (0.418 kgCO₂e/kWh) · PUE 1.2     │
+  ╰───────────────────────────────────────────╯
+```
+
+> **⚠️ Order-of-magnitude estimate, usage phase only.** Energy is derived from
+> output tokens × the model's (estimated) active parameters — for closed models
+> like Claude/GPT, EcoLogits *estimates* the parameter count, hence the min–max
+> range. It excludes hardware manufacturing (the embodied phase needs
+> per-request GPU data tokstat doesn't have). Models absent from the EcoLogits
+> database are excluded and reported.
+
+Configure the electricity mix in `~/.config/tokstat/impact.json`:
+
+```json
+{ "region": "france", "pue": 1.2 }
+```
+
+Presets: `world` (default, 0.418), `france` (0.056), `eu` (0.250), `us` (0.369),
+`green` (0.040) kgCO₂e/kWh — or set `electricity_mix_gwp` explicitly.
 
 ### `--plan` — plan & optimization recommendations
 

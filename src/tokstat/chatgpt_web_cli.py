@@ -33,7 +33,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total,
+    show_activity, show_total, show_impact,
     export_conversations, _parse_period, print_update_notice,
 )
 from tokstat._web import (
@@ -313,7 +313,7 @@ _TOOL_ALIASES = {"chatgpt": TOOL_NAME, "chatgpt.com": TOOL_NAME, "chatgpt-web": 
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool",
     "--import", "--account", "--list-accounts", "--clean-cache",
     "--clear-imports",
 }
@@ -359,6 +359,7 @@ def show_help():
   chatgpt-web-token-usage --anomalies              Anomaly detection
   chatgpt-web-token-usage --activity               Activity calendar (by day)
   chatgpt-web-token-usage --total                  Compact totals (tokens + cost)
+  chatgpt-web-token-usage --impact                 Energy & CO₂ estimate
   chatgpt-web-token-usage --plan                   Cost breakdown + tips
   chatgpt-web-token-usage --export   [file]        Export exchanges to JSON
   chatgpt-web-token-usage --import <zip|json|dir>  Load the official export
@@ -450,6 +451,8 @@ def cli():
         show_activity(_collect_all_exchanges, period, tool)
     elif "--total" in args:
         show_total(_collect_all_exchanges, period, tool)
+    elif "--impact" in args:
+        show_impact(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

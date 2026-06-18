@@ -1636,6 +1636,126 @@ def show_total(collect_fn, period_name: str | None = None,
     print()
 
 
+# ─── Shared display: environmental impact ─────────────────────────────────
+
+# Electricity-mix GWP presets (kgCO2eq/kWh) and a config override.
+_IMPACT_MIX_PRESETS = {
+    "world": 0.418, "france": 0.056, "eu": 0.250, "europe": 0.250,
+    "us": 0.369, "usa": 0.369, "green": 0.040,
+}
+_IMPACT_CONFIG = _Path.home() / ".config" / "tokstat" / "impact.json"
+
+
+def _load_impact_config():
+    """Return (pue, mix_gwp, region_label). Config keys: 'region' (preset) or
+    'electricity_mix_gwp' (explicit), and optional 'pue'."""
+    from tokstat._ecologits import DEFAULT_PUE, DEFAULT_MIX_GWP
+    pue, mix, region = DEFAULT_PUE, DEFAULT_MIX_GWP, "world"
+    try:
+        cfg = json.loads(_IMPACT_CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    if isinstance(cfg.get("pue"), (int, float)):
+        pue = float(cfg["pue"])
+    if isinstance(cfg.get("electricity_mix_gwp"), (int, float)):
+        mix = float(cfg["electricity_mix_gwp"]); region = "custom"
+    elif isinstance(cfg.get("region"), str):
+        r = cfg["region"].lower().strip()
+        if r in _IMPACT_MIX_PRESETS:
+            mix = _IMPACT_MIX_PRESETS[r]; region = r
+    return pue, mix, region
+
+
+def show_impact(collect_fn, period_name: str | None = None,
+                tool_filter: str | None = None):
+    """Estimate the energy and CO2 (usage phase) of the observed activity,
+    using the EcoLogits methodology and model database. Order-of-magnitude."""
+    from tokstat._ecologits import impact_for, load_ecologits_db
+
+    print(f"\n{BOLD} Environmental Impact{RESET}  {DIM}(usage phase, EcoLogits){RESET}")
+    print(f"{DIM}  Loading model database (EcoLogits)...{RESET}")
+    load_ecologits_db()
+    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+
+    try:
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+
+    all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_exchanges = [e for e in all_exchanges if e.get("ts")]
+    if not all_exchanges:
+        print(f"  {YELLOW}No data found.{RESET}\n")
+        return
+
+    pue, mix_gwp, region = _load_impact_config()
+
+    # Aggregate output tokens per model (energy is driven by output tokens).
+    out_by_model: dict[str, int] = defaultdict(int)
+    for e in all_exchanges:
+        tok = e.get("tokens") or {}
+        out_by_model[e.get("model") or "?"] += tok.get("output", 0) or 0
+
+    e_lo = e_hi = g_lo = g_hi = 0.0
+    covered_out = 0
+    total_out = sum(out_by_model.values())
+    rows = []
+    for model, out in sorted(out_by_model.items(), key=lambda kv: -kv[1]):
+        if out <= 0:
+            continue
+        imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+        if not imp:
+            rows.append((model, out, None))
+            continue
+        covered_out += out
+        e_lo += imp["energy"][0]; e_hi += imp["energy"][1]
+        g_lo += imp["gwp"][0];    g_hi += imp["gwp"][1]
+        rows.append((model, out, imp))
+
+    if covered_out == 0:
+        print(f"  {YELLOW}No models matched the EcoLogits database.{RESET}\n")
+        return
+
+    scope = period_label + (f" · {tool_filter}" if tool_filter else "")
+    e_mid = (e_lo + e_hi) / 2
+    g_mid = (g_lo + g_hi) / 2
+    car_km = g_mid / 0.12           # ~120 gCO2/km petrol car
+    charges = e_mid / 0.012         # ~12 Wh per smartphone charge
+
+    inner = [
+        f"{BOLD}ENERGY & CO₂ · {scope}{RESET}",
+        "",
+        f"{BOLD}{GREEN}{e_mid:.2f} kWh{RESET}    {BOLD}{g_mid:.2f} kg CO₂e{RESET}",
+        f"energy {e_lo:.2f}–{e_hi:.2f} kWh · CO₂e {g_lo:.2f}–{g_hi:.2f} kg",
+        "",
+        f"≈ {car_km:.0f} km by car · {charges:.0f} phone charges",
+        f"mix: {region} ({mix_gwp:.3f} kgCO₂e/kWh) · PUE {pue}",
+    ]
+    w = max(len(_strip_ansi(s)) for s in inner)
+    print(f"  ╭─{'─' * w}─╮")
+    for s in inner:
+        print(f"  │ {s}{' ' * (w - len(_strip_ansi(s)))} │")
+    print(f"  ╰─{'─' * w}─╯")
+
+    print(f"\n  {DIM}By model:{RESET}")
+    for model, out, imp in rows[:12]:
+        if imp is None:
+            print(f"    {model:<28} {DIM}{fmt_tokens(out):>7} out · not in EcoLogits DB{RESET}")
+        else:
+            gm = (imp["gwp"][0] + imp["gwp"][1]) / 2
+            em = (imp["energy"][0] + imp["energy"][1]) / 2
+            print(f"    {model:<28} {fmt_tokens(out):>7} out · "
+                  f"{em:.2f} kWh · {gm:.2f} kg CO₂e")
+
+    if covered_out < total_out:
+        miss = (total_out - covered_out) / total_out * 100
+        print(f"\n  {DIM}⚠ {miss:.0f}% of output tokens are from models not in the "
+              f"EcoLogits DB (excluded).{RESET}")
+    print(f"  {DIM}⚠ Usage phase only (excludes hardware manufacturing). "
+          f"Order-of-magnitude estimate.{RESET}\n")
+
+
 # ─── Shared display: export ───────────────────────────────────────────────
 
 def export_conversations(collect_fn, output_path: str,
