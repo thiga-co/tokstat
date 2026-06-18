@@ -1583,11 +1583,16 @@ def show_total(collect_fn, period_name: str | None = None,
         c = e.get("cost", 0) or 0
         cost += c
         turns += e.get("num_turns", 0) or 0
-        days.add(e["ts"].astimezone().strftime("%Y-%m-%d"))
+        day = e["ts"].astimezone().strftime("%Y-%m-%d")
+        days.add(day)
         t = per_tool[e.get("tool", "?")]
         t["tokens"] += i + o + rr + ww
         t["cost"]   += c
         t["prompts"] += 1
+        if not t.get("first") or day < t["first"]:
+            t["first"] = day
+        if not t.get("last") or day > t["last"]:
+            t["last"] = day
 
     total_tokens = inp + out + cr + cw
     prompts = len(all_exchanges)
@@ -1606,9 +1611,11 @@ def show_total(collect_fn, period_name: str | None = None,
         print(f"\n  {DIM}By tool:{RESET}")
         for name, d in sorted(per_tool.items(), key=lambda kv: -kv[1]["cost"]):
             color = TOOL_COLORS.get(name, "")
-            cost_cell = fmt_cost(d["cost"]) if d["tokens"] else f"{BYELLOW}⚠ no data{RESET}"
-            print(f"    {color}{name:<12}{RESET} {cost_cell:>9}   "
-                  f"{DIM}{fmt_tokens(d['tokens'])} tokens · {d['prompts']} prompts{RESET}")
+            cost_str = fmt_cost(d["cost"]) if d["tokens"] else "⚠ no data"
+            span = f"{d.get('first')} → {d.get('last')}"
+            print(f"    {color}{name:<12}{RESET} {cost_str:>10}   "
+                  f"{DIM}{fmt_tokens(d['tokens']):>7} tokens · {d['prompts']:>4} prompts · "
+                  f"{span}{RESET}")
     print()
 
 
