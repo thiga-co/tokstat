@@ -1729,10 +1729,21 @@ def print_update_notice(current_version: str) -> None:
 
 # ─── Arg parsing helpers ──────────────────────────────────────────────────
 
+_PERIOD_UNITS = ("hour", "hours", "day", "days", "week", "weeks",
+                 "month", "months", "year", "years")
+
+
 def _parse_period(args: list[str]) -> str | None:
     for flag in ("--period", "--since"):
         if flag in args:
             idx = args.index(flag)
-            if idx + 1 < len(args):
-                return args[idx + 1]
+            if idx + 1 >= len(args):
+                return None
+            value = args[idx + 1]
+            # Allow an unquoted "3 months" → shell splits it into "3" "months";
+            # rejoin a following bare unit word so it resolves correctly.
+            if (value.isdigit() and idx + 2 < len(args)
+                    and args[idx + 2].lower() in _PERIOD_UNITS):
+                value = f"{value} {args[idx + 2]}"
+            return value
     return None
