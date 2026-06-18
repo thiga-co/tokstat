@@ -179,16 +179,19 @@ tokstat --total --tool codex --period all
 ```
 
 ```
-  Period: Last 30 days
-
-  Tokens     953.1M   in 9.4M · out 2.4M · cache 922.6M/18.7M
-  Cost       $697.03
-  Activity   577 prompts · 2614 turns over 25 active day(s)
-  Data span  2026-05-19 → 2026-06-18
+  ╭───────────────────────────────────────────────╮
+  │ TOTAL · Last 30 days                            │
+  │                                                 │
+  │ $697.03    953.1M tokens                        │
+  │ in 9.4M · out 2.4M · cache 922.6M/18.7M         │
+  │                                                 │
+  │ 577 prompts · 2614 turns · 25 active day(s)     │
+  │ 2026-05-19 → 2026-06-18                         │
+  ╰───────────────────────────────────────────────╯
 
   By tool:
-    Claude Code    $517.32   717.8M tokens · 422 prompts
-    Codex          $179.70   235.3M tokens · 147 prompts
+    Claude Code    $517.32   717.8M tokens · 422 prompts · 2026-05-19 → 2026-06-18
+    Codex          $179.70   235.3M tokens · 147 prompts · 2026-05-23 → 2026-06-15
 ```
 
 ### `--plan` — plan & optimization recommendations

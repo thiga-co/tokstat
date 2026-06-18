@@ -1567,12 +1567,6 @@ def show_total(collect_fn, period_name: str | None = None,
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    label = f"  Period: {BOLD}{period_label}{RESET}"
-    if tool_filter:
-        color = TOOL_COLORS.get(tool_filter, "")
-        label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
-    print(label + "\n")
-
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
     all_exchanges = [e for e in all_exchanges if e.get("ts")]
     if not all_exchanges:
@@ -1608,13 +1602,25 @@ def show_total(collect_fn, period_name: str | None = None,
     first = min(e["ts"] for e in all_exchanges).astimezone().strftime("%Y-%m-%d")
     last  = max(e["ts"] for e in all_exchanges).astimezone().strftime("%Y-%m-%d")
 
-    print(f"  {BOLD}Tokens{RESET}     {BOLD}{fmt_tokens(total_tokens)}{RESET}   "
-          f"{DIM}in {fmt_tokens(inp)} · out {fmt_tokens(out)} · "
-          f"cache {fmt_tokens(cr)}/{fmt_tokens(cw)}{RESET}")
-    print(f"  {BOLD}Cost{RESET}       {BOLD}{fmt_cost(cost)}{RESET}")
-    print(f"  {BOLD}Activity{RESET}   {prompts} prompts · {turns} turns "
-          f"over {len(days)} active day(s)")
-    print(f"  {BOLD}Data span{RESET}  {first} → {last}")
+    scope = period_label + (f" · {tool_filter}" if tool_filter else "")
+
+    # Badge: a bordered card with the headline cost + tokens, then details.
+    inner = [
+        f"{DIM}TOTAL · {scope}{RESET}",
+        "",
+        f"{BOLD}{GREEN}{fmt_cost(cost)}{RESET}    {BOLD}{fmt_tokens(total_tokens)}{RESET} {DIM}tokens{RESET}",
+        f"{DIM}in {fmt_tokens(inp)} · out {fmt_tokens(out)} · "
+        f"cache {fmt_tokens(cr)}/{fmt_tokens(cw)}{RESET}",
+        "",
+        f"{DIM}{prompts} prompts · {turns} turns · {len(days)} active day(s){RESET}",
+        f"{DIM}{first} → {last}{RESET}",
+    ]
+    w = max(len(_strip_ansi(s)) for s in inner)
+    print(f"  ╭─{'─' * w}─╮")
+    for s in inner:
+        pad = " " * (w - len(_strip_ansi(s)))
+        print(f"  │ {s}{pad} │")
+    print(f"  ╰─{'─' * w}─╯")
 
     if not tool_filter and len(per_tool) > 1:
         print(f"\n  {DIM}By tool:{RESET}")
