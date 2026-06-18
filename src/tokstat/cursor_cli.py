@@ -446,7 +446,7 @@ def show_help():
   cursor-token-usage --help     [-h]            This help
 
 {BOLD}FILTERS{RESET}
-  --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
+  --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", "3 months", "6 months", year
 
 {BOLD}DATA SOURCE{RESET}
   {BLUE}Cursor{RESET}    {DIM}~/Library/Application Support/Cursor/User/globalStorage/state.vscdb{RESET}

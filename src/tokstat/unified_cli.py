@@ -310,19 +310,21 @@ def show_help():
   tokstat --help     [-h]                  This help
 
 {BOLD}FILTERS{RESET}
-  --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
+  --period <period>    all, hour, "5 hours", today, yesterday, "7 days",
+                       "30 days", "1 month", "2 months", "3 months",
+                       "6 months", year   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
                        claude.ai, chatgpt (default: all)
 
 {BOLD}TOOLS COVERED{RESET}
-  Claude Code  ~/.claude/projects/
-  Codex        ~/.codex/sessions/
-  Cursor       ~/.cursor/projects/                                    (estimates)
-  Kiro         ~/Library/Application Support/Kiro/...                 (estimates)
-  Gemini CLI   ~/.gemini/tmp/
-  opencode     ~/.local/share/opencode/storage/
-  Claude.ai    private https://claude.ai/api/ (session cookie, estimates)
-  ChatGPT      private https://chatgpt.com/backend-api/ (session cookie, estimates)
+  Claude Code  ~/.claude/projects/                          exact tokens
+  Codex        ~/.codex/sessions/                           exact tokens
+  Cursor       Cursor globalStorage/state.vscdb             exact / no data
+  Kiro         Kiro .../workspace-sessions/                 activity only
+  Gemini CLI   ~/.gemini/tmp/                               exact tokens
+  opencode     ~/.local/share/opencode/storage/             exact tokens
+  Claude.ai    --import of official export (claude-web-token-usage)
+  ChatGPT      --import of official export (chatgpt-web-token-usage)
 
 {BOLD}SEE ALSO{RESET}
   claude-token-usage, codex-token-usage, cursor-token-usage,

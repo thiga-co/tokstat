@@ -370,7 +370,7 @@ def show_help():
                               [--account <name>]   ...for one account only
 
 {BOLD}FILTERS{RESET}
-  --period <p>    all, hour, "5 hours", today, "7 days", "30 days", year
+  --period <p>    all, hour, "5 hours", today, "7 days", "30 days", "3 months", "6 months", year
 
 {BOLD}DATA SOURCE{RESET}
   {GREEN}chatgpt.com export{RESET} — local cache under

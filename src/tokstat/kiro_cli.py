@@ -257,7 +257,7 @@ def show_help():
   kiro-token-usage --help     [-h]            This help
 
 {BOLD}FILTERS{RESET}
-  --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
+  --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", "3 months", "6 months", year
 
 {BOLD}DATA SOURCE{RESET}
   {YELLOW}Kiro{RESET}    {DIM}{_SESSIONS_DIR}/<project>/<sessionId>.json{RESET}

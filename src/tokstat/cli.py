@@ -423,7 +423,7 @@ def show_help():
   claude-token-usage --help     [-h]            This help
 
 {BOLD}FILTERS{RESET}  {DIM}(apply to all modes){RESET}
-  --period <period>      Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", year
+  --period <period>      Time filter — all, hour, "5 hours", today, yesterday, "7 days", "30 days", "3 months", "6 months", year
 
   Default period: today. Partial match works ("7" → "Last 7 days").
 
