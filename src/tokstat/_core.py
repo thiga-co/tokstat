@@ -1495,23 +1495,27 @@ def show_activity(collect_fn, period_name: str | None = None,
     else:
         thresholds = [1, 2, 3]
 
-    # Month labels row: mark the column where each month first appears.
-    # Append the 2-digit year when the year changes (and on the first label)
-    # so a grid spanning a year boundary isn't ambiguous (e.g. Jun '25 vs '26).
-    month_row = [" "] * (n_weeks * 2 + 4)
+    # Header: a year row above a month row. The year is placed (once, and
+    # again whenever it changes) at the column of its first month, so a grid
+    # spanning a year boundary isn't ambiguous — without crowding the months.
+    width = n_weeks * 2 + 4
+    year_row  = [" "] * width
+    month_row = [" "] * width
     last_month = None
     last_year = None
     for w in range(n_weeks):
         col_date = grid_start + _td(weeks=w)
         if col_date.month != last_month:
-            lbl = col_date.strftime("%b")
-            if col_date.year != last_year:
-                lbl += col_date.strftime(" '%y")
-            for i, ch in enumerate(lbl):
-                if w * 2 + i < len(month_row):
+            for i, ch in enumerate(col_date.strftime("%b")):
+                if w * 2 + i < width:
                     month_row[w * 2 + i] = ch
+            if col_date.year != last_year:
+                for i, ch in enumerate(str(col_date.year)):
+                    if w * 2 + i < width:
+                        year_row[w * 2 + i] = ch
+                last_year = col_date.year
             last_month = col_date.month
-            last_year = col_date.year
+    print("       " + "".join(year_row).rstrip())
     print("       " + "".join(month_row).rstrip())
 
     # Day rows.
