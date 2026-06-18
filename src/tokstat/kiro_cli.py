@@ -33,7 +33,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity,
+    show_activity, show_total,
     export_conversations, _parse_period, print_update_notice,
 )
 
@@ -222,7 +222,7 @@ _TOOL_ALIASES = {"kiro": "Kiro"}
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -251,6 +251,7 @@ def show_help():
   kiro-token-usage --prompts  [-p]            Per-exchange detail (text, turns, tokens, cost)
   kiro-token-usage --anomalies                Technical anomaly detection
   kiro-token-usage --activity                 Activity calendar (GitHub-style, by day)
+  kiro-token-usage --total                    Compact totals (tokens + cost + data span)
   kiro-token-usage --plan                     Cost breakdown + optimization tips
   kiro-token-usage --export   [file.json]     Export all exchanges to JSON
   kiro-token-usage --help     [-h]            This help
@@ -292,6 +293,8 @@ def cli():
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
         show_activity(_collect_all_exchanges, period, tool)
+    elif "--total" in args:
+        show_total(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

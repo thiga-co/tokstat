@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **unreleased** — `--total` mode: compact total tokens + cost for the selected period/tool, with the data's actual date span and a per-tool breakdown.
 - **1.6.0** — `--activity` mode: a GitHub-style contribution calendar of daily activity over the period, colored by prompts/day, with the year shown at year boundaries and a summary of total prompts / turns / tokens and the busiest day. Reads directly from the scanned exchanges (history depth is limited by what each tool keeps on disk — see each tool's retention, e.g. Claude Code's `cleanupPeriodDays`, default 30).
 - **1.5.1** — Codex token accounting fixed (cached input and reasoning tokens no longer double-counted); Cursor rewritten onto its SQLite store (exact counts where recorded, `⚠ no data` otherwise — never estimated); Kiro rewritten onto its per-session format (activity only); `⚠ no data` flag for rows without reliable token data; per-tool anomaly thresholds; per-provider plan recommendations. codex / cursor / kiro promoted to stable.
 - **1.5.0** — Unified `tokstat` command across all tools; `--watch` live mode; Prompts / Turns / API columns + GRAND TOTAL block; added `opencode-token-usage`, `claude-web-token-usage`, `chatgpt-web-token-usage` (official-export import).
@@ -85,6 +86,7 @@ All tools support the same modes:
 <tool> --prompts   [-p]         # Per-exchange detail (text, turns, tokens, tools, cost)
 <tool> --anomalies              # Technical anomaly detection
 <tool> --activity               # GitHub-style activity calendar (by day) + tokens
+<tool> --total                  # Compact totals (tokens + cost + data span)
 <tool> --plan                   # Cost breakdown + per-provider plan recommendation
 <tool> --export    [file.json]  # Export all exchanges to JSON
 <tool> --version   [-V]         # Print version
@@ -165,6 +167,29 @@ tokstat --activity --tool claude --period "30 days"
 > To keep more, raise the limit in `~/.claude/settings.json`, e.g.
 > `{ "cleanupPeriodDays": 365 }`. Codex, by contrast, keeps all sessions (no
 > automatic cleanup).
+
+### `--total` — compact totals
+
+A one-glance summary of total tokens and cost for the selected period/tool,
+with the actual date span the data covers and a per-tool breakdown.
+
+```sh
+tokstat --total --period "30 days"
+tokstat --total --tool codex --period all
+```
+
+```
+  Period: Last 30 days
+
+  Tokens     953.1M   in 9.4M · out 2.4M · cache 922.6M/18.7M
+  Cost       $697.03
+  Activity   577 prompts · 2614 turns over 25 active day(s)
+  Data span  2026-05-19 → 2026-06-18
+
+  By tool:
+    Claude Code    $517.32   717.8M tokens · 422 prompts
+    Codex          $179.70   235.3M tokens · 147 prompts
+```
 
 ### `--plan` — plan & optimization recommendations
 

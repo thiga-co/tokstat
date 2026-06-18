@@ -32,7 +32,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity,
+    show_activity, show_total,
     export_conversations, _parse_period, print_update_notice,
 )
 from tokstat._web import (
@@ -290,7 +290,7 @@ _TOOL_ALIASES = {"claude.ai": TOOL_NAME, "claude-web": TOOL_NAME, "claudeai": TO
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--export", "--period", "--since", "--tool",
     "--import", "--account", "--list-accounts", "--clean-cache",
     "--clear-imports",
 }
@@ -335,6 +335,7 @@ def show_help():
   claude-web-token-usage --prompts  [-p]          Per-exchange detail
   claude-web-token-usage --anomalies              Anomaly detection
   claude-web-token-usage --activity               Activity calendar (by day)
+  claude-web-token-usage  --total                  Compact totals (tokens + cost)
   claude-web-token-usage --plan                   Cost breakdown + tips
   claude-web-token-usage --export   [file]        Export exchanges to JSON
   claude-web-token-usage --import <zip|json|dir>  Load the official export
@@ -424,6 +425,8 @@ def cli():
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
         show_activity(_collect_all_exchanges, period, tool)
+    elif "--total" in args:
+        show_total(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

@@ -1541,6 +1541,77 @@ def show_activity(collect_fn, period_name: str | None = None,
     print(f"  {DIM}Busiest day: {busiest[0]} ({busiest[1]} prompts){RESET}\n")
 
 
+# ─── Shared display: total ─────────────────────────────────────────────────
+
+def show_total(collect_fn, period_name: str | None = None,
+               tool_filter: str | None = None):
+    """Compact totals: tokens and cost for the selected period/tool, plus the
+    actual date span covered by the data and a per-tool breakdown."""
+    print(f"\n{BOLD} Total{RESET}")
+    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    load_pricing()
+    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+
+    try:
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+
+    label = f"  Period: {BOLD}{period_label}{RESET}"
+    if tool_filter:
+        color = TOOL_COLORS.get(tool_filter, "")
+        label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
+    print(label + "\n")
+
+    all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_exchanges = [e for e in all_exchanges if e.get("ts")]
+    if not all_exchanges:
+        print(f"  {YELLOW}No data found.{RESET}\n")
+        return
+
+    inp = out = cr = cw = 0
+    cost = 0.0
+    turns = 0
+    per_tool = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "prompts": 0})
+    days = set()
+    for e in all_exchanges:
+        tok = e.get("tokens") or {}
+        i = tok.get("input", 0); o = tok.get("output", 0)
+        rr = tok.get("cache_read", 0); ww = tok.get("cache_write", 0)
+        inp += i; out += o; cr += rr; cw += ww
+        c = e.get("cost", 0) or 0
+        cost += c
+        turns += e.get("num_turns", 0) or 0
+        days.add(e["ts"].astimezone().strftime("%Y-%m-%d"))
+        t = per_tool[e.get("tool", "?")]
+        t["tokens"] += i + o + rr + ww
+        t["cost"]   += c
+        t["prompts"] += 1
+
+    total_tokens = inp + out + cr + cw
+    prompts = len(all_exchanges)
+    first = min(e["ts"] for e in all_exchanges).astimezone().strftime("%Y-%m-%d")
+    last  = max(e["ts"] for e in all_exchanges).astimezone().strftime("%Y-%m-%d")
+
+    print(f"  {BOLD}Tokens{RESET}     {BOLD}{fmt_tokens(total_tokens)}{RESET}   "
+          f"{DIM}in {fmt_tokens(inp)} · out {fmt_tokens(out)} · "
+          f"cache {fmt_tokens(cr)}/{fmt_tokens(cw)}{RESET}")
+    print(f"  {BOLD}Cost{RESET}       {BOLD}{fmt_cost(cost)}{RESET}")
+    print(f"  {BOLD}Activity{RESET}   {prompts} prompts · {turns} turns "
+          f"over {len(days)} active day(s)")
+    print(f"  {BOLD}Data span{RESET}  {first} → {last}")
+
+    if not tool_filter and len(per_tool) > 1:
+        print(f"\n  {DIM}By tool:{RESET}")
+        for name, d in sorted(per_tool.items(), key=lambda kv: -kv[1]["cost"]):
+            color = TOOL_COLORS.get(name, "")
+            cost_cell = fmt_cost(d["cost"]) if d["tokens"] else f"{BYELLOW}⚠ no data{RESET}"
+            print(f"    {color}{name:<12}{RESET} {cost_cell:>9}   "
+                  f"{DIM}{fmt_tokens(d['tokens'])} tokens · {d['prompts']} prompts{RESET}")
+    print()
+
+
 # ─── Shared display: export ───────────────────────────────────────────────
 
 def export_conversations(collect_fn, output_path: str,

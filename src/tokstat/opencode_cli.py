@@ -25,7 +25,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity,
+    show_activity, show_total,
     export_conversations, _parse_period, print_update_notice,
 )
 
@@ -294,7 +294,7 @@ _TOOL_ALIASES = {"opencode": "opencode", "open-code": "opencode"}
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -323,6 +323,7 @@ def show_help():
   opencode-token-usage --prompts  [-p]            Per-exchange detail
   opencode-token-usage --anomalies                Technical anomaly detection
   opencode-token-usage --activity                 Activity calendar (GitHub-style, by day)
+  opencode-token-usage --total                    Compact totals (tokens + cost + data span)
   opencode-token-usage --plan                     Cost breakdown + optimization tips
   opencode-token-usage --export   [file.json]     Export all exchanges to JSON
   opencode-token-usage --help     [-h]            This help
@@ -364,6 +365,8 @@ def cli():
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
         show_activity(_collect_all_exchanges, period, tool)
+    elif "--total" in args:
+        show_total(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

@@ -27,7 +27,7 @@ from tokstat._core import (
     normalize_project, _warm_worktree_cache,
     fmt_tokens, fmt_cost, calc_table_width, print_table, shorten_path,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity,
+    show_activity, show_total,
     export_conversations, _parse_period, print_update_notice,
 )
 
@@ -385,7 +385,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -417,6 +417,7 @@ def show_help():
   claude-token-usage --prompts  [-p]            Per-exchange detail (text, model, turns, tokens, tools)
   claude-token-usage --anomalies                Technical anomaly detection (cost, cache, tool storms)
   claude-token-usage --activity                 Activity calendar (GitHub-style, by day)
+  claude-token-usage --total                    Compact totals (tokens + cost + data span)
   claude-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   claude-token-usage --export   [file.json]     Export all exchanges to JSON
   claude-token-usage --help     [-h]            This help
@@ -477,6 +478,8 @@ def cli():
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
         show_activity(_collect_all_exchanges, period, tool)
+    elif "--total" in args:
+        show_total(_collect_all_exchanges, period, tool)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:
