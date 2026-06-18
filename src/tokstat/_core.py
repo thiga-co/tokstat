@@ -1605,15 +1605,17 @@ def show_total(collect_fn, period_name: str | None = None,
     scope = period_label + (f" · {tool_filter}" if tool_filter else "")
 
     # Badge: a bordered card with the headline cost + tokens, then details.
+    # Keep the text at normal brightness for legibility; only the cost is
+    # accented (green) and the headline figures bold.
     inner = [
-        f"{DIM}TOTAL · {scope}{RESET}",
+        f"{BOLD}TOTAL · {scope}{RESET}",
         "",
-        f"{BOLD}{GREEN}{fmt_cost(cost)}{RESET}    {BOLD}{fmt_tokens(total_tokens)}{RESET} {DIM}tokens{RESET}",
-        f"{DIM}in {fmt_tokens(inp)} · out {fmt_tokens(out)} · "
-        f"cache {fmt_tokens(cr)}/{fmt_tokens(cw)}{RESET}",
+        f"{BOLD}{GREEN}{fmt_cost(cost)}{RESET}    {BOLD}{fmt_tokens(total_tokens)}{RESET} tokens",
+        f"in {fmt_tokens(inp)} · out {fmt_tokens(out)} · "
+        f"cache {fmt_tokens(cr)}/{fmt_tokens(cw)}",
         "",
-        f"{DIM}{prompts} prompts · {turns} turns · {len(days)} active day(s){RESET}",
-        f"{DIM}{first} → {last}{RESET}",
+        f"{prompts} prompts · {turns} turns · {len(days)} active day(s)",
+        f"{first} → {last}",
     ]
     w = max(len(_strip_ansi(s)) for s in inner)
     print(f"  ╭─{'─' * w}─╮")
