@@ -221,9 +221,9 @@ tokstat --impact --tool claude --period all
   ╰───────────────────────────────────────────╯
 
   Trend (per week) — Δ vs previous week:
-    bucket        energy     Δ       CO₂e    Wh/1k     Δ
-    2026-04-13   0.58kWh    —      0.24kg     1.9     —
-    2026-04-20   0.52kWh  -11%     0.22kg     2.1   +12%
+    bucket       tokens   energy     Δ       CO₂e    Wh/1k     Δ
+    2026-04-13    42.1M  0.58kWh    —      0.24kg     1.9     —
+    2026-04-20    38.7M  0.52kWh  -11%     0.22kg     2.1   +12%
     ...
   By tool (data span used):
     Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19

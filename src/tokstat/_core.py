@@ -1830,10 +1830,15 @@ def show_impact(collect_fn, period_name: str | None = None,
         return d.strftime("%Y-%m")
 
     bucket_out: dict[str, dict] = defaultdict(lambda: defaultdict(int))
+    bucket_tokens: dict[str, int] = defaultdict(int)   # total tokens per bucket
     for e in all_exchanges:
-        out = (e.get("tokens") or {}).get("output", 0) or 0
+        tok = e.get("tokens") or {}
+        out = tok.get("output", 0) or 0
+        bk = _bucket(e["ts"].astimezone().date())
+        bucket_tokens[bk] += (tok.get("input", 0) + tok.get("output", 0)
+                              + tok.get("cache_read", 0) + tok.get("cache_write", 0))
         if out > 0:
-            bucket_out[_bucket(e["ts"].astimezone().date())][e.get("model") or "?"] += out
+            bucket_out[bk][e.get("model") or "?"] += out
 
     if len(bucket_out) > 1:
         # Pre-compute each bucket's energy and frugality (Wh per 1k output).
@@ -1852,7 +1857,8 @@ def show_impact(collect_fn, period_name: str | None = None,
                 continue
             bem = (be_lo + be_hi) / 2
             series.append({
-                "bucket": bkey, "energy": bem, "gwp": (bg_lo + bg_hi) / 2,
+                "bucket": bkey, "tokens": bucket_tokens.get(bkey, 0),
+                "energy": bem, "gwp": (bg_lo + bg_hi) / 2,
                 "wh_1k": bem * 1e6 / bout,        # frugality: Wh / 1k output tok
             })
 
@@ -1865,13 +1871,14 @@ def show_impact(collect_fn, period_name: str | None = None,
             return f"{color}{pc:+4.0f}%{RESET}"
 
         print(f"\n  {DIM}Trend (per {gran_label}) — Δ vs previous {gran_label}:{RESET}")
-        print(f"    {DIM}{'bucket':<11}{'energy':>9}{'Δ':>6}   "
+        print(f"    {DIM}{'bucket':<11}{'tokens':>8}{'energy':>9}{'Δ':>6}   "
               f"{'CO₂e':>8}   {'Wh/1k':>6}{'Δ':>6}{RESET}")
         prev_e = prev_f = None
         for s in series:
             de = _delta(s["energy"], prev_e)
             df = _delta(s["wh_1k"], prev_f)
-            print(f"    {s['bucket']:<11}{s['energy']:>6.2f}kWh {de}   "
+            print(f"    {s['bucket']:<11}{fmt_tokens(s['tokens']):>8}"
+                  f"{s['energy']:>6.2f}kWh {de}   "
                   f"{s['gwp']:>6.2f}kg   {s['wh_1k']:>5.1f} {df}")
             prev_e, prev_f = s["energy"], s["wh_1k"]
 
