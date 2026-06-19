@@ -222,7 +222,7 @@ _TOOL_ALIASES = {"kiro": "Kiro"}
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--region", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool",
 }
 
 

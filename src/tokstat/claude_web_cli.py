@@ -290,7 +290,7 @@ _TOOL_ALIASES = {"claude.ai": TOOL_NAME, "claude-web": TOOL_NAME, "claudeai": TO
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--region", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool",
     "--import", "--account", "--list-accounts", "--clean-cache",
     "--clear-imports",
 }

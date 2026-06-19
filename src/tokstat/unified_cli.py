@@ -245,7 +245,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--region", "--export", "--period", "--since", "--tool", "--watch", "-w",
+    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
 _DEFAULT_WATCH_INTERVAL = 5.0
