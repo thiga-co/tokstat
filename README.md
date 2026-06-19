@@ -220,6 +220,11 @@ tokstat --impact --tool claude --period all
   │ mix: world (0.418 kgCO₂e/kWh) · PUE 1.2     │
   ╰───────────────────────────────────────────╯
 
+  Trend (per week) — energy/CO₂ and per-1k-output frugality:
+    bucket        energy     CO₂e     Wh/1k  gCO₂e/1k
+    2026-04-13   0.58 kWh  0.24 kg     1.9      0.78
+    2026-04-20   0.52 kWh  0.22 kg     2.1      0.87
+    ...
   By tool (data span used):
     Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19
     Codex        9.61 kWh · 4.02 kg CO₂e   2026-01-21 → 2026-06-15
@@ -229,6 +234,11 @@ tokstat --impact --tool claude --period all
     claude-opus-4-7   4.98 kWh · 2.08 kg CO₂e   2026-04-14 → 2026-06-19
     ...
 ```
+
+The **Trend** section buckets the period by **day** (≤ ~1 month), **week**
+(≤ ~6 months) or **month** (longer), showing each bucket's energy + CO₂ and a
+**frugality** metric — Wh and gCO₂e per 1000 output tokens (lower = lighter
+models). The granularity follows `--period`.
 
 The per-model span is the **measurable** period — the union of the data spans
 of every tool that carries that model (e.g. a model used in both opencode and

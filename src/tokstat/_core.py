@@ -1811,6 +1811,54 @@ def show_impact(collect_fn, period_name: str | None = None,
         print(f"  │ {s}{' ' * (w - len(_strip_ansi(s)))} │")
     print(f"  ╰─{'─' * w}─╯")
 
+    # ─── Trend over time (granularity adapts to the period span) ──────────
+    from datetime import datetime as _dt, timedelta as _td2
+    days_sorted = sorted(e["ts"].astimezone().date() for e in all_exchanges)
+    span_days = (days_sorted[-1] - days_sorted[0]).days
+    if span_days <= 31:
+        gran, gran_label = "day", "day"
+    elif span_days <= 182:
+        gran, gran_label = "week", "week"
+    else:
+        gran, gran_label = "month", "month"
+
+    def _bucket(d):
+        if gran == "day":
+            return d.isoformat()
+        if gran == "week":
+            return (d - _td2(days=d.weekday())).isoformat()
+        return d.strftime("%Y-%m")
+
+    bucket_out: dict[str, dict] = defaultdict(lambda: defaultdict(int))
+    for e in all_exchanges:
+        out = (e.get("tokens") or {}).get("output", 0) or 0
+        if out > 0:
+            bucket_out[_bucket(e["ts"].astimezone().date())][e.get("model") or "?"] += out
+
+    if len(bucket_out) > 1:
+        print(f"\n  {DIM}Trend (per {gran_label}) — energy/CO₂ and per-1k-output "
+              f"frugality:{RESET}")
+        print(f"    {DIM}{'bucket':<11}{'energy':>9}{'CO₂e':>9}   "
+              f"{'Wh/1k':>7}{'gCO₂e/1k':>10}{RESET}")
+        for bkey in sorted(bucket_out):
+            be_lo = be_hi = bg_lo = bg_hi = 0.0
+            bout = 0
+            for model, out in bucket_out[bkey].items():
+                imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+                if not imp:
+                    continue
+                be_lo += imp["energy"][0]; be_hi += imp["energy"][1]
+                bg_lo += imp["gwp"][0];    bg_hi += imp["gwp"][1]
+                bout += out
+            if bout <= 0:
+                continue
+            bem = (be_lo + be_hi) / 2
+            bgm = (bg_lo + bg_hi) / 2
+            wh_per_1k = bem * 1e6 / bout      # kWh→Wh (×1000) per (out/1000)
+            g_per_1k = bgm * 1e6 / bout       # kg→g (×1000) per (out/1000)
+            print(f"    {bkey:<11}{bem:>7.2f}kWh{bgm:>7.2f}kg   "
+                  f"{wh_per_1k:>6.1f} {g_per_1k:>9.2f}")
+
     def _metric(agg):
         if agg["covered"] == 0:
             return f"{DIM}not in EcoLogits DB{RESET}"
