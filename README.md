@@ -223,6 +223,10 @@ tokstat --impact --tool claude --period all
     Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19
     Codex        9.61 kWh · 4.02 kg CO₂e   2026-01-21 → 2026-06-15
     ...
+  By model (data span used):
+    gpt-5.5 [xhigh]   8.74 kWh · 3.65 kg CO₂e   2026-04-29 → 2026-06-15
+    claude-opus-4-7   4.98 kWh · 2.08 kg CO₂e   2026-05-15 → 2026-05-29
+    ...
 ```
 
 > **⚠️ Order-of-magnitude estimate, usage phase only.** Energy is derived from
