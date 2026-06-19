@@ -1798,8 +1798,12 @@ def show_impact(collect_fn, period_name: str | None = None,
     avg_frug = e_mid * 1e6 / covered_out if covered_out else 0   # Wh / 1k out tok
 
     # Mascot animal by frugality (model-mix weight) — comparable across users.
-    for thr, emoji, word in ((2, "🐜", "very light"), (4, "🦥", "frugal"),
-                             (8, "🦊", "moderate"), (15, "🐘", "heavy"),
+    # Anchors (Wh/1k out, via EcoLogits): small models (haiku/mini) ~0.1,
+    # mid-tier (sonnet/gpt-4o) ~2, current frontier (opus-4-7/4-8, gpt-5.x) ~5-6,
+    # legacy dense giants (opus-4-1, gemini-2.5-pro) ~25. A mostly-Opus diet
+    # reads "heavy"; "very heavy" is the old dense-600B-class tier.
+    for thr, emoji, word in ((1, "🐜", "very light"), (2.5, "🦥", "frugal"),
+                             (4, "🦊", "moderate"), (10, "🐘", "heavy"),
                              (float("inf"), "🦣", "very heavy")):
         if avg_frug < thr:
             animal, level = emoji, word
@@ -1812,8 +1816,14 @@ def show_impact(collect_fn, period_name: str | None = None,
     eh1 = _estimate_total_impact(fh, region)[0] if fh else None
     eh2 = _estimate_total_impact(sh, region)[0] if sh else None
     if eh1 and eh2:
-        tp = (eh2 - eh1) / eh1 * 100
-        if tp > 10:    arrow = f"{BRED}↗ growing (+{tp:.0f}%){RESET}"
+        r = eh2 / eh1
+        tp = (r - 1) * 100
+        # Quote a % only in a sane range; past a ~5x swing the baseline is too
+        # small for a percentage to mean anything (e.g. adoption ramp over
+        # --period all), so describe the direction instead of a giant number.
+        if r >= 5:     arrow = f"{BRED}↗ ramping up{RESET}"
+        elif tp > 10:  arrow = f"{BRED}↗ growing (+{tp:.0f}%){RESET}"
+        elif r <= 0.2: arrow = f"{GREEN}↘ winding down{RESET}"
         elif tp < -10: arrow = f"{GREEN}↘ shrinking ({tp:.0f}%){RESET}"
         else:          arrow = f"{DIM}→ stable{RESET}"
     else:
@@ -1917,22 +1927,33 @@ def show_impact(collect_fn, period_name: str | None = None,
             e1, e2 = _avg(series[:half], "energy"), _avg(series[half:], "energy")
             f1, f2 = _avg(series[:half], "wh_1k"),  _avg(series[half:], "wh_1k")
 
-            def _word(p):
-                if p > 10:  return f"{BRED}rose {p:.0f}%{RESET}"
-                if p < -10: return f"{GREEN}fell {abs(p):.0f}%{RESET}"
+            def _word(cur, prev):
+                # Beyond a ~5x swing the baseline is too small to quote a %,
+                # so describe the direction (avoids "rose 15036%").
+                if prev <= 0:
+                    return f"{DIM}held roughly steady{RESET}"
+                r = cur / prev
+                p = (r - 1) * 100
+                if r >= 5:    return f"{BRED}rose sharply{RESET}"
+                if p > 10:    return f"{BRED}rose {p:.0f}%{RESET}"
+                if r <= 0.2:  return f"{GREEN}dropped sharply{RESET}"
+                if p < -10:   return f"{GREEN}fell {abs(p):.0f}%{RESET}"
                 return f"{DIM}held roughly steady{RESET}"
 
-            pe = (e2 - e1) / e1 * 100 if e1 else 0
             pf = (f2 - f1) / f1 * 100 if f1 else 0
-            if pf > 10:
+            if f1 > 0 and f2 / f1 >= 5:
+                frug = f"{BRED}worsened sharply{RESET} (much heavier model mix)"
+            elif pf > 10:
                 frug = f"{BRED}worsened {pf:.0f}%{RESET} (heavier model mix)"
+            elif f1 > 0 and f2 / f1 <= 0.2:
+                frug = f"{GREEN}improved sharply{RESET} (much lighter model mix)"
             elif pf < -10:
                 frug = f"{GREEN}improved {abs(pf):.0f}%{RESET} (lighter model mix)"
             else:
                 frug = f"{DIM}stayed flat{RESET} (similar model mix)"
 
             print(f"\n  {BOLD}Analysis{RESET} {DIM}(first vs second half of the period){RESET}")
-            print(f"    • Electricity use {_word(pe)} "
+            print(f"    • Electricity use {_word(e2, e1)} "
                   f"({e1:.2f} → {e2:.2f} kWh per {gran_label}).")
             print(f"    • CO₂ followed the same path — {BOLD}~{g_mid:.1f} kg CO₂e{RESET} "
                   f"total over the window.")
