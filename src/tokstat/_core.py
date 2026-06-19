@@ -1747,11 +1747,14 @@ def show_impact(collect_fn, period_name: str | None = None,
     car_km = g_mid / 0.12           # ~120 gCO2/km petrol car
     charges = e_mid / 0.012         # ~12 Wh per smartphone charge
 
+    # Uncertainty as a single ± percentage (the range is symmetric around the
+    # midpoint, driven by EcoLogits' min/max model-size estimates).
+    pct = (e_hi - e_mid) / e_mid * 100 if e_mid else 0
     inner = [
         f"{BOLD}ENERGY & CO₂ · {scope}{RESET}",
         "",
-        f"{BOLD}{GREEN}{e_mid:.2f} kWh{RESET}    {BOLD}{g_mid:.2f} kg CO₂e{RESET}",
-        f"energy {e_lo:.2f}–{e_hi:.2f} kWh · CO₂e {g_lo:.2f}–{g_hi:.2f} kg",
+        f"{BOLD}{GREEN}~{e_mid:.1f} kWh{RESET}    {BOLD}~{g_mid:.1f} kg CO₂e{RESET}",
+        f"{DIM}± {pct:.0f}% (model-size uncertainty){RESET}",
         "",
         f"≈ {car_km:.0f} km by car · {charges:.0f} phone charges",
         f"mix: {region} ({mix_gwp:.3f} kgCO₂e/kWh) · PUE {pue}",

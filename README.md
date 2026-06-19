@@ -212,8 +212,8 @@ tokstat --impact --tool claude --period all
   ╭───────────────────────────────────────────╮
   │ ENERGY & CO₂ · Last 30 days                │
   │                                            │
-  │ 11.46 kWh    4.79 kg CO₂e                   │
-  │ energy 7.81–15.11 kWh · CO₂e 3.26–6.32 kg  │
+  │ ~11.5 kWh    ~4.8 kg CO₂e                   │
+  │ ± 31% (model-size uncertainty)             │
   │                                            │
   │ ≈ 40 km by car · 955 phone charges         │
   │ mix: world (0.418 kgCO₂e/kWh) · PUE 1.2     │
