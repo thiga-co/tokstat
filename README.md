@@ -88,7 +88,7 @@ All tools support the same modes:
 <tool> --anomalies              # Technical anomaly detection
 <tool> --activity               # GitHub-style activity calendar (by day) + tokens
 <tool> --total                  # Compact totals (tokens + cost + data span)
-<tool> --impact                 # Energy & CO₂ estimate (EcoLogits methodology)
+<tool> --impact    [region]     # Energy & CO₂ estimate (EcoLogits); region = world (default), eu, …
 <tool> --plan                   # Cost breakdown + per-provider plan recommendation
 <tool> --export    [file.json]  # Export all exchanges to JSON
 <tool> --version   [-V]         # Print version
@@ -241,15 +241,15 @@ be observed.
 > per-request GPU data tokstat doesn't have). Models absent from the EcoLogits
 > database are excluded and reported.
 
-Choose the electricity mix per run with `--region`:
+Choose the electricity mix by passing a region to `--impact` (default `world`):
 
 ```sh
-tokstat --impact --region eu
-tokstat --impact --region france --period "30 days"
+tokstat --impact eu
+tokstat --impact france --period "30 days"
 ```
 
 Presets: `world` (default, 0.418), `eu` (0.250), `france` (0.056), `us` (0.369),
-`green` (0.040) kgCO₂e/kWh — or pass an explicit factor (`--region 0.3`). To make
+`green` (0.040) kgCO₂e/kWh — or pass an explicit factor (`--impact 0.3`). To make
 it permanent, set it in `~/.config/tokstat/impact.json`:
 
 ```json

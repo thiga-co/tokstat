@@ -303,7 +303,8 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
-  tokstat --impact                         Energy & CO₂ estimate (EcoLogits)
+  tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
+                                           region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips
   tokstat --export   [file.json]           Export all exchanges to JSON
   tokstat --watch    [-w] [SECONDS]        Refresh overview live (default 5s, Ctrl+C to stop)
@@ -316,8 +317,6 @@ def show_help():
                        "6 months", year   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
                        claude.ai, chatgpt (default: all)
-  --region <name>      impact electricity mix: world (default), eu,
-                       france, us, green (for --impact)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/                          exact tokens

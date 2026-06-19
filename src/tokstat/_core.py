@@ -1910,11 +1910,13 @@ def print_update_notice(current_version: str) -> None:
 # ─── Arg parsing helpers ──────────────────────────────────────────────────
 
 def _parse_region(args: list[str]) -> str | None:
-    """Value after --region (electricity-mix preset or explicit factor)."""
-    if "--region" in args:
-        idx = args.index("--region")
-        if idx + 1 < len(args):
-            return args[idx + 1]
+    """Electricity-mix region for --impact. Accepts either `--impact <region>`
+    (positional) or `--region <name>`; returns None → defaults to world."""
+    for flag in ("--impact", "--region"):
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                return args[idx + 1]
     return None
 
 
