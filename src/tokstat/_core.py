@@ -1691,20 +1691,28 @@ def show_impact(collect_fn, period_name: str | None = None,
 
     pue, mix_gwp, region = _load_impact_config()
 
-    # Aggregate output tokens per (tool, model); track tool and model spans.
+    # Aggregate output tokens per (tool, model); track each tool's full data
+    # span and which tools carry each model.
     out_by_tool_model: dict[tuple, int] = defaultdict(int)
     tool_span: dict[str, list] = {}
-    model_span: dict[str, list] = {}
+    model_tools: dict[str, set] = defaultdict(set)
     for e in all_exchanges:
         tok = e.get("tokens") or {}
         tool = e.get("tool", "?")
         model = e.get("model") or "?"
         out_by_tool_model[(tool, model)] += tok.get("output", 0) or 0
+        model_tools[model].add(tool)
         day = e["ts"].astimezone().strftime("%Y-%m-%d")
-        for span_map, key in ((tool_span, tool), (model_span, model)):
-            s = span_map.setdefault(key, [day, day])
-            if day < s[0]: s[0] = day
-            if day > s[1]: s[1] = day
+        s = tool_span.setdefault(tool, [day, day])
+        if day < s[0]: s[0] = day
+        if day > s[1]: s[1] = day
+
+    def _model_measurable_span(model: str) -> list:
+        # A model's measurable period = the union of the data spans of every
+        # tool that carries it (each tool's traces define what's measurable).
+        firsts = [tool_span[t][0] for t in model_tools.get(model, ()) if t in tool_span]
+        lasts  = [tool_span[t][1] for t in model_tools.get(model, ()) if t in tool_span]
+        return [min(firsts), max(lasts)] if firsts else ["?", "?"]
 
     e_lo = e_hi = g_lo = g_hi = 0.0
     covered_out = total_out = 0
@@ -1767,9 +1775,9 @@ def show_impact(collect_fn, period_name: str | None = None,
         span = " → ".join(tool_span.get(tool, ["?", "?"]))
         print(f"    {color}{tool:<12}{RESET} {_metric(pt)}   {DIM}{span}{RESET}")
 
-    print(f"\n  {DIM}By model (data span used):{RESET}")
+    print(f"\n  {DIM}By model (measurable span):{RESET}")
     for model, pm in sorted(per_model.items(), key=lambda kv: -((kv[1]['g_lo']+kv[1]['g_hi'])/2))[:15]:
-        span = " → ".join(model_span.get(model, ["?", "?"]))
+        span = " → ".join(_model_measurable_span(model))
         print(f"    {model:<28} {_metric(pm)}   {DIM}{span}{RESET}")
 
     if covered_out < total_out:
