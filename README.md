@@ -302,3 +302,7 @@ available history.
 ## Pricing
 
 Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached at `~/.cache/token-usage/litellm_prices.json` for 24 hours. Falls back to stale cache if fetch fails.
+
+## Credits
+
+Environmental-impact estimates (`--impact`) use the methodology and model database of [EcoLogits](https://github.com/genai-impact/ecologits) (MPL-2.0), fetched and cached locally.
