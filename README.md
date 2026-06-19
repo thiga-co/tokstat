@@ -218,6 +218,11 @@ tokstat --impact --tool claude --period all
   │ ≈ 40 km by car · 955 phone charges         │
   │ mix: world (0.418 kgCO₂e/kWh) · PUE 1.2     │
   ╰───────────────────────────────────────────╯
+
+  By tool (data span used):
+    Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19
+    Codex        9.61 kWh · 4.02 kg CO₂e   2026-01-21 → 2026-06-15
+    ...
 ```
 
 > **⚠️ Order-of-magnitude estimate, usage phase only.** Energy is derived from

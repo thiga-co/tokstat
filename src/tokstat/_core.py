@@ -1691,27 +1691,38 @@ def show_impact(collect_fn, period_name: str | None = None,
 
     pue, mix_gwp, region = _load_impact_config()
 
-    # Aggregate output tokens per model (energy is driven by output tokens).
-    out_by_model: dict[str, int] = defaultdict(int)
+    # Aggregate output tokens per (tool, model); track each tool's date span.
+    out_by_tool_model: dict[tuple, int] = defaultdict(int)
+    tool_span: dict[str, list] = {}
     for e in all_exchanges:
         tok = e.get("tokens") or {}
-        out_by_model[e.get("model") or "?"] += tok.get("output", 0) or 0
+        tool = e.get("tool", "?")
+        out_by_tool_model[(tool, e.get("model") or "?")] += tok.get("output", 0) or 0
+        day = e["ts"].astimezone().strftime("%Y-%m-%d")
+        s = tool_span.setdefault(tool, [day, day])
+        if day < s[0]: s[0] = day
+        if day > s[1]: s[1] = day
 
     e_lo = e_hi = g_lo = g_hi = 0.0
-    covered_out = 0
-    total_out = sum(out_by_model.values())
-    rows = []
-    for model, out in sorted(out_by_model.items(), key=lambda kv: -kv[1]):
+    covered_out = total_out = 0
+    per_tool: dict[str, dict] = defaultdict(
+        lambda: {"e_lo": 0.0, "e_hi": 0.0, "g_lo": 0.0, "g_hi": 0.0,
+                 "out": 0, "covered": 0})
+    for (tool, model), out in out_by_tool_model.items():
         if out <= 0:
             continue
+        total_out += out
+        pt = per_tool[tool]
+        pt["out"] += out
         imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
         if not imp:
-            rows.append((model, out, None))
             continue
         covered_out += out
+        pt["covered"] += out
+        pt["e_lo"] += imp["energy"][0]; pt["e_hi"] += imp["energy"][1]
+        pt["g_lo"] += imp["gwp"][0];    pt["g_hi"] += imp["gwp"][1]
         e_lo += imp["energy"][0]; e_hi += imp["energy"][1]
         g_lo += imp["gwp"][0];    g_hi += imp["gwp"][1]
-        rows.append((model, out, imp))
 
     if covered_out == 0:
         print(f"  {YELLOW}No models matched the EcoLogits database.{RESET}\n")
@@ -1738,15 +1749,17 @@ def show_impact(collect_fn, period_name: str | None = None,
         print(f"  │ {s}{' ' * (w - len(_strip_ansi(s)))} │")
     print(f"  ╰─{'─' * w}─╯")
 
-    print(f"\n  {DIM}By model:{RESET}")
-    for model, out, imp in rows[:12]:
-        if imp is None:
-            print(f"    {model:<28} {DIM}{fmt_tokens(out):>7} out · not in EcoLogits DB{RESET}")
+    print(f"\n  {DIM}By tool (data span used):{RESET}")
+    for tool, pt in sorted(per_tool.items(), key=lambda kv: -((kv[1]['g_lo']+kv[1]['g_hi'])/2)):
+        color = TOOL_COLORS.get(tool, "")
+        span = " → ".join(tool_span.get(tool, ["?", "?"]))
+        if pt["covered"] == 0:
+            metric = f"{DIM}not in EcoLogits DB{RESET}"
         else:
-            gm = (imp["gwp"][0] + imp["gwp"][1]) / 2
-            em = (imp["energy"][0] + imp["energy"][1]) / 2
-            print(f"    {model:<28} {fmt_tokens(out):>7} out · "
-                  f"{em:.2f} kWh · {gm:.2f} kg CO₂e")
+            em = (pt["e_lo"] + pt["e_hi"]) / 2
+            gm = (pt["g_lo"] + pt["g_hi"]) / 2
+            metric = f"{em:.2f} kWh · {gm:.2f} kg CO₂e"
+        print(f"    {color}{tool:<12}{RESET} {metric}   {DIM}{span}{RESET}")
 
     if covered_out < total_out:
         miss = (total_out - covered_out) / total_out * 100
