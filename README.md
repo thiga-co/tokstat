@@ -6,7 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
-- **unreleased** — `--impact` mode: energy (kWh) and CO₂e estimate of the observed activity, reusing the EcoLogits methodology and model database (fetched + cached locally, no dependency). Usage phase only, with a min–max range and a configurable electricity mix.
+- **unreleased** — `--impact` mode: energy (kWh) and CO₂e estimate of the observed activity, reusing the EcoLogits methodology and model database (fetched + cached locally, no dependency). Usage phase only, with a single headline figure + ±% uncertainty and a configurable electricity mix (`--impact eu`, `france`, …). Includes a mascot-graded frugality verdict (Wh per 1k output tokens), a per-bucket Trend table (Δ vs previous day/week/month), a plain-language Analysis, and per-tool / per-model breakdowns with measurable data spans. Large swings (> ~5×) are described ("ramping up", "rose sharply") rather than quoted as misleading percentages. An energy/CO₂ line also appears on `--activity`.
 - **1.7.0** — `--total` mode: a compact badge of total tokens + cost for the selected period/tool, with the data's actual date span and a per-tool breakdown (each tool's own date range). New `--period` options: `1 month`, `2 months`, `3 months`, `6 months` (unquoted `--period 3 months` works too). `--activity` shows the year on its own row above the months.
 - **1.6.0** — `--activity` mode: a GitHub-style contribution calendar of daily activity over the period, colored by prompts/day, with the year shown at year boundaries and a summary of total prompts / turns / tokens and the busiest day. Reads directly from the scanned exchanges (history depth is limited by what each tool keeps on disk — see each tool's retention, e.g. Claude Code's `cleanupPeriodDays`, default 30).
 - **1.5.1** — Codex token accounting fixed (cached input and reasoning tokens no longer double-counted); Cursor rewritten onto its SQLite store (exact counts where recorded, `⚠ no data` otherwise — never estimated); Kiro rewritten onto its per-session format (activity only); `⚠ no data` flag for rows without reliable token data; per-tool anomaly thresholds; per-provider plan recommendations. codex / cursor / kiro promoted to stable.
@@ -213,7 +213,7 @@ tokstat --impact --tool claude --period all
   ╭───────────────────────────────────────────╮
   │ ENERGY & CO₂ · Last 30 days                │
   │                                            │
-  │ 🦊  ~11.5 kWh  ·  ~4.8 kg CO₂e   moderate   │
+  │ 🐘  ~11.5 kWh  ·  ~4.8 kg CO₂e   heavy      │
   │ ± 31% · 4.8 Wh/1k · trend ↗ growing (+12%)  │
   │                                            │
   │ ≈ 40 km by car · 955 phone charges         │
@@ -222,14 +222,14 @@ tokstat --impact --tool claude --period all
 
   Trend (per week) — Δ vs previous week:
     bucket       tokens   energy     Δ       CO₂e    Wh/1k     Δ
-    2026-04-13    42.1M  0.58kWh    —      0.24kg     1.9     —
-    2026-04-20    38.7M  0.52kWh  -11%     0.22kg     2.1   +12%
+    2026-04-13    42.1M  0.58kWh    —      0.24kg     4.6     —
+    2026-04-20    38.7M  0.52kWh  -11%     0.22kg     4.9   +12%
     ...
 
   Analysis (first vs second half of the period)
-    • Electricity use rose 906% (0.26 → 2.63 kWh per week).
+    • Electricity use rose sharply (0.26 → 2.63 kWh per week).
     • CO₂ followed the same path — ~8.4 kg CO₂e total over the window.
-    • Frugality worsened 136% (heavier model mix): 2.1 → 5.0 Wh per 1k output tokens.
+    • Frugality worsened 18% (heavier model mix): 4.1 → 4.8 Wh per 1k output tokens.
   By tool (data span used):
     Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19
     Codex        9.61 kWh · 4.02 kg CO₂e   2026-01-21 → 2026-06-15
@@ -247,17 +247,34 @@ shows the **period-over-period change (Δ %)** for both consumption (energy) and
 increase, so you can see whether you're consuming more and whether your model
 mix is getting lighter or heavier. A short **Analysis** then spells out the
 trajectory in plain language (electricity, CO₂, frugality), comparing the first
-half of the period to the second.
+half of the period to the second. When a swing is larger than ~5×, the baseline
+is too small for a percentage to mean anything (e.g. an adoption ramp over
+`--period all`), so the wording becomes descriptive — "rose/dropped sharply" in
+the Analysis, "ramping up"/"winding down" on the badge — instead of a misleading
+number like "+99041%".
 
 The per-model span is the **measurable** period — the union of the data spans
 of every tool that carries that model (e.g. a model used in both opencode and
 Claude Code spans the union of both), since that's how far back its usage could
 be observed.
 
-The badge headline carries a mascot animal for the footprint weight
-(🐜 very light → 🦥 frugal → 🦊 moderate → 🐘 heavy → 🦣 very heavy, based on
-Wh per 1k output tokens) and a trend arrow (↘ shrinking / → stable / ↗ growing,
-first half vs second half of the period).
+The badge headline carries a mascot animal for the footprint weight and a trend
+arrow (↘ shrinking / → stable / ↗ growing, first half vs second half of the
+period). The animal grades your **frugality** — Wh per 1k output tokens, weighted
+across your whole model mix — so it's comparable across users regardless of volume:
+
+| Wh / 1k output | verdict | typical models |
+|---|---|---|
+| < 1   | 🐜 very light  | haiku, gpt-4o-mini |
+| < 2.5 | 🦥 frugal      | sonnet, gpt-4o |
+| < 4   | 🦊 moderate    | light mixes |
+| < 10  | 🐘 heavy       | current frontier: opus-4-7/4-8, gpt-5.x (~5–6) |
+| ≥ 10  | 🦣 very heavy  | legacy dense giants: opus-4-1, gemini-2.5-pro (~25) |
+
+The thresholds are anchored to EcoLogits' active-parameter estimates: a
+mostly-Opus diet reads **heavy**, and "very heavy" is the old dense-600B-class
+tier. Because closed-model parameter counts are *estimated*, the exact band can
+shift as EcoLogits updates its database.
 
 > **⚠️ Order-of-magnitude estimate, usage phase only.** Energy is derived from
 > output tokens × the model's (estimated) active parameters — for closed models
