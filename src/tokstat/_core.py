@@ -1811,8 +1811,48 @@ def show_impact(collect_fn, period_name: str | None = None,
         print(f"  │ {s}{' ' * (w - len(_strip_ansi(s)))} │")
     print(f"  ╰─{'─' * w}─╯")
 
-    # ─── Trend over time (granularity adapts to the period span) ──────────
+    # ─── Verdict badge: a mascot animal for the footprint + a trend arrow ──
     from datetime import datetime as _dt, timedelta as _td2
+    days_sorted = sorted(e["ts"].astimezone().date() for e in all_exchanges)
+    avg_frug = e_mid * 1e6 / covered_out if covered_out else 0   # Wh / 1k out tok
+    # Animal by frugality (model-mix weight) — comparable across users.
+    for thr, emoji, word in ((2, "🐜", "very light"), (4, "🦥", "frugal"),
+                             (8, "🦊", "moderate"), (15, "🐘", "heavy"),
+                             (float("inf"), "🦣", "very heavy")):
+        if avg_frug < thr:
+            animal, level = emoji, word
+            break
+    # Trend: split the window in half and compare total energy.
+    mid_date = days_sorted[0] + (days_sorted[-1] - days_sorted[0]) / 2
+    first_half = [e for e in all_exchanges if e["ts"].astimezone().date() <= mid_date]
+    second_half = [e for e in all_exchanges if e["ts"].astimezone().date() > mid_date]
+    eh1, _g1, _r = _estimate_total_impact(first_half, region) if first_half else (None, None, region)
+    eh2, _g2, _r = _estimate_total_impact(second_half, region) if second_half else (None, None, region)
+    if eh1 and eh2:
+        tp = (eh2 - eh1) / eh1 * 100
+        if tp > 10:   arrow = f"{BRED}↗ growing (+{tp:.0f}%){RESET}"
+        elif tp < -10: arrow = f"{GREEN}↘ shrinking ({tp:.0f}%){RESET}"
+        else:          arrow = f"{DIM}→ stable{RESET}"
+    else:
+        arrow = f"{DIM}n/a{RESET}"
+
+    def _w(s):  # visible width, counting emoji as 2 cells
+        return len(_strip_ansi(s)) + sum(1 for c in s if ord(c) >= 0x1F000)
+
+    verdict = [
+        f"{BOLD}VERDICT{RESET}",
+        "",
+        f"{animal}  {BOLD}{level}{RESET} footprint",
+        f"{DIM}~{e_mid:.1f} kWh · ~{g_mid:.1f} kg CO₂e · {avg_frug:.1f} Wh/1k{RESET}",
+        f"trend: {arrow}",
+    ]
+    vw = max(_w(s) for s in verdict)
+    print(f"  ╭─{'─' * vw}─╮")
+    for s in verdict:
+        print(f"  │ {s}{' ' * (vw - _w(s))} │")
+    print(f"  ╰─{'─' * vw}─╯")
+
+    # ─── Trend over time (granularity adapts to the period span) ──────────
     days_sorted = sorted(e["ts"].astimezone().date() for e in all_exchanges)
     span_days = (days_sorted[-1] - days_sorted[0]).days
     if span_days <= 31:

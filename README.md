@@ -219,6 +219,13 @@ tokstat --impact --tool claude --period all
   │ ≈ 40 km by car · 955 phone charges         │
   │ mix: world (0.418 kgCO₂e/kWh) · PUE 1.2     │
   ╰───────────────────────────────────────────╯
+  ╭──────────────────────────────────────╮
+  │ VERDICT                              │
+  │                                      │
+  │ 🦊  moderate footprint               │
+  │ ~20.2 kWh · ~8.5 kg CO₂e · 4.8 Wh/1k │
+  │ trend: ↗ growing (+857%)             │
+  ╰──────────────────────────────────────╯
 
   Trend (per week) — Δ vs previous week:
     bucket       tokens   energy     Δ       CO₂e    Wh/1k     Δ
@@ -253,6 +260,11 @@ The per-model span is the **measurable** period — the union of the data spans
 of every tool that carries that model (e.g. a model used in both opencode and
 Claude Code spans the union of both), since that's how far back its usage could
 be observed.
+
+The **VERDICT** badge sums it up with a mascot animal for the footprint weight
+(🐜 very light → 🦥 frugal → 🦊 moderate → 🐘 heavy → 🦣 very heavy, based on
+Wh per 1k output tokens) and a trend arrow (↘ shrinking / → stable / ↗ growing,
+first half vs second half of the period).
 
 > **⚠️ Order-of-magnitude estimate, usage phase only.** Energy is derived from
 > output tokens × the model's (estimated) active parameters — for closed models
