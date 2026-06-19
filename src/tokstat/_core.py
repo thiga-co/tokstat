@@ -1836,10 +1836,8 @@ def show_impact(collect_fn, period_name: str | None = None,
             bucket_out[_bucket(e["ts"].astimezone().date())][e.get("model") or "?"] += out
 
     if len(bucket_out) > 1:
-        print(f"\n  {DIM}Trend (per {gran_label}) — energy/CO₂ and per-1k-output "
-              f"frugality:{RESET}")
-        print(f"    {DIM}{'bucket':<11}{'energy':>9}{'CO₂e':>9}   "
-              f"{'Wh/1k':>7}{'gCO₂e/1k':>10}{RESET}")
+        # Pre-compute each bucket's energy and frugality (Wh per 1k output).
+        series = []
         for bkey in sorted(bucket_out):
             be_lo = be_hi = bg_lo = bg_hi = 0.0
             bout = 0
@@ -1853,11 +1851,29 @@ def show_impact(collect_fn, period_name: str | None = None,
             if bout <= 0:
                 continue
             bem = (be_lo + be_hi) / 2
-            bgm = (bg_lo + bg_hi) / 2
-            wh_per_1k = bem * 1e6 / bout      # kWh→Wh (×1000) per (out/1000)
-            g_per_1k = bgm * 1e6 / bout       # kg→g (×1000) per (out/1000)
-            print(f"    {bkey:<11}{bem:>7.2f}kWh{bgm:>7.2f}kg   "
-                  f"{wh_per_1k:>6.1f} {g_per_1k:>9.2f}")
+            series.append({
+                "bucket": bkey, "energy": bem, "gwp": (bg_lo + bg_hi) / 2,
+                "wh_1k": bem * 1e6 / bout,        # frugality: Wh / 1k output tok
+            })
+
+        def _delta(cur, prev):
+            # colored "±X%" vs previous bucket; less = greener (better).
+            if prev is None or prev == 0:
+                return f"{DIM}    —{RESET}"
+            pc = (cur - prev) / prev * 100
+            color = GREEN if pc < 0 else (BYELLOW if pc < 25 else BRED)
+            return f"{color}{pc:+4.0f}%{RESET}"
+
+        print(f"\n  {DIM}Trend (per {gran_label}) — Δ vs previous {gran_label}:{RESET}")
+        print(f"    {DIM}{'bucket':<11}{'energy':>9}{'Δ':>6}   "
+              f"{'CO₂e':>8}   {'Wh/1k':>6}{'Δ':>6}{RESET}")
+        prev_e = prev_f = None
+        for s in series:
+            de = _delta(s["energy"], prev_e)
+            df = _delta(s["wh_1k"], prev_f)
+            print(f"    {s['bucket']:<11}{s['energy']:>6.2f}kWh {de}   "
+                  f"{s['gwp']:>6.2f}kg   {s['wh_1k']:>5.1f} {df}")
+            prev_e, prev_f = s["energy"], s["wh_1k"]
 
     def _metric(agg):
         if agg["covered"] == 0:
