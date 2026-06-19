@@ -1646,9 +1646,10 @@ _IMPACT_MIX_PRESETS = {
 _IMPACT_CONFIG = _Path.home() / ".config" / "tokstat" / "impact.json"
 
 
-def _load_impact_config():
+def _load_impact_config(region_override: str | None = None):
     """Return (pue, mix_gwp, region_label). Config keys: 'region' (preset) or
-    'electricity_mix_gwp' (explicit), and optional 'pue'."""
+    'electricity_mix_gwp' (explicit), and optional 'pue'. A region_override
+    (from --region) takes precedence over the config file."""
     from tokstat._ecologits import DEFAULT_PUE, DEFAULT_MIX_GWP
     pue, mix, region = DEFAULT_PUE, DEFAULT_MIX_GWP, "world"
     try:
@@ -1663,13 +1664,25 @@ def _load_impact_config():
         r = cfg["region"].lower().strip()
         if r in _IMPACT_MIX_PRESETS:
             mix = _IMPACT_MIX_PRESETS[r]; region = r
+    if region_override:
+        r = region_override.lower().strip()
+        if r in _IMPACT_MIX_PRESETS:
+            mix = _IMPACT_MIX_PRESETS[r]; region = r
+        else:
+            try:
+                mix = float(region_override); region = "custom"
+            except ValueError:
+                valid = ", ".join(sorted(_IMPACT_MIX_PRESETS))
+                print(f"  {YELLOW}Unknown region '{region_override}'. "
+                      f"Using '{region}'. Available: {valid}{RESET}")
     return pue, mix, region
 
 
 def show_impact(collect_fn, period_name: str | None = None,
-                tool_filter: str | None = None):
+                tool_filter: str | None = None, region: str | None = None):
     """Estimate the energy and CO2 (usage phase) of the observed activity,
-    using the EcoLogits methodology and model database. Order-of-magnitude."""
+    using the EcoLogits methodology and model database. Order-of-magnitude.
+    `region` (e.g. eu/world/france) overrides the configured electricity mix."""
     from tokstat._ecologits import impact_for, load_ecologits_db
 
     print(f"\n{BOLD} Environmental Impact{RESET}  {DIM}(usage phase, EcoLogits){RESET}")
@@ -1689,7 +1702,7 @@ def show_impact(collect_fn, period_name: str | None = None,
         print(f"  {YELLOW}No data found.{RESET}\n")
         return
 
-    pue, mix_gwp, region = _load_impact_config()
+    pue, mix_gwp, region = _load_impact_config(region)
 
     # Aggregate output tokens per (tool, model); track each tool's full data
     # span and which tools carry each model.
@@ -1895,6 +1908,15 @@ def print_update_notice(current_version: str) -> None:
 
 
 # ─── Arg parsing helpers ──────────────────────────────────────────────────
+
+def _parse_region(args: list[str]) -> str | None:
+    """Value after --region (electricity-mix preset or explicit factor)."""
+    if "--region" in args:
+        idx = args.index("--region")
+        if idx + 1 < len(args):
+            return args[idx + 1]
+    return None
+
 
 _PERIOD_UNITS = ("hour", "hours", "day", "days", "week", "weeks",
                  "month", "months", "year", "years")

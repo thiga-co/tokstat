@@ -241,14 +241,20 @@ be observed.
 > per-request GPU data tokstat doesn't have). Models absent from the EcoLogits
 > database are excluded and reported.
 
-Configure the electricity mix in `~/.config/tokstat/impact.json`:
+Choose the electricity mix per run with `--region`:
+
+```sh
+tokstat --impact --region eu
+tokstat --impact --region france --period "30 days"
+```
+
+Presets: `world` (default, 0.418), `eu` (0.250), `france` (0.056), `us` (0.369),
+`green` (0.040) kgCO₂e/kWh — or pass an explicit factor (`--region 0.3`). To make
+it permanent, set it in `~/.config/tokstat/impact.json`:
 
 ```json
 { "region": "france", "pue": 1.2 }
 ```
-
-Presets: `world` (default, 0.418), `france` (0.056), `eu` (0.250), `us` (0.369),
-`green` (0.040) kgCO₂e/kWh — or set `electricity_mix_gwp` explicitly.
 
 ### `--plan` — plan & optimization recommendations
 

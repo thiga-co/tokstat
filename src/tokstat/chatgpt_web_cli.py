@@ -34,7 +34,7 @@ from tokstat._core import (
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact,
-    export_conversations, _parse_period, print_update_notice,
+    export_conversations, _parse_period, _parse_region, print_update_notice,
 )
 from tokstat._web import (
     cache_iter, cache_save, imported_accounts,
@@ -313,7 +313,7 @@ _TOOL_ALIASES = {"chatgpt": TOOL_NAME, "chatgpt.com": TOOL_NAME, "chatgpt-web": 
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--region", "--export", "--period", "--since", "--tool",
     "--import", "--account", "--list-accounts", "--clean-cache",
     "--clear-imports",
 }
@@ -452,7 +452,7 @@ def cli():
     elif "--total" in args:
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
-        show_impact(_collect_all_exchanges, period, tool)
+        show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

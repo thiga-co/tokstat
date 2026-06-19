@@ -58,7 +58,7 @@ from tokstat._core import (
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact,
-    export_conversations, _parse_period, print_update_notice,
+    export_conversations, _parse_period, _parse_region, print_update_notice,
     compute_overview_state,
 )
 
@@ -245,7 +245,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool", "--watch", "-w",
+    "--plan", "--activity", "--total", "--impact", "--region", "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
 _DEFAULT_WATCH_INTERVAL = 5.0
@@ -316,6 +316,8 @@ def show_help():
                        "6 months", year   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
                        claude.ai, chatgpt (default: all)
+  --region <name>      impact electricity mix: world (default), eu,
+                       france, us, green (for --impact)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/                          exact tokens
@@ -373,7 +375,7 @@ def cli():
     elif "--total" in args:
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
-        show_impact(_collect_all_exchanges, period, tool)
+        show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:
