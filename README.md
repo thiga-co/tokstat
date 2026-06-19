@@ -225,6 +225,11 @@ tokstat --impact --tool claude --period all
     2026-04-13    42.1M  0.58kWh    —      0.24kg     1.9     —
     2026-04-20    38.7M  0.52kWh  -11%     0.22kg     2.1   +12%
     ...
+
+  Analysis (first vs second half of the period)
+    • Electricity use rose 906% (0.26 → 2.63 kWh per week).
+    • CO₂ followed the same path — ~8.4 kg CO₂e total over the window.
+    • Frugality worsened 136% (heavier model mix): 2.1 → 5.0 Wh per 1k output tokens.
   By tool (data span used):
     Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19
     Codex        9.61 kWh · 4.02 kg CO₂e   2026-01-21 → 2026-06-15
@@ -240,7 +245,9 @@ The **Trend** section buckets the period by **day** (≤ ~1 month), **week**
 shows the **period-over-period change (Δ %)** for both consumption (energy) and
 **frugality** (Wh per 1000 output tokens). Green = down/better, red = a sharp
 increase, so you can see whether you're consuming more and whether your model
-mix is getting lighter or heavier.
+mix is getting lighter or heavier. A short **Analysis** then spells out the
+trajectory in plain language (electricity, CO₂, frugality), comparing the first
+half of the period to the second.
 
 The per-model span is the **measurable** period — the union of the data spans
 of every tool that carries that model (e.g. a model used in both opencode and

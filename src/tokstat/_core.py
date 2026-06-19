@@ -1882,6 +1882,37 @@ def show_impact(collect_fn, period_name: str | None = None,
                   f"{s['gwp']:>6.2f}kg   {s['wh_1k']:>5.1f} {df}")
             prev_e, prev_f = s["energy"], s["wh_1k"]
 
+        # ─── Narrative analysis (first half vs second half of the series) ──
+        if len(series) >= 4:
+            half = len(series) // 2
+            def _avg(seq, key):
+                vals = [x[key] for x in seq]
+                return sum(vals) / len(vals) if vals else 0.0
+            e1, e2 = _avg(series[:half], "energy"), _avg(series[half:], "energy")
+            f1, f2 = _avg(series[:half], "wh_1k"),  _avg(series[half:], "wh_1k")
+
+            def _word(p):
+                if p > 10:  return f"{BRED}rose {p:.0f}%{RESET}"
+                if p < -10: return f"{GREEN}fell {abs(p):.0f}%{RESET}"
+                return f"{DIM}held roughly steady{RESET}"
+
+            pe = (e2 - e1) / e1 * 100 if e1 else 0
+            pf = (f2 - f1) / f1 * 100 if f1 else 0
+            if pf > 10:
+                frug = f"{BRED}worsened {pf:.0f}%{RESET} (heavier model mix)"
+            elif pf < -10:
+                frug = f"{GREEN}improved {abs(pf):.0f}%{RESET} (lighter model mix)"
+            else:
+                frug = f"{DIM}stayed flat{RESET} (similar model mix)"
+
+            print(f"\n  {BOLD}Analysis{RESET} {DIM}(first vs second half of the period){RESET}")
+            print(f"    • Electricity use {_word(pe)} "
+                  f"({e1:.2f} → {e2:.2f} kWh per {gran_label}).")
+            print(f"    • CO₂ followed the same path — {BOLD}~{g_mid:.1f} kg CO₂e{RESET} "
+                  f"total over the window.")
+            print(f"    • Frugality {frug}: "
+                  f"{f1:.1f} → {f2:.1f} Wh per 1k output tokens.")
+
     def _metric(agg):
         if agg["covered"] == 0:
             return f"{DIM}not in EcoLogits DB{RESET}"
