@@ -1547,7 +1547,14 @@ def show_activity(collect_fn, period_name: str | None = None,
     print(f"\n  {BOLD}{total_prompts}{RESET} prompts · {BOLD}{total_turns}{RESET} turns · "
           f"{BOLD}{fmt_tokens(total_tokens)}{RESET} tokens "
           f"over {BOLD}{active_days}{RESET} active day(s)")
-    print(f"  {DIM}Busiest day: {busiest[0]} ({busiest[1]} prompts){RESET}\n")
+    print(f"  {DIM}Busiest day: {busiest[0]} ({busiest[1]} prompts){RESET}")
+
+    # Energy & CO2 estimate (EcoLogits, usage phase) — one-line summary.
+    e_mid, g_mid, region = _estimate_total_impact(all_exchanges)
+    if e_mid is not None:
+        print(f"  {DIM}≈ {e_mid:.1f} kWh · {g_mid:.1f} kg CO₂e "
+              f"(usage est., {region} mix — see --impact){RESET}")
+    print()
 
 
 # ─── Shared display: total ─────────────────────────────────────────────────
@@ -1676,6 +1683,32 @@ def _load_impact_config(region_override: str | None = None):
                 print(f"  {YELLOW}Unknown region '{region_override}'. "
                       f"Using '{region}'. Available: {valid}{RESET}")
     return pue, mix, region
+
+
+def _estimate_total_impact(exchanges, region: str | None = None):
+    """Return (energy_mid_kWh, gwp_mid_kgCO2e, region_label) for the given
+    exchanges using EcoLogits, or (None, None, region) if nothing matched.
+    Midpoint of the min/max range. Used by --activity for a one-line summary."""
+    from tokstat._ecologits import impact_for
+    pue, mix_gwp, region_label = _load_impact_config(region)
+    out_by_model: dict[str, int] = defaultdict(int)
+    for e in exchanges:
+        tok = e.get("tokens") or {}
+        out_by_model[e.get("model") or "?"] += tok.get("output", 0) or 0
+    e_lo = e_hi = g_lo = g_hi = 0.0
+    matched = False
+    for model, out in out_by_model.items():
+        if out <= 0:
+            continue
+        imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+        if not imp:
+            continue
+        matched = True
+        e_lo += imp["energy"][0]; e_hi += imp["energy"][1]
+        g_lo += imp["gwp"][0];    g_hi += imp["gwp"][1]
+    if not matched:
+        return None, None, region_label
+    return (e_lo + e_hi) / 2, (g_lo + g_hi) / 2, region_label
 
 
 def show_impact(collect_fn, period_name: str | None = None,

@@ -155,7 +155,8 @@ false positives.
 ### `--activity` — activity calendar
 
 A GitHub-style contribution calendar: one cell per day, colored by prompts/day,
-with a summary of total prompts / turns / tokens and the busiest day.
+with a summary of total prompts / turns / tokens, the busiest day, and a
+one-line energy & CO₂ estimate (see `--impact` for the detailed breakdown).
 
 ```sh
 tokstat --activity --period all
