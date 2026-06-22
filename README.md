@@ -214,32 +214,37 @@ tokstat --impact --tool claude --period all
   ╭───────────────────────────────────────────╮
   │ ENERGY & CO₂ · Last 30 days                │
   │                                            │
-  │ 🐘  ~11.5 kWh  ·  ~4.8 kg CO₂e   heavy      │
-  │ ± 31% · 4.8 Wh/1k · trend ↗ growing (+12%)  │
+  │ 🐘  ~34.5 kWh  ·  ~14.4 kg CO₂e   heavy     │
+  │ ± 69% · 4.8 Wh/1k · trend ↗ growing (+12%)  │
   │                                            │
-  │ ≈ 40 km by car · 955 phone charges         │
+  │ ≈ 120 km by car · 2875 phone charges       │
   │ mix: world (0.418 kgCO₂e/kWh) · PUE 1.2     │
   ╰───────────────────────────────────────────╯
 
   Trend (per week) — Δ vs previous week:
     bucket       tokens   energy     Δ       CO₂e    Wh/1k     Δ
-    2026-04-13    42.1M  0.58kWh    —      0.24kg     4.6     —
-    2026-04-20    38.7M  0.52kWh  -11%     0.22kg     4.9   +12%
+    2026-04-13    42.1M  1.74kWh    —      0.73kg     4.6     —
+    2026-04-20    38.7M  1.56kWh  -11%     0.65kg     4.9   +12%
     ...
 
   Analysis (first vs second half of the period)
-    • Electricity use rose sharply (0.26 → 2.63 kWh per week).
-    • CO₂ followed the same path — ~8.4 kg CO₂e total over the window.
+    • Electricity use rose sharply (0.79 → 7.89 kWh per week).
+    • CO₂ followed the same path — ~14.4 kg CO₂e total over the window.
     • Frugality worsened 18% (heavier model mix): 4.1 → 4.8 Wh per 1k output tokens.
   By tool (data span used):
-    Claude Code  9.82 kWh · 4.10 kg CO₂e   2026-04-14 → 2026-06-19
-    Codex        9.61 kWh · 4.02 kg CO₂e   2026-01-21 → 2026-06-15
+    Claude Code  16.2 kWh · 6.77 kg CO₂e   2026-04-14 → 2026-06-19
+    Codex        14.1 kWh · 5.90 kg CO₂e   2026-01-21 → 2026-06-15
     ...
   By model (measurable span):
-    gpt-5.5 [xhigh]   8.74 kWh · 3.65 kg CO₂e   2026-01-21 → 2026-06-15
-    claude-opus-4-7   4.98 kWh · 2.08 kg CO₂e   2026-04-14 → 2026-06-19
+    gpt-5.5 [xhigh]  12.9 kWh · 5.39 kg CO₂e   2026-01-21 → 2026-06-15
+    claude-opus-4-7   7.3 kWh · 3.05 kg CO₂e   2026-04-14 → 2026-06-19
     ...
 ```
+
+The headline kWh/CO₂, Trend `energy`/`CO₂e` and the per-tool/per-model rows
+**include the prefill/context term** (below); the Trend `Wh/1k` and the verdict's
+frugality stay **decode-only**, which is why they look unchanged while the energy
+columns are several times larger.
 
 The **Trend** section buckets the period by **day** (≤ ~1 month), **week**
 (≤ ~6 months) or **month** (longer) — granularity follows `--period` — and
