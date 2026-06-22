@@ -47,6 +47,30 @@ _QUANT_BITS = 16
 DEFAULT_PUE = 1.2
 DEFAULT_MIX_GWP = 0.418   # kgCO2eq / kWh (world average)
 
+# ─── Prefill / cache energy, relative to one decode (output) token ─────────
+# EcoLogits' formula bills energy from OUTPUT tokens only — it models the
+# decode/generation phase. For chat that's fine (output ≈ input), but
+# agentic/cache-heavy workloads feed orders of magnitude more context per
+# generated token, so decode-only badly undercounts. We add an approximate
+# prefill term.
+#
+# Physics: a transformer spends ~2·N_active FLOPs per token in BOTH prefill
+# and decode. The difference is hardware utilization, not FLOPs:
+#   • Decode is memory-bandwidth bound — one token at a time, weights reloaded
+#     from HBM per step, low utilization. EcoLogits' per-output-token energy
+#     already embeds this (expensive) regime.
+#   • Prefill processes the whole prompt in parallel at high utilization, so
+#     it costs far LESS energy per token despite identical FLOPs. Measured
+#     prefill:decode throughput ratios are ~10–30× at comparable power draw,
+#     i.e. ~0.03–0.12 of a decode token's energy.
+#   • A cache_read token is a KV-cache hit: it skips the FFN/projection
+#     recompute entirely (only attention + KV memory movement), so it is far
+#     cheaper still — a small fraction of even a prefill token.
+# These are deliberately wide ranges (lo→hi) that broaden the uncertainty band
+# rather than pretend to precision. Tune in ~/.config/tokstat/impact.json.
+PREFILL_FACTOR = (0.03, 0.12)        # input + cache_write tokens, vs a decode token
+CACHE_READ_FACTOR = (0.0005, 0.006)  # cache_read tokens, vs a decode token
+
 _DB: dict | None = None   # {model_name: {"active": (min,max), "total": float, "tps":, "ttft":}}
 
 
@@ -204,16 +228,32 @@ def _request_energy(output_tokens: float, active_params: float, total_params: fl
 
 
 def impact_for(model: str, output_tokens: float,
+               prefill_tokens: float = 0.0,
+               cache_read_tokens: float = 0.0,
                pue: float = DEFAULT_PUE,
                mix_gwp: float = DEFAULT_MIX_GWP) -> dict | None:
     """Return usage-phase {energy:(min,max) kWh, gwp:(min,max) kgCO2eq} for
-    generating `output_tokens` with `model`, or None if the model is unknown."""
+    `model`, or None if the model is unknown.
+
+    `output_tokens` drive the decode phase (EcoLogits' formula). `prefill_tokens`
+    (fresh input + cache writes) and `cache_read_tokens` add an approximate
+    prefill/context term at a fraction of a decode token's energy — see
+    PREFILL_FACTOR / CACHE_READ_FACTOR. The (min,max) band pairs the cheaper
+    factors + smaller param estimate against the costlier factors + larger one,
+    so the prefill assumption widens the range honestly."""
     arch = resolve_model(model)
-    if not arch or output_tokens <= 0:
+    if not arch or (output_tokens <= 0 and prefill_tokens <= 0
+                    and cache_read_tokens <= 0):
         return None
     amin, amax = arch["active"]
     total = arch["total"]
-    e1 = _request_energy(output_tokens, amin, total, arch.get("tps"), arch.get("ttft"), pue)
-    e2 = _request_energy(output_tokens, amax, total, arch.get("tps"), arch.get("ttft"), pue)
+    tps, ttft = arch.get("tps"), arch.get("ttft")
+    # decode-equivalent token counts: lo = cheapest assumption, hi = costliest.
+    eff_lo = (output_tokens + PREFILL_FACTOR[0] * prefill_tokens
+              + CACHE_READ_FACTOR[0] * cache_read_tokens)
+    eff_hi = (output_tokens + PREFILL_FACTOR[1] * prefill_tokens
+              + CACHE_READ_FACTOR[1] * cache_read_tokens)
+    e1 = _request_energy(eff_lo, amin, total, tps, ttft, pue)
+    e2 = _request_energy(eff_hi, amax, total, tps, ttft, pue)
     e_lo, e_hi = min(e1, e2), max(e1, e2)
     return {"energy": (e_lo, e_hi), "gwp": (e_lo * mix_gwp, e_hi * mix_gwp)}

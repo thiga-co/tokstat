@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
 - **1.8.0** — `--impact` mode: energy (kWh) and CO₂e estimate of the observed activity, reusing the EcoLogits methodology and model database (fetched + cached locally, no dependency). Usage phase only, with a single headline figure + ±% uncertainty and a configurable electricity mix (`--impact eu`, `france`, …). Includes a mascot-graded frugality verdict (Wh per 1k output tokens), a per-bucket Trend table (Δ vs previous day/week/month), a plain-language Analysis, and per-tool / per-model breakdowns with measurable data spans. Large swings (> ~5×) are described ("ramping up", "rose sharply") rather than quoted as misleading percentages. An energy/CO₂ line also appears on `--activity`.
 - **1.7.0** — `--total` mode: a compact badge of total tokens + cost for the selected period/tool, with the data's actual date span and a per-tool breakdown (each tool's own date range). New `--period` options: `1 month`, `2 months`, `3 months`, `6 months` (unquoted `--period 3 months` works too). `--activity` shows the year on its own row above the months.
 - **1.6.0** — `--activity` mode: a GitHub-style contribution calendar of daily activity over the period, colored by prompts/day, with the year shown at year boundaries and a summary of total prompts / turns / tokens and the busiest day. Reads directly from the scanned exchanges (history depth is limited by what each tool keeps on disk — see each tool's retention, e.g. Claude Code's `cleanupPeriodDays`, default 30).
@@ -274,14 +275,32 @@ across your whole model mix — so it's comparable across users regardless of vo
 The thresholds are anchored to EcoLogits' active-parameter estimates: a
 mostly-Opus diet reads **heavy**, and "very heavy" is the old dense-600B-class
 tier. Because closed-model parameter counts are *estimated*, the exact band can
-shift as EcoLogits updates its database.
+shift as EcoLogits updates its database. (The verdict uses **decode-only**
+energy — energy per generated token — so it grades your model choice, not how
+much context you feed; the headline kWh/CO₂ figure does include the context.)
+
+#### Prefill / context energy
+
+EcoLogits' published formula bills energy from **output tokens only** — it
+models the decode phase, which is fine for chat (output ≈ input) but badly
+undercounts agentic/cache-heavy use, where each generated token rides on orders
+of magnitude more context (for Claude Code, cache reads alone are often 95 %+ of
+all token traffic). tokstat adds an approximate **prefill term**: fresh input +
+cache writes, and cache reads, each counted at a fraction of a decode token's
+energy. The fractions are grounded in transformer physics — prefill does the
+same ~2·N_active FLOPs per token as decode but at far higher hardware
+utilization (≈ 0.03–0.12×), and a cache-read token skips the FFN recompute
+entirely (≈ 0.0005–0.006×). These are deliberately wide ranges that widen the
+± band rather than feign precision; override them in `impact.json` if you have
+better numbers. Typically this lifts the headline ~2–4× versus decode-only.
 
 > **⚠️ Order-of-magnitude estimate, usage phase only.** Energy is derived from
-> output tokens × the model's (estimated) active parameters — for closed models
-> like Claude/GPT, EcoLogits *estimates* the parameter count, hence the min–max
-> range. It excludes hardware manufacturing (the embodied phase needs
-> per-request GPU data tokstat doesn't have). Models absent from the EcoLogits
-> database are excluded and reported.
+> token counts × the model's (estimated) active parameters — output tokens at
+> the decode rate, plus input/cache at the reduced prefill rates above. For
+> closed models like Claude/GPT, EcoLogits *estimates* the parameter count,
+> hence the min–max range. It excludes hardware manufacturing (the embodied
+> phase needs per-request GPU data tokstat doesn't have). Models absent from the
+> EcoLogits database are excluded and reported.
 
 Choose the electricity mix by passing a region to `--impact` (default `world`):
 

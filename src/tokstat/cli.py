@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 
 import json
 import sys

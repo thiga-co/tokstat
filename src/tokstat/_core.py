@@ -1691,16 +1691,20 @@ def _estimate_total_impact(exchanges, region: str | None = None):
     Midpoint of the min/max range. Used by --activity for a one-line summary."""
     from tokstat._ecologits import impact_for
     pue, mix_gwp, region_label = _load_impact_config(region)
-    out_by_model: dict[str, int] = defaultdict(int)
+    # per model: [output, prefill (input + cache_write), cache_read]
+    tok_by_model: dict[str, list] = defaultdict(lambda: [0, 0, 0])
     for e in exchanges:
         tok = e.get("tokens") or {}
-        out_by_model[e.get("model") or "?"] += tok.get("output", 0) or 0
+        agg = tok_by_model[e.get("model") or "?"]
+        agg[0] += tok.get("output", 0) or 0
+        agg[1] += (tok.get("input", 0) or 0) + (tok.get("cache_write", 0) or 0)
+        agg[2] += tok.get("cache_read", 0) or 0
     e_lo = e_hi = g_lo = g_hi = 0.0
     matched = False
-    for model, out in out_by_model.items():
-        if out <= 0:
+    for model, (out, prefill, cread) in tok_by_model.items():
+        if out <= 0 and prefill <= 0 and cread <= 0:
             continue
-        imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+        imp = impact_for(model, out, prefill, cread, pue=pue, mix_gwp=mix_gwp)
         if not imp:
             continue
         matched = True
@@ -1739,14 +1743,18 @@ def show_impact(collect_fn, period_name: str | None = None,
 
     # Aggregate output tokens per (tool, model); track each tool's full data
     # span and which tools carry each model.
-    out_by_tool_model: dict[tuple, int] = defaultdict(int)
+    # per (tool, model): [output, prefill (input + cache_write), cache_read]
+    out_by_tool_model: dict[tuple, list] = defaultdict(lambda: [0, 0, 0])
     tool_span: dict[str, list] = {}
     model_tools: dict[str, set] = defaultdict(set)
     for e in all_exchanges:
         tok = e.get("tokens") or {}
         tool = e.get("tool", "?")
         model = e.get("model") or "?"
-        out_by_tool_model[(tool, model)] += tok.get("output", 0) or 0
+        agg3 = out_by_tool_model[(tool, model)]
+        agg3[0] += tok.get("output", 0) or 0
+        agg3[1] += (tok.get("input", 0) or 0) + (tok.get("cache_write", 0) or 0)
+        agg3[2] += tok.get("cache_read", 0) or 0
         model_tools[model].add(tool)
         day = e["ts"].astimezone().strftime("%Y-%m-%d")
         s = tool_span.setdefault(tool, [day, day])
@@ -1761,18 +1769,20 @@ def show_impact(collect_fn, period_name: str | None = None,
         return [min(firsts), max(lasts)] if firsts else ["?", "?"]
 
     e_lo = e_hi = g_lo = g_hi = 0.0
+    ed_mid = 0.0                    # decode-only energy (for frugality verdict)
     covered_out = total_out = 0
     _zero = lambda: {"e_lo": 0.0, "e_hi": 0.0, "g_lo": 0.0, "g_hi": 0.0,
                      "out": 0, "covered": 0}
     per_tool: dict[str, dict] = defaultdict(_zero)
     per_model: dict[str, dict] = defaultdict(_zero)
-    for (tool, model), out in out_by_tool_model.items():
-        if out <= 0:
+    for (tool, model), (out, prefill, cread) in out_by_tool_model.items():
+        if out <= 0 and prefill <= 0 and cread <= 0:
             continue
         total_out += out
         pt, pm = per_tool[tool], per_model[model]
         pt["out"] += out; pm["out"] += out
-        imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+        # Total energy includes the prefill/context term (input + cache).
+        imp = impact_for(model, out, prefill, cread, pue=pue, mix_gwp=mix_gwp)
         if not imp:
             continue
         covered_out += out
@@ -1782,6 +1792,11 @@ def show_impact(collect_fn, period_name: str | None = None,
             agg["g_lo"] += imp["gwp"][0];    agg["g_hi"] += imp["gwp"][1]
         e_lo += imp["energy"][0]; e_hi += imp["energy"][1]
         g_lo += imp["gwp"][0];    g_hi += imp["gwp"][1]
+        # Decode-only energy drives the frugality verdict so the mascot grades
+        # the model mix (context-independent), not how much context you feed.
+        imp_d = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+        if imp_d:
+            ed_mid += (imp_d["energy"][0] + imp_d["energy"][1]) / 2
 
     if covered_out == 0:
         print(f"  {YELLOW}No models matched the EcoLogits database.{RESET}\n")
@@ -1795,7 +1810,7 @@ def show_impact(collect_fn, period_name: str | None = None,
 
     # Uncertainty as a single ± percentage (range symmetric around midpoint).
     pct = (e_hi - e_mid) / e_mid * 100 if e_mid else 0
-    avg_frug = e_mid * 1e6 / covered_out if covered_out else 0   # Wh / 1k out tok
+    avg_frug = ed_mid * 1e6 / covered_out if covered_out else 0  # Wh / 1k out tok (decode)
 
     # Mascot animal by frugality (model-mix weight) — comparable across users.
     # Anchors (Wh/1k out, via EcoLogits): small models (haiku/mini) ~0.1,
@@ -1865,37 +1880,43 @@ def show_impact(collect_fn, period_name: str | None = None,
             return (d - _td2(days=d.weekday())).isoformat()
         return d.strftime("%Y-%m")
 
-    bucket_out: dict[str, dict] = defaultdict(lambda: defaultdict(int))
+    # per bucket, per model: [output, prefill (input + cache_write), cache_read]
+    bucket_out: dict[str, dict] = defaultdict(lambda: defaultdict(lambda: [0, 0, 0]))
     bucket_tokens: dict[str, int] = defaultdict(int)   # total tokens per bucket
     for e in all_exchanges:
         tok = e.get("tokens") or {}
-        out = tok.get("output", 0) or 0
         bk = _bucket(e["ts"].astimezone().date())
         bucket_tokens[bk] += (tok.get("input", 0) + tok.get("output", 0)
                               + tok.get("cache_read", 0) + tok.get("cache_write", 0))
-        if out > 0:
-            bucket_out[bk][e.get("model") or "?"] += out
+        agg3 = bucket_out[bk][e.get("model") or "?"]
+        agg3[0] += tok.get("output", 0) or 0
+        agg3[1] += (tok.get("input", 0) or 0) + (tok.get("cache_write", 0) or 0)
+        agg3[2] += tok.get("cache_read", 0) or 0
 
     if len(bucket_out) > 1:
-        # Pre-compute each bucket's energy and frugality (Wh per 1k output).
+        # Per bucket: energy/CO₂ include prefill (consistent with the headline);
+        # frugality (Wh/1k) stays decode-only (consistent with the verdict).
         series = []
         for bkey in sorted(bucket_out):
-            be_lo = be_hi = bg_lo = bg_hi = 0.0
+            be_lo = be_hi = bg_lo = bg_hi = bed_mid = 0.0
             bout = 0
-            for model, out in bucket_out[bkey].items():
-                imp = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+            for model, (out, prefill, cread) in bucket_out[bkey].items():
+                imp = impact_for(model, out, prefill, cread, pue=pue, mix_gwp=mix_gwp)
                 if not imp:
                     continue
                 be_lo += imp["energy"][0]; be_hi += imp["energy"][1]
                 bg_lo += imp["gwp"][0];    bg_hi += imp["gwp"][1]
                 bout += out
+                imp_d = impact_for(model, out, pue=pue, mix_gwp=mix_gwp)
+                if imp_d:
+                    bed_mid += (imp_d["energy"][0] + imp_d["energy"][1]) / 2
             if bout <= 0:
                 continue
             bem = (be_lo + be_hi) / 2
             series.append({
                 "bucket": bkey, "tokens": bucket_tokens.get(bkey, 0),
                 "energy": bem, "gwp": (bg_lo + bg_hi) / 2,
-                "wh_1k": bem * 1e6 / bout,        # frugality: Wh / 1k output tok
+                "wh_1k": bed_mid * 1e6 / bout,    # frugality: decode Wh / 1k out tok
             })
 
         def _delta(cur, prev):
