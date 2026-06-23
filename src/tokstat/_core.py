@@ -1653,18 +1653,40 @@ _IMPACT_MIX_PRESETS = {
 _IMPACT_CONFIG = _Path.home() / ".config" / "tokstat" / "impact.json"
 
 
+def _coerce_factor(v):
+    """Coerce a config value to a (lo, hi) factor tuple, or None if invalid.
+    Accepts a scalar (→ (v, v)) or a 2-item [lo, hi] list."""
+    if isinstance(v, (int, float)):
+        return (float(v), float(v))
+    if isinstance(v, (list, tuple)) and len(v) == 2 \
+            and all(isinstance(x, (int, float)) for x in v):
+        lo, hi = float(v[0]), float(v[1])
+        return (min(lo, hi), max(lo, hi))
+    return None
+
+
 def _load_impact_config(region_override: str | None = None):
     """Return (pue, mix_gwp, region_label). Config keys: 'region' (preset) or
-    'electricity_mix_gwp' (explicit), and optional 'pue'. A region_override
-    (from --region) takes precedence over the config file."""
-    from tokstat._ecologits import DEFAULT_PUE, DEFAULT_MIX_GWP
-    pue, mix, region = DEFAULT_PUE, DEFAULT_MIX_GWP, "world"
+    'electricity_mix_gwp' (explicit), optional 'pue', and optional
+    'prefill_factor' / 'cache_read_factor' (scalar or [lo, hi]) which override
+    the EcoLogits prefill/cache energy multipliers. A region_override takes
+    precedence over the config file."""
+    import tokstat._ecologits as _eco
+    pue, mix, region = _eco.DEFAULT_PUE, _eco.DEFAULT_MIX_GWP, "world"
     try:
         cfg = json.loads(_IMPACT_CONFIG.read_text())
     except (OSError, json.JSONDecodeError):
         cfg = {}
     if isinstance(cfg.get("pue"), (int, float)):
         pue = float(cfg["pue"])
+    # Prefill / cache energy factors: applied to the _ecologits module globals
+    # that impact_for() reads, so all call sites pick up the override.
+    pf = _coerce_factor(cfg.get("prefill_factor"))
+    if pf:
+        _eco.PREFILL_FACTOR = pf
+    cf = _coerce_factor(cfg.get("cache_read_factor"))
+    if cf:
+        _eco.CACHE_READ_FACTOR = cf
     if isinstance(cfg.get("electricity_mix_gwp"), (int, float)):
         mix = float(cfg["electricity_mix_gwp"]); region = "custom"
     elif isinstance(cfg.get("region"), str):
@@ -1771,8 +1793,9 @@ def show_impact(collect_fn, period_name: str | None = None,
     e_lo = e_hi = g_lo = g_hi = 0.0
     ed_mid = 0.0                    # decode-only energy (for frugality verdict)
     covered_out = total_out = 0
+    matched_any = False
     _zero = lambda: {"e_lo": 0.0, "e_hi": 0.0, "g_lo": 0.0, "g_hi": 0.0,
-                     "out": 0, "covered": 0}
+                     "out": 0, "covered": 0, "matched": False}
     per_tool: dict[str, dict] = defaultdict(_zero)
     per_model: dict[str, dict] = defaultdict(_zero)
     for (tool, model), (out, prefill, cread) in out_by_tool_model.items():
@@ -1785,8 +1808,12 @@ def show_impact(collect_fn, period_name: str | None = None,
         imp = impact_for(model, out, prefill, cread, pue=pue, mix_gwp=mix_gwp)
         if not imp:
             continue
+        # A model "matched" if it resolved and produced energy — regardless of
+        # whether this exchange had output tokens (prefill/cache alone counts).
+        matched_any = True
         covered_out += out
         for agg in (pt, pm):
+            agg["matched"] = True
             agg["covered"] += out
             agg["e_lo"] += imp["energy"][0]; agg["e_hi"] += imp["energy"][1]
             agg["g_lo"] += imp["gwp"][0];    agg["g_hi"] += imp["gwp"][1]
@@ -1798,7 +1825,7 @@ def show_impact(collect_fn, period_name: str | None = None,
         if imp_d:
             ed_mid += (imp_d["energy"][0] + imp_d["energy"][1]) / 2
 
-    if covered_out == 0:
+    if not matched_any:
         print(f"  {YELLOW}No models matched the EcoLogits database.{RESET}\n")
         return
 
@@ -1982,7 +2009,7 @@ def show_impact(collect_fn, period_name: str | None = None,
                   f"{f1:.1f} → {f2:.1f} Wh per 1k output tokens.")
 
     def _metric(agg):
-        if agg["covered"] == 0:
+        if not agg["matched"]:
             return f"{DIM}not in EcoLogits DB{RESET}"
         em = (agg["e_lo"] + agg["e_hi"]) / 2
         gm = (agg["g_lo"] + agg["g_hi"]) / 2

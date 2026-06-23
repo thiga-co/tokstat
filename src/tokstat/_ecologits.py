@@ -76,36 +76,62 @@ _DB: dict | None = None   # {model_name: {"active": (min,max), "total": float, "
 
 # ─── Database load (fetch + 24h cache, stale fallback) ─────────────────────
 
+def _range(v):
+    """Coerce a param value (scalar / {min,max} / {active,total}) to (min,max),
+    or (None, None) if it can't be read."""
+    if isinstance(v, (int, float)):
+        return float(v), float(v)
+    if isinstance(v, dict):
+        lo = v.get("min", v.get("max"))
+        hi = v.get("max", v.get("min"))
+        if lo is not None and hi is not None:
+            return float(lo), float(hi)
+    return None, None
+
+
 def _parse_params(arch: dict):
-    """Return (active_min, active_max, total) in billions, or None."""
+    """Return (active_min, active_max, total) in billions, or None.
+
+    Handles every shape EcoLogits' models.json uses:
+      • scalar `parameters` (dense)                → active = total = N
+      • `parameters` {min,max} (dense range)       → active range, total = max
+      • `parameters` {active,total} (MoE inline)   → active from `active`
+      • scalar `parameters` + `active_parameters`  → MoE with a separate field
+        (e.g. command-a-plus: parameters 218, active_parameters 25)
+    """
     if not isinstance(arch, dict):
         return None
     params = arch.get("parameters")
-    if params is None:
+    active_field = arch.get("active_parameters")
+    if params is None and active_field is None:
         return None
+
+    total = amin = amax = None
     if isinstance(params, (int, float)):
-        v = float(params)
-        return (v, v, v)
-    if isinstance(params, dict):
+        total = float(params)
+        amin = amax = total
+    elif isinstance(params, dict):
         total = params.get("total")
         active = params.get("active")
-        if isinstance(active, dict):
-            amin = active.get("min", active.get("max"))
-            amax = active.get("max", active.get("min"))
-        elif isinstance(active, (int, float)):
-            amin = amax = float(active)
+        if active is not None:
+            amin, amax = _range(active)
         elif "min" in params or "max" in params:
-            # dense model given as a bare {min, max} range (no active/total)
-            amin = params.get("min", params.get("max"))
-            amax = params.get("max", params.get("min"))
-        else:
-            amin = amax = total
+            amin, amax = _range(params)        # bare dense {min,max}
+        if total is None:
+            total = amax if amax is not None else amin
+
+    # An explicit top-level active_parameters overrides the active estimate
+    # (current EcoLogits MoE schema); `parameters` then carries the total.
+    if active_field is not None:
+        amin, amax = _range(active_field)
+        if total is None and isinstance(params, (int, float)):
+            total = float(params)
         if total is None:
             total = amax
-        if amin is None or total is None:
-            return None
-        return (float(amin), float(amax), float(total))
-    return None
+
+    if amin is None or amax is None or total is None:
+        return None
+    return (float(amin), float(amax), float(total))
 
 
 def _build_db(raw: dict) -> dict:
@@ -183,15 +209,22 @@ def _normalize(model: str) -> str:
 
 def resolve_model(model: str) -> dict | None:
     """Map a tokstat model string to an EcoLogits architecture entry.
-    Tries exact, then prefix, then family-class fallback."""
+
+    Exact match (incl. aliases) first, then a constrained base-name match: a DB
+    key that prefixes our (more specific) model name at a version boundary —
+    e.g. a dated "claude-opus-4-7-20250805" resolves to "claude-opus-4-7". We
+    deliberately do NOT match in the other direction (a generic name onto an
+    arbitrary more-specific variant), since that guessed e.g. "claude-sonnet-4"
+    → "claude-sonnet-4-5" or "gemini-2.5" → "gemini-2.5-flash-image"."""
     db = load_ecologits_db()
     if not db:
         return None
     name = _normalize(model)
     if name in db:
         return db[name]
-    # longest known name that is a prefix of the model (or vice-versa)
-    cands = [k for k in db if name.startswith(k) or k.startswith(name)]
+    # base-name match: db key k is a prefix of our name at a boundary char.
+    cands = [k for k in db
+             if name.startswith(k) and (len(name) == len(k) or name[len(k)] in "-.:/ ")]
     if cands:
         return db[max(cands, key=len)]
     return None
