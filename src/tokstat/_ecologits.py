@@ -11,10 +11,18 @@ Scope: USAGE phase only (the electricity to run inference). The embodied
 GPU provisioning data tokstat doesn't have. Figures are order-of-magnitude
 estimates with a min/max range driven by the model's active-parameter range.
 
-Constants and formula ported from ecologits/impacts/llm.py
-(MPL-2.0, github.com/genai-impact/ecologits).
+Constants and the usage-phase formula are ported from ecologits/impacts/llm.py
+(github.com/genai-impact/ecologits). Because this file incorporates that
+MPL-2.0 source, this file alone is licensed under the MPL-2.0 (the rest of
+tokstat is MIT). See the NOTICE file.
 
-SPDX-License-Identifier: MIT
+This Source Code Form is subject to the terms of the Mozilla Public License,
+v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain
+one at https://mozilla.org/MPL/2.0/.
+
+SPDX-License-Identifier: MPL-2.0
+Copyright (c) 2026 Olivier Bergeret
+Portions derived from EcoLogits, Copyright (c) GenAI Impact contributors.
 """
 
 from __future__ import annotations

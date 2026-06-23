@@ -1,0 +1,34 @@
+tokstat
+Copyright (c) 2026 Olivier Bergeret
+
+This project is licensed under the MIT License (see LICENSE), with one
+exception noted below.
+
+────────────────────────────────────────────────────────────────────────────
+Mixed licensing
+────────────────────────────────────────────────────────────────────────────
+
+The file:
+
+    src/tokstat/_ecologits.py
+
+is licensed under the Mozilla Public License, Version 2.0 (MPL-2.0), NOT MIT.
+
+It ports the usage-phase energy formula and its numeric constants from
+EcoLogits (ecologits/impacts/llm.py):
+
+    EcoLogits — https://github.com/genai-impact/ecologits
+    Copyright (c) GenAI Impact contributors
+    Licensed under the Mozilla Public License, Version 2.0
+
+Because the MPL-2.0 is a file-level copyleft, that single file remains under
+the MPL-2.0. A copy of the MPL-2.0 is available at:
+
+    https://mozilla.org/MPL/2.0/
+
+The MPL-2.0 permits this file to be combined with the MIT-licensed remainder
+of tokstat; the MPL-2.0 governs only src/tokstat/_ecologits.py, and the MIT
+License governs everything else.
+
+The EcoLogits model database (parameter counts per model) is fetched and cached
+at runtime; it is not redistributed as part of this source tree.

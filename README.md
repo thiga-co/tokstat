@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **1.8.3** — License fix: `src/tokstat/_ecologits.py` is now correctly licensed **MPL-2.0** (it ports EcoLogits' MPL-2.0 formula + constants); the rest of tokstat stays MIT. Package metadata is `MIT AND MPL-2.0`, with a `NOTICE` documenting the split. Resolves the SPDX inconsistency where that file claimed MIT while porting MPL-2.0 source.
 - **1.8.2** — `--impact` correctness fixes: (1) honor EcoLogits' `active_parameters` field for MoE models given as a scalar total + separate active count (e.g. `command-a-plus`: 218B total / 25B active — was counted as 218B active); (2) constrain model matching to exact + version-boundary base names, so a generic name no longer resolves to an arbitrary specific variant (`claude-sonnet-4` → `claude-sonnet-4-5`, `gemini-2.5` → `gemini-2.5-flash-image`); (3) base the "matched / not in DB" accounting on computed energy, so a known model with only prefill/cache tokens (no output) is no longer reported as unmatched; (4) actually read `prefill_factor` / `cache_read_factor` from `impact.json` (previously documented but ignored).
 - **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
 - **1.8.0** — `--impact` mode: energy (kWh) and CO₂e estimate of the observed activity, reusing the EcoLogits methodology and model database (fetched + cached locally, no dependency). Usage phase only, with a single headline figure + ±% uncertainty and a configurable electricity mix (`--impact eu`, `france`, …). Includes a mascot-graded frugality verdict (Wh per 1k output tokens), a per-bucket Trend table (Δ vs previous day/week/month), a plain-language Analysis, and per-tool / per-model breakdowns with measurable data spans. Large swings (> ~5×) are described ("ramping up", "rose sharply") rather than quoted as misleading percentages. An energy/CO₂ line also appears on `--activity`.
@@ -21,7 +22,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 pip install tokstat
 ```
 
-Requires Python 3.7+. No dependencies. MIT License.
+Requires Python 3.7+. No dependencies. MIT (one MPL-2.0 file — see [License](#license)).
 
 ## Tools
 
@@ -397,4 +398,8 @@ Model pricing is fetched from [LiteLLM's model pricing database](https://github.
 
 ## Credits
 
-Environmental-impact estimates (`--impact`) use the methodology and model database of [EcoLogits](https://github.com/genai-impact/ecologits) (MPL-2.0), fetched and cached locally.
+Environmental-impact estimates (`--impact`) port the usage-phase energy formula and constants of [EcoLogits](https://github.com/genai-impact/ecologits) (MPL-2.0) and use its model database, fetched and cached locally.
+
+## License
+
+tokstat is MIT (see [LICENSE](LICENSE)), **except** `src/tokstat/_ecologits.py`, which is licensed under the **MPL-2.0** because it ports MPL-2.0 source from EcoLogits. The MPL-2.0 is a file-level copyleft and governs only that one file; everything else is MIT. See [NOTICE](NOTICE) for details.
