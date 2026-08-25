@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -328,11 +329,18 @@ def pick_ollama_model(host: str = OLLAMA_HOST) -> str | None:
     return None
 
 
+class JudgeError(RuntimeError):
+    """The local judge could not be run (Ollama down, model missing, bad
+    response). Distinct from 'ran fine and found nothing'."""
+
+
 def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
                               timeout: int = 240, max_chars: int = 9000
                               ) -> list[Finding]:
     """Run the judge locally via Ollama. Fully local, no data leaves the
-    machine. Returns [] on failure."""
+    machine. Returns a (possibly empty) list of findings on success; raises
+    JudgeError if the judge could not run — so callers never mistake a failure
+    for a clean 'no findings'."""
     payload = {
         "model": model,
         "stream": False,
@@ -351,12 +359,34 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-        text = (data.get("message") or {}).get("content", "")
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        raise JudgeError(f"Ollama HTTP {e.code}: {body or e.reason}") from e
+    except Exception as e:
+        raise JudgeError(f"Ollama request failed: {e}") from e
+    if data.get("error"):
+        raise JudgeError(f"Ollama error: {data['error']}")
+    text = (data.get("message") or {}).get("content", "")
+    try:
         m = re.search(r"\{.*\}", text, re.S)
         parsed = json.loads(m.group(0) if m else text)
-    except Exception:
-        return []
+    except (json.JSONDecodeError, TypeError) as e:
+        raise JudgeError(f"unparseable judge response: {e}") from e
     return _findings_from_judge(parsed, conv)
+
+
+def ollama_has_model(model: str, host: str = OLLAMA_HOST) -> bool:
+    """True if `model` is installed in Ollama (matching with or without an
+    implicit :latest tag)."""
+    installed = list_ollama_models(host)
+    if model in installed:
+        return True
+    base = model.split(":")[0]
+    return any(m == model or m.split(":")[0] == base for m in installed)
 
 
 def _findings_from_judge(parsed, conv) -> list[Finding]:

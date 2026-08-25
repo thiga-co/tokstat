@@ -1691,12 +1691,19 @@ def show_audit(collect_fn, period_name: str | None = None,
         return
 
     model = judge_model or _audit.pick_ollama_model()
-    if not model:
+    installed = _audit.list_ollama_models()
+    if not installed:
         print(f"  {YELLOW}⚠ The audit judge needs a local Ollama model, but "
               f"Ollama is unreachable on {_audit.OLLAMA_HOST} (or no model is "
               f"installed).{RESET}")
         print(f"  {DIM}Install Ollama (https://ollama.com), pull a model "
               f"(e.g. `ollama pull llama3.2:3b`), then retry.{RESET}\n")
+        return
+    if not model or not _audit.ollama_has_model(model):
+        print(f"  {YELLOW}⚠ Ollama model '{model}' is not installed — the judge "
+              f"cannot run.{RESET}")
+        print(f"  {DIM}Installed models: {', '.join(installed)}{RESET}")
+        print(f"  {DIM}Pass one with --model, or `ollama pull {model or 'llama3.2:3b'}`.{RESET}\n")
         return
 
     def _in_window(f):
@@ -1714,14 +1721,33 @@ def show_audit(collect_fn, period_name: str | None = None,
           f"{judged_n}/{len(convs)} conversations{cap_note}. "
           f"Fully local — nothing leaves the machine.{RESET}")
     findings: list = []
+    errors = 0
     for k, c in enumerate(to_judge, 1):
         print(f"{DIM}    [{k}/{judged_n}] {c.session_id[:12]}…{RESET}", flush=True)
-        findings.extend(f for f in _audit.judge_conversation_ollama(c, model)
-                        if _in_window(f))
+        try:
+            res = _audit.judge_conversation_ollama(c, model)
+        except _audit.JudgeError as e:
+            errors += 1
+            print(f"      {YELLOW}⚠ judge failed: {e}{RESET}")
+            # If the very first call fails, the judge is broken — stop rather
+            # than churn through every conversation reporting the same error.
+            if k == 1:
+                print(f"\n  {RED}The judge is not working — aborting so results "
+                      f"aren't mistaken for a clean audit.{RESET}\n")
+                return
+            continue
+        findings.extend(f for f in res if _in_window(f))
 
+    ok_n = judged_n - errors
+    if ok_n == 0:
+        print(f"\n  {RED}⚠ The judge failed on all {judged_n} conversations — "
+              f"no audit was performed (not a clean result).{RESET}\n")
+        return
+
+    err_note = (f"  ·  {YELLOW}{errors} judge errors{RESET}" if errors else "")
     print(f"\n  Period: {BOLD}{period_label}{RESET}  ·  "
-          f"{len(convs)} conversations ({judged_n} judged)  ·  "
-          f"{len(findings)} findings")
+          f"{len(convs)} conversations ({ok_n} judged{f'/{judged_n} attempted' if errors else ''})"
+          f"  ·  {len(findings)} findings{err_note}")
 
     # ── Summary by metric ──────────────────────────────────────────────────
     by_metric: dict[str, list] = defaultdict(list)
