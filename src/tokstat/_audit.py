@@ -15,8 +15,8 @@ with far better precision once given the right input.
 The judge sees only the assistant's OWN prose (quotes/code/cited material
 stripped) plus a compact per-turn tool summary as evidence, so it doesn't blame
 the assistant for content it merely quoted, nor flag tool-backed claims as
-unsupported. It runs on a LOCAL Ollama model by default (nothing leaves the
-machine); an Anthropic-API judge is also available for callers that opt in.
+unsupported. It runs entirely on a LOCAL Ollama model — nothing leaves the
+machine and there is no API cost.
 
 Works across ALL supported tools: it builds conversations from the per-prompt
 `exchanges` that each tool's collect_fn already produces (reusing their
@@ -381,34 +381,3 @@ def _findings_from_judge(parsed, conv) -> list[Finding]:
     return findings
 
 
-def judge_conversation(conv, model="claude-sonnet-4-5", api_key=None,
-                       timeout=60) -> list[Finding]:
-    """Run the LLM judge over one conversation. Requires an Anthropic API key
-    (ANTHROPIC_API_KEY). Sends the transcript to the API. Returns []
-    on any failure."""
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return []
-    payload = {
-        "model": model,
-        "max_tokens": 1500,
-        "system": JUDGE_SYSTEM,
-        "messages": [{"role": "user", "content": _build_judge_user(conv)}],
-    }
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json",
-                 "x-api-key": api_key,
-                 "anthropic-version": "2023-06-01"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-        text = "".join(b.get("text", "") for b in data.get("content", [])
-                       if b.get("type") == "text")
-        m = re.search(r"\{.*\}", text, re.S)
-        parsed = json.loads(m.group(0) if m else text)
-    except Exception:
-        return []
-    return _findings_from_judge(parsed, conv)
