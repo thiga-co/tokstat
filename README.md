@@ -364,7 +364,11 @@ The judge uses an evidence-first rubric (every finding must quote the offending
 text) and — importantly — is fed **only the assistant's own prose** (quotes,
 code and cited material stripped) plus a **compact per-turn tool summary** as
 evidence, so it doesn't blame the assistant for content it was merely quoting,
-nor flag tool-backed claims as unsupported. An earlier deterministic
+nor flag tool-backed claims as unsupported. It also reads the **user's
+reactions** as a signal: when you correct or push back on an answer ("no, that's
+wrong", "you already said that", "it still doesn't work"), that's flagged as
+strong evidence of a defect in the *preceding* assistant turn — but the finding
+always quotes the assistant, never the user (the user is not audited). An earlier deterministic
 (regex/heuristic) tier was dropped: on real data it mostly surfaced noise, and
 the judge covers the same ground with far better precision.
 
