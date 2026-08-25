@@ -199,10 +199,24 @@ def resolve_period(period_name: str | None, default: str = "today") -> tuple[dat
     name = period_name or default
     if name.lower() in ("all", "tout"):
         return datetime.min.replace(tzinfo=timezone.utc), None, "All time"
+    # Dynamic "N unit" (e.g. "5 days", "31 days", "12 hours", "2 weeks").
+    import re as _re
+    m = _re.fullmatch(r"\s*(\d+)\s*(hour|day|week|month|year)s?\s*",
+                      name, _re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        if n >= 1:
+            per_unit = {"hour": timedelta(hours=1), "day": timedelta(days=1),
+                        "week": timedelta(weeks=1), "month": timedelta(days=30),
+                        "year": timedelta(days=365)}[unit]
+            now = datetime.now(timezone.utc)
+            plural = "" if n == 1 else "s"
+            return now - per_unit * n, None, f"Last {n} {unit}{plural}"
     for bname, (start, end) in boundaries.items():
         if name.lower() in bname.lower():
             return start, end, bname
-    valid = ", ".join(list(boundaries.keys()) + ["all"])
+    valid = ", ".join(list(boundaries.keys()) + ["all", "N days/hours/weeks/..."])
     raise ValueError(f"Unknown period '{name}'. Available: {valid}")
 
 

@@ -349,9 +349,9 @@ def show_help():
   tokstat --help     [-h]                  This help
 
 {BOLD}FILTERS{RESET}
-  --period <period>    all, hour, "5 hours", today, yesterday, "7 days",
-                       "30 days", "1 month", "2 months", "3 months",
-                       "6 months", year   (partial match works; default: today)
+  --period <period>    all, today, yesterday, year, or any "N unit" —
+                       e.g. "12 hours", "5 days", "31 days", "2 weeks",
+                       "3 months"   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
                        claude.ai, chatgpt (default: all)
 

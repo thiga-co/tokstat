@@ -374,7 +374,7 @@ def show_help():
   gemini-token-usage --help     [-h]            This help
 
 {BOLD}FILTERS{RESET}
-  --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", "3 months", "6 months", year
+  --period <period>    all, today, yesterday, year, or any "N unit" (e.g. "5 days", "31 days", "2 weeks", "3 months"); default: today
 
 {BOLD}DATA SOURCE{RESET}
   {GREEN}Gemini CLI{RESET}    {DIM}~/.gemini/tmp/{{project_hash}}/chats/session-*.json{RESET}
