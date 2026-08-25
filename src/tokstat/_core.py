@@ -1715,8 +1715,9 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
         fs = by_metric.get(metric, [])
         tier = "det" if metric in _audit.DETERMINISTIC_METRICS else "judge"
         n = len(fs)
-        color = BRED if n and max(f.severity for f in fs) >= 3 else (
-            BYELLOW if n else DIM)
+        maxsev = max((f.severity for f in fs), default=0)
+        color = BRED if maxsev >= 3 else (
+            BYELLOW if maxsev >= 2 else (CYAN if maxsev >= 1 else DIM))
         desc = _audit.METRIC_DESC.get(metric, "")
         print(f"    {color}{metric:<22}{RESET} {n:>3}  {DIM}{tier:<5} · {desc}{RESET}")
 

@@ -408,9 +408,9 @@ def _detect_contradiction(conv):
         hit = _find(_REVERSAL_PATTERNS, t.text)
         # only if there was a prior assistant turn to contradict
         if hit and any(p.role == "assistant" and p.text for p in conv.turns[:i]):
-            out.append((i, 1, hit,
-                        "Assistant reverses/negates an earlier statement "
-                        "(self-correction signal)."))
+            out.append((i, 0, hit,
+                        "Self-correction marker (reverses an earlier statement) "
+                        "— often legitimate, not necessarily a defect."))
     return out
 
 
@@ -506,19 +506,19 @@ def _detect_tool_misuse(conv):
     (a) declaring success right after an error result,
     (b) repeating an identical call that specifically errored before."""
     out = []
-    # First pass: which tool_use_id errored, and the signature of each id.
-    errored_ids = set()
-    id_sig = {}
-    for t in conv.turns:
-        for u in t.tool_uses:
-            if u.get("id"):
-                id_sig[u["id"]] = (u["name"],
-                                   json.dumps(u.get("input", {}), sort_keys=True)[:300])
-        for r in t.tool_results:
-            if r.get("is_error") and r.get("tool_use_id"):
-                errored_ids.add(r["tool_use_id"])
-    failed_sigs = set(id_sig[i] for i in errored_ids if i in id_sig)
+    import hashlib
 
+    def _sig(u):
+        # Hash the FULL canonical input — truncating collides different edits
+        # to the same file (shared file_path + prefix) into a false "identical".
+        blob = json.dumps(u.get("input", {}), sort_keys=True, ensure_ascii=False)
+        return (u["name"], hashlib.sha1(blob.encode()).hexdigest())
+
+    # id → signature (used to mark a signature failed when its result errors).
+    id_sig = {u["id"]: _sig(u)
+              for t in conv.turns for u in t.tool_uses if u.get("id")}
+
+    failed_sigs = set()   # built IN ORDER: only sigs that errored earlier
     seen_sigs = set()
     for i, t in enumerate(conv.turns):
         # (a) success claimed right after an error result on the previous turn
@@ -530,14 +530,20 @@ def _detect_tool_misuse(conv):
                          t.text, re.I):
                 out.append((i, 2, _snippet(t.text, "", 80),
                             "Declares success immediately after a tool error."))
-        # (b) identical call repeated after that exact signature had errored
+        # (b) identical call repeated only if that exact signature ALREADY
+        #     errored in an earlier turn (temporal order respected).
         for u in t.tool_uses:
-            sig = (u["name"], json.dumps(u.get("input", {}), sort_keys=True)[:300])
+            sig = _sig(u)
             if sig in seen_sigs and sig in failed_sigs:
                 out.append((i, 2, u["name"],
                             "Repeats an identical tool call that previously "
                             "errored, unchanged."))
             seen_sigs.add(sig)
+        # mark signatures whose result errored in THIS turn as failed, for
+        # subsequent turns to compare against.
+        for r in t.tool_results:
+            if r.get("is_error") and r.get("tool_use_id") in id_sig:
+                failed_sigs.add(id_sig[r["tool_use_id"]])
     return out
 
 
