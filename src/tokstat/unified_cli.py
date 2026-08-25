@@ -336,10 +336,9 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
-  tokstat --audit [--judge]                Conversation quality audit (5 local
-                                           deterministic checks; --judge adds 7
-                                           semantic checks via a LOCAL Ollama
-                                           model — nothing leaves the machine)
+  tokstat --audit                          Conversation quality audit — all 12
+                                           metrics via a LOCAL Ollama model
+                                           (nothing leaves the machine)
                                            [--model <name>] [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
@@ -418,7 +417,7 @@ def cli():
             jmax = int(_arg_value(args, "--judge-max", "8"))
         except ValueError:
             jmax = 8
-        show_audit(period, tool, use_judge="--judge" in args,
+        show_audit(period, tool,
                    judge_model=_arg_value(args, "--model"), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)

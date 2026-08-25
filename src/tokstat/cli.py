@@ -431,9 +431,9 @@ def show_help():
   claude-token-usage --anomalies                Technical anomaly detection (cost, cache, tool storms)
   claude-token-usage --activity                 Activity calendar (GitHub-style, by day)
   claude-token-usage --total                    Compact totals (tokens + cost + data span)
-  claude-token-usage --audit [--judge]          Conversation quality audit
-                                                (--judge = local Ollama; --model,
-                                                --judge-max supported)
+  claude-token-usage --audit                    Conversation quality audit — 12
+                                                metrics via local Ollama
+                                                (--model, --judge-max supported)
   claude-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
   claude-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   claude-token-usage --export   [file.json]     Export all exchanges to JSON
@@ -504,7 +504,7 @@ def cli():
             jmax = int(_arg_value(args, "--judge-max", "8"))
         except ValueError:
             jmax = 8
-        show_audit(period, "claude", use_judge="--judge" in args,
+        show_audit(period, "claude",
                    judge_model=_arg_value(args, "--model"), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
