@@ -1673,9 +1673,17 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
         print(f"  {YELLOW}No conversations found for this period.{RESET}\n")
         return
 
+    def _in_window(f):
+        # Detectors run on full sessions (cross-turn context); keep only
+        # findings whose offending turn falls in the selected period.
+        if f.ts is None:
+            return True
+        return f.ts >= cutoff and (cutoff_end is None or f.ts < cutoff_end)
+
     findings: list = []
     for c in convs:
-        findings.extend(_audit.audit_conversation_deterministic(c))
+        findings.extend(f for f in _audit.audit_conversation_deterministic(c)
+                        if _in_window(f))
 
     judge_note = ""
     if use_judge:
@@ -1687,7 +1695,8 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
             print(f"{DIM}  Running LLM judge on {len(convs)} conversations "
                   f"(sending transcripts to Anthropic API)...{RESET}")
             for c in convs:
-                findings.extend(_audit.judge_conversation(c, model=judge_model))
+                findings.extend(f for f in _audit.judge_conversation(c, model=judge_model)
+                                if _in_window(f))
 
     print(f"  Period: {BOLD}{period_label}{RESET}  ·  "
           f"{len(convs)} conversations  ·  {len(findings)} findings")

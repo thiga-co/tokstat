@@ -89,6 +89,13 @@ class Conversation:
                 return t.ts
         return None
 
+    @property
+    def ts_last(self):
+        for t in reversed(self.turns):
+            if t.ts:
+                return t.ts
+        return None
+
 
 def _parse_ts(s):
     try:
@@ -191,10 +198,15 @@ def iter_conversations(cutoff: datetime, cutoff_end: datetime | None = None,
             if not turns:
                 continue
             conv = Conversation(jsonl.stem, proj_dir.name, turns)
-            cts = conv.ts
-            if cts is None:
+            first, last = conv.ts, conv.ts_last
+            if first is None:
                 continue
-            if cts < cutoff or (cutoff_end is not None and cts >= cutoff_end):
+            # Include a session that OVERLAPS the window — it may have started
+            # before the cutoff but stayed active inside it (cross-turn context
+            # is needed for the detectors anyway).
+            if last < cutoff:
+                continue
+            if cutoff_end is not None and first >= cutoff_end:
                 continue
             yield conv
 
@@ -215,7 +227,12 @@ class Finding:
         self.source = source                # "heuristic" | "judge"
         self.session_id = conv.session_id
         self.project = conv.project
-        self.ts = conv.ts
+        # Attribute the finding to the offending turn's time when known, so the
+        # "when" and any period filtering reflect when the issue occurred.
+        turn_ts = None
+        if 0 <= turn_index < len(conv.turns):
+            turn_ts = conv.turns[turn_index].ts
+        self.ts = turn_ts or conv.ts
 
 
 # ─── Text helpers ───────────────────────────────────────────────────────────
