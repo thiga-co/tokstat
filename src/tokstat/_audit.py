@@ -428,6 +428,50 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
     return _findings_from_judge(parsed, conv)
 
 
+def benchmark_ollama(model: str, host: str = OLLAMA_HOST,
+                     timeout: int = 300) -> dict:
+    """Measure the judge model's speed on this machine via Ollama's own timing
+    stats: prefill (prompt) tokens/s and decode (generation) tokens/s, plus the
+    model load time. Raises JudgeError on failure."""
+    # ~2k-token document to exercise prefill, asking for a bounded generation.
+    doc = ("The quick brown fox jumps over the lazy dog. " * 350)
+    prompt = ("Read the document below, then write a detailed ~200-word "
+              "summary of it.\n\nDOCUMENT:\n" + doc)
+    payload = {
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0, "num_predict": 200},
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    req = urllib.request.Request(
+        host.rstrip("/") + "/api/chat",
+        data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            d = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raise JudgeError(f"Ollama HTTP {e.code}") from e
+    except Exception as e:
+        raise JudgeError(f"Ollama request failed: {e}") from e
+    if d.get("error"):
+        raise JudgeError(f"Ollama error: {d['error']}")
+
+    def _tps(count, dur_ns):
+        return (count / (dur_ns / 1e9)) if count and dur_ns else None
+
+    return {
+        "model": model,
+        "prompt_tokens": d.get("prompt_eval_count"),
+        "prefill_tps": _tps(d.get("prompt_eval_count"), d.get("prompt_eval_duration")),
+        "output_tokens": d.get("eval_count"),
+        "decode_tps": _tps(d.get("eval_count"), d.get("eval_duration")),
+        "load_s": (d.get("load_duration") or 0) / 1e9,
+        "total_s": (d.get("total_duration") or 0) / 1e9,
+    }
+
+
 def ollama_has_model(model: str, host: str = OLLAMA_HOST) -> bool:
     """True if `model` is installed in Ollama (matching with or without an
     implicit :latest tag)."""

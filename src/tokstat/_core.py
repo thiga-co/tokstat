@@ -1745,8 +1745,12 @@ def show_audit(collect_fn, period_name: str | None = None,
             print(f"{DIM}  Model {mi}/{len(models)}: {BOLD}{m}{RESET}", flush=True)
         broke = False
         for k, c in enumerate(to_judge, 1):
-            print(f"{DIM}    [{k}/{judged_n}] {c.session_id[:12]}…{RESET}",
-                  flush=True)
+            proj = normalize_project(c.project) if c.project else "?"
+            proj = "/".join(proj.rstrip("/").split("/")[-2:]) or proj
+            day = c.ts.date().isoformat() if c.ts else "?"
+            tcol = TOOL_COLORS.get(c.tool, "")
+            print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
+                  f"{proj} · {day} · {len(c.turns)} turns{RESET}", flush=True)
             try:
                 res = _audit.judge_conversation_ollama(c, m)
             except _audit.JudgeError as e:
@@ -1836,6 +1840,57 @@ def show_audit(collect_fn, period_name: str | None = None,
     print(f"\n  {DIM}⚠ Findings come from local LLM judge(s) — leads to review, "
           f"not verdicts.{tip} Factual hallucination in particular needs "
           f"external ground truth beyond the transcript.{RESET}\n")
+
+
+def show_bench(judge_model: str | None = None):
+    """Benchmark the local judge model(s) on this machine: prefill and decode
+    tokens/s (from Ollama's own timing stats) — to compare hardware/models."""
+    from tokstat import _audit
+
+    print(f"\n{BOLD} Judge model benchmark{RESET}")
+    print(f"{DIM}  Local Ollama on {_audit.OLLAMA_HOST}. prefill = prompt "
+          f"processing, decode = generation.{RESET}\n")
+
+    installed = _audit.list_ollama_models()
+    if not installed:
+        print(f"  {YELLOW}⚠ Ollama unreachable on {_audit.OLLAMA_HOST} "
+              f"(or no model installed).{RESET}\n")
+        return
+    if judge_model:
+        models = list(dict.fromkeys(m.strip() for m in judge_model.split(",")
+                                    if m.strip()))
+    else:
+        auto = _audit.pick_ollama_model()
+        models = [auto] if auto else []
+    missing = [m for m in models if not _audit.ollama_has_model(m)]
+    if missing or not models:
+        print(f"  {YELLOW}⚠ Not installed: {', '.join(missing) or '(none given)'}"
+              f"{RESET}")
+        print(f"  {DIM}Installed: {', '.join(installed)}{RESET}\n")
+        return
+
+    print(f"    {DIM}{'model':<22}{'prompt':>7}{'prefill':>11}"
+          f"{'output':>8}{'decode':>10}{'load':>8}{RESET}")
+    print(f"    {DIM}{'':<22}{'tok':>7}{'tok/s':>11}{'tok':>8}{'tok/s':>10}"
+          f"{'s':>8}{RESET}")
+    for m in models:
+        print(f"{DIM}    {m} …{RESET}", end="", flush=True)
+        try:
+            r = _audit.benchmark_ollama(m)
+        except _audit.JudgeError as e:
+            print(f"\r    {m:<22}{RED}  benchmark failed: {e}{RESET}")
+            continue
+        pf = f"{r['prefill_tps']:.0f}" if r['prefill_tps'] else "—"
+        dc = f"{r['decode_tps']:.1f}" if r['decode_tps'] else "—"
+        pfc = BRED if (r['prefill_tps'] or 0) < 200 else (
+            BYELLOW if (r['prefill_tps'] or 0) < 800 else GREEN)
+        dcc = BRED if (r['decode_tps'] or 0) < 15 else (
+            BYELLOW if (r['decode_tps'] or 0) < 40 else GREEN)
+        print(f"\r    {m:<22}{(r['prompt_tokens'] or 0):>7}"
+              f"{pfc}{pf:>11}{RESET}{(r['output_tokens'] or 0):>8}"
+              f"{dcc}{dc:>10}{RESET}{r['load_s']:>8.1f}")
+    print(f"\n  {DIM}Tip: for the audit, prefill speed matters most (long "
+          f"transcripts, short JSON output).{RESET}\n")
 
 
 # ─── Data-retention checks ─────────────────────────────────────────────────

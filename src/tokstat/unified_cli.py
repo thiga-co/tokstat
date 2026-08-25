@@ -58,7 +58,7 @@ from tokstat._core import (
     resolve_period,
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact, show_audit,
+    show_activity, show_total, show_impact, show_audit, show_bench,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
     compute_overview_state,
@@ -397,7 +397,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
-    "--model", "--judge-max", "--dump", "--load",
+    "--model", "--judge-max", "--dump", "--load", "--bench",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
@@ -474,6 +474,7 @@ def show_help():
                                            region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips
   tokstat --export   [file.json]           Export all exchanges to JSON
+  tokstat --bench    [--model a,b,c]       Benchmark judge model speed (prefill/decode tok/s)
   tokstat --dump     [file.json]           Capture ALL data to a portable snapshot
   tokstat --load <file> <mode>             Run any mode from a snapshot, offline
                                            (does not read the agents' data)
@@ -540,6 +541,11 @@ def cli():
     if "--dump" in args:
         out = _arg_value(args, "--dump") or "tokstat-dump.json"
         _dump_snapshot(out, tool)
+        return
+
+    # --bench: measure the local judge model(s) speed on this machine.
+    if "--bench" in args:
+        show_bench(_arg_value(args, "--model"))
         return
 
     watch_interval = _parse_watch_interval(args)
