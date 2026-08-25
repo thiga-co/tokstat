@@ -385,11 +385,12 @@ class JudgeError(RuntimeError):
 
 def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
                               timeout: int = 240, max_chars: int = 9000
-                              ) -> list[Finding]:
+                              ) -> tuple[list, dict]:
     """Run the judge locally via Ollama. Fully local, no data leaves the
-    machine. Returns a (possibly empty) list of findings on success; raises
-    JudgeError if the judge could not run — so callers never mistake a failure
-    for a clean 'no findings'."""
+    machine. Returns (findings, stats) on success — stats holds Ollama's timing
+    counters (prompt/eval token counts + durations) so callers can report
+    prefill/decode throughput. Raises JudgeError if the judge could not run, so
+    callers never mistake a failure for a clean 'no findings'."""
     payload = {
         "model": model,
         "stream": False,
@@ -425,7 +426,13 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
         parsed = json.loads(m.group(0) if m else text)
     except (json.JSONDecodeError, TypeError) as e:
         raise JudgeError(f"unparseable judge response: {e}") from e
-    return _findings_from_judge(parsed, conv)
+    stats = {
+        "p_tok": data.get("prompt_eval_count") or 0,
+        "p_ns": data.get("prompt_eval_duration") or 0,
+        "o_tok": data.get("eval_count") or 0,
+        "o_ns": data.get("eval_duration") or 0,
+    }
+    return _findings_from_judge(parsed, conv), stats
 
 
 def benchmark_ollama(model: str, host: str = OLLAMA_HOST,

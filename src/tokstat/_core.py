@@ -1739,6 +1739,8 @@ def show_audit(collect_fn, period_name: str | None = None,
     # model before moving to the next avoids reloading models on each item.
     agg: dict = {}
     model_errors: dict = {m: 0 for m in models}
+    # Ollama timing accumulators per model → prefill/decode throughput.
+    perf: dict = {m: {"p_tok": 0, "p_ns": 0, "o_tok": 0, "o_ns": 0} for m in models}
     live = []
     for mi, m in enumerate(models, 1):
         if len(models) > 1:
@@ -1752,7 +1754,7 @@ def show_audit(collect_fn, period_name: str | None = None,
             print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
                   f"{proj} · {day} · {len(c.turns)} turns{RESET}", flush=True)
             try:
-                res = _audit.judge_conversation_ollama(c, m)
+                res, stats = _audit.judge_conversation_ollama(c, m)
             except _audit.JudgeError as e:
                 model_errors[m] += 1
                 print(f"      {YELLOW}⚠ {m} failed: {e}{RESET}")
@@ -1764,6 +1766,8 @@ def show_audit(collect_fn, period_name: str | None = None,
                     broke = True
                     break
                 continue
+            for key_ in ("p_tok", "p_ns", "o_tok", "o_ns"):
+                perf[m][key_] += stats.get(key_, 0)
             for f in res:
                 if not _in_window(f):
                     continue
@@ -1792,6 +1796,23 @@ def show_audit(collect_fn, period_name: str | None = None,
     print(f"\n  Period: {BOLD}{period_label}{RESET}  ·  "
           f"{len(convs)} conversations ({judged_n} judged)  ·  "
           f"{len(records)} findings{err_note}")
+
+    # ── Judge speed on this machine (from Ollama's timing stats) ────────────
+    speed_rows = []
+    for m in models:
+        p = perf[m]
+        pf = (p["p_tok"] / (p["p_ns"] / 1e9)) if p["p_ns"] else None
+        dc = (p["o_tok"] / (p["o_ns"] / 1e9)) if p["o_ns"] else None
+        if pf or dc:
+            speed_rows.append((m, pf, dc, p["p_tok"], p["o_tok"]))
+    if speed_rows:
+        print(f"\n  {BOLD}Judge speed{RESET} {DIM}(this machine, via Ollama){RESET}")
+        for m, pf, dc, ptok, otok in speed_rows:
+            pf_s = f"{pf:.0f}" if pf else "—"
+            dc_s = f"{dc:.1f}" if dc else "—"
+            print(f"    {DIM}{m:<22}{RESET} prefill {BOLD}{pf_s}{RESET} tok/s"
+                  f"{DIM} · {RESET}decode {BOLD}{dc_s}{RESET} tok/s"
+                  f"  {DIM}({fmt_tokens(ptok)} in / {fmt_tokens(otok)} out){RESET}")
 
     # ── Summary by metric ──────────────────────────────────────────────────
     by_metric: dict[str, list] = defaultdict(list)
