@@ -27,6 +27,7 @@ from tokstat._core import (
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact,
     export_conversations, _parse_period, _parse_region, print_update_notice,
+    print_retention_alerts,
 )
 
 # Register Codex color
@@ -385,7 +386,9 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     if records:
         print(f"  {GREEN}●{RESET} {'Codex':<12} {len(records):>6} records from {data_path}")
-    print(f"\n  Period: {BOLD}{period_label}{RESET}")
+    print()
+    print_retention_alerts(["Codex"])
+    print(f"  Period: {BOLD}{period_label}{RESET}")
 
     if not records:
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")

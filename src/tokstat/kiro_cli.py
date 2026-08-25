@@ -35,6 +35,7 @@ from tokstat._core import (
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact,
     export_conversations, _parse_period, _parse_region, print_update_notice,
+    print_retention_alerts,
 )
 
 TOOL_COLORS["Kiro"] = YELLOW
@@ -205,7 +206,9 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     if records:
         print(f"  {YELLOW}●{RESET} {'Kiro':<12} {len(records):>6} records from {_KIRO_BASE.parent.parent}")
-    print(f"\n  Period: {BOLD}{period_label}{RESET}")
+    print()
+    print_retention_alerts(["Kiro"])
+    print(f"  Period: {BOLD}{period_label}{RESET}")
 
     if not records:
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
