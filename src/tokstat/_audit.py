@@ -257,21 +257,33 @@ def _user_context(text: str, limit: int = 200) -> str:
 
 
 def _tool_summary(turn) -> str:
-    """Compact evidence of what the assistant actually did/checked this turn,
-    so factual claims backed by tools aren't judged 'unsupported'."""
-    if not turn.tool_uses:
+    """Compact evidence of what the assistant actually did/checked this turn, so
+    factual claims backed by tools aren't judged 'unsupported'. Works even when
+    tools are only known by name+count (multi-tool exchange mode): aggregate per
+    tool with a count, add an argument hint when available, and the error total."""
+    if not turn.tool_uses and not turn.tool_results:
         return ""
-    errored = {r.get("tool_use_id") for r in turn.tool_results if r.get("is_error")}
-    parts = []
-    for u in turn.tool_uses[:6]:
+    counts: dict[str, int] = {}
+    hints: dict[str, str] = {}
+    for u in turn.tool_uses:
         name = u.get("name", "tool")
-        inp = u.get("input", {}) or {}
-        hint = (inp.get("pattern") or inp.get("query") or inp.get("command")
-                or inp.get("file_path") or inp.get("path") or "")
-        hint = str(hint).replace("\n", " ")[:40]
-        status = "error" if u.get("id") in errored else "ok"
-        parts.append(f"{name}({hint})→{status}" if hint else f"{name}→{status}")
-    return "[tools: " + "; ".join(parts) + "]"
+        counts[name] = counts.get(name, 0) + 1
+        if name not in hints:
+            inp = u.get("input", {}) or {}
+            h = (inp.get("pattern") or inp.get("query") or inp.get("command")
+                 or inp.get("file_path") or inp.get("path") or "")
+            h = str(h).replace("\n", " ")[:40]
+            if h:
+                hints[name] = h
+    parts = []
+    for name, n in sorted(counts.items(), key=lambda kv: -kv[1])[:8]:
+        label = f"{name}×{n}" if n > 1 else name
+        parts.append(f"{label}({hints[name]})" if name in hints else label)
+    n_err = sum(1 for r in turn.tool_results if r.get("is_error"))
+    if not parts and n_err:
+        parts.append("tool")
+    tail = f"; {n_err} errored" if n_err else ""
+    return "[tools: " + "; ".join(parts) + tail + "]"
 
 
 def _build_judge_user(conv, max_chars=9000):
