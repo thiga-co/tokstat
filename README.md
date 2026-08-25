@@ -341,6 +341,7 @@ your machine** and there's no API cost — tokstat stays fully local.
 tokstat --audit                            # judge all 12 metrics, all tools
 tokstat --audit --tool codex               # scope to one tool
 tokstat --audit --model gemma4:31b         # pick a larger, higher-quality model
+tokstat --audit --model llama3.2:3b,qwen3.8:27b,gemma4:31b   # judge PANEL (votes)
 tokstat --audit --judge-max 20             # cap conversations judged (default: no cap)
 ```
 
@@ -373,6 +374,14 @@ triage; pass `--model` for a larger, higher-quality one (e.g. a 27–35B instruc
 model). By default **every** conversation in the period is judged; because local
 judging is slow (and there can be hundreds across all tools), use `--judge-max`
 to cap it, and `--period` / `--tool` to narrow the scope.
+
+**Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
+each conversation judged by every model and the findings **aggregated by vote**:
+a finding flagged by more models ranks higher and shows its tally (e.g. `2/3`),
+so consensus stands out and lone calls are visibly weak. It costs one judge run
+per model per conversation, so it's slower. If a model isn't installed the run
+stops with the list of available models; if a judge errors at runtime the error
+is reported per model rather than silently counted as "clean".
 
 > Findings are **leads to review, not verdicts** — a small local model misses
 > things and can misjudge; factual hallucination in particular needs external

@@ -337,9 +337,10 @@ def show_help():
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
   tokstat --audit                          Conversation quality audit — all 12
-                                           metrics via a LOCAL Ollama model
-                                           (nothing leaves the machine)
-                                           [--model <name>] [--judge-max <n>]
+                                           metrics via LOCAL Ollama model(s)
+                                           (nothing leaves the machine).
+                                           --model a,b,c = judge panel (votes);
+                                           [--model <name(s)>] [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips

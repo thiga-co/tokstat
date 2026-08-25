@@ -1690,7 +1690,6 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"  {YELLOW}No conversations found for this period.{RESET}\n")
         return
 
-    model = judge_model or _audit.pick_ollama_model()
     installed = _audit.list_ollama_models()
     if not installed:
         print(f"  {YELLOW}⚠ The audit judge needs a local Ollama model, but "
@@ -1699,11 +1698,20 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"  {DIM}Install Ollama (https://ollama.com), pull a model "
               f"(e.g. `ollama pull llama3.2:3b`), then retry.{RESET}\n")
         return
-    if not model or not _audit.ollama_has_model(model):
-        print(f"  {YELLOW}⚠ Ollama model '{model}' is not installed — the judge "
-              f"cannot run.{RESET}")
+    # A comma-separated --model runs a PANEL of judges (votes shown per finding).
+    if judge_model:
+        models = list(dict.fromkeys(m.strip() for m in judge_model.split(",")
+                                    if m.strip()))
+    else:
+        auto = _audit.pick_ollama_model()
+        models = [auto] if auto else []
+    missing = [m for m in models if not _audit.ollama_has_model(m)]
+    if missing or not models:
+        print(f"  {YELLOW}⚠ Ollama model(s) not installed: "
+              f"{', '.join(missing) or '(none given)'} — the judge cannot run.{RESET}")
         print(f"  {DIM}Installed models: {', '.join(installed)}{RESET}")
-        print(f"  {DIM}Pass one with --model, or `ollama pull {model or 'llama3.2:3b'}`.{RESET}\n")
+        print(f"  {DIM}Pass one or more with --model a,b,c or "
+              f"`ollama pull {(missing or ['llama3.2:3b'])[0]}`.{RESET}\n")
         return
 
     def _in_window(f):
@@ -1717,76 +1725,104 @@ def show_audit(collect_fn, period_name: str | None = None,
     to_judge = ordered if judge_max is None else ordered[:judge_max]
     judged_n = len(to_judge)
     cap_note = "" if judge_max is None else f" (capped at {judge_max})"
-    print(f"{DIM}  Judge: local Ollama model {BOLD}{model}{RESET}{DIM} on "
+    panel = (f"panel of {len(models)}: {', '.join(models)}"
+             if len(models) > 1 else f"model {models[0]}")
+    print(f"{DIM}  Judge: local Ollama {BOLD}{panel}{RESET}{DIM} on "
           f"{judged_n}/{len(convs)} conversations{cap_note}. "
           f"Fully local — nothing leaves the machine.{RESET}")
-    findings: list = []
-    errors = 0
+
+    # Aggregate findings across models: same (session, metric, turn) → one
+    # issue, with the set of models that flagged it (its "votes").
+    agg: dict = {}
+    model_errors: dict = {m: 0 for m in models}
     for k, c in enumerate(to_judge, 1):
         print(f"{DIM}    [{k}/{judged_n}] {c.session_id[:12]}…{RESET}", flush=True)
-        try:
-            res = _audit.judge_conversation_ollama(c, model)
-        except _audit.JudgeError as e:
-            errors += 1
-            print(f"      {YELLOW}⚠ judge failed: {e}{RESET}")
-            # If the very first call fails, the judge is broken — stop rather
-            # than churn through every conversation reporting the same error.
-            if k == 1:
-                print(f"\n  {RED}The judge is not working — aborting so results "
-                      f"aren't mistaken for a clean audit.{RESET}\n")
-                return
-            continue
-        findings.extend(f for f in res if _in_window(f))
+        for m in models:
+            try:
+                res = _audit.judge_conversation_ollama(c, m)
+            except _audit.JudgeError as e:
+                model_errors[m] += 1
+                print(f"      {YELLOW}⚠ {m} failed: {e}{RESET}")
+                continue
+            for f in res:
+                if not _in_window(f):
+                    continue
+                key = (f.session_id, f.metric, f.turn_index)
+                rec = agg.get(key)
+                if rec is None:
+                    agg[key] = {"best": f, "voters": {m}}
+                else:
+                    rec["voters"].add(m)
+                    if f.severity > rec["best"].severity:
+                        rec["best"] = f
+        # If every model failed on the first conversation, the judge is broken.
+        if k == 1 and all(model_errors[m] for m in models):
+            print(f"\n  {RED}The judge is not working — aborting so results "
+                  f"aren't mistaken for a clean audit.{RESET}\n")
+            return
 
-    ok_n = judged_n - errors
-    if ok_n == 0:
-        print(f"\n  {RED}⚠ The judge failed on all {judged_n} conversations — "
-              f"no audit was performed (not a clean result).{RESET}\n")
+    dead = [m for m in models if model_errors[m] >= judged_n]
+    live = [m for m in models if m not in dead]
+    if not live:
+        print(f"\n  {RED}⚠ Every judge failed on all conversations — no audit "
+              f"was performed (not a clean result).{RESET}\n")
         return
 
-    err_note = (f"  ·  {YELLOW}{errors} judge errors{RESET}" if errors else "")
+    records = list(agg.values())
+    err_note = ""
+    if any(model_errors.values()):
+        err_note = ("  ·  " + YELLOW + "; ".join(
+            f"{m}: {model_errors[m]} errors" for m in models if model_errors[m])
+            + RESET)
     print(f"\n  Period: {BOLD}{period_label}{RESET}  ·  "
-          f"{len(convs)} conversations ({ok_n} judged{f'/{judged_n} attempted' if errors else ''})"
-          f"  ·  {len(findings)} findings{err_note}")
+          f"{len(convs)} conversations ({judged_n} judged)  ·  "
+          f"{len(records)} findings{err_note}")
 
     # ── Summary by metric ──────────────────────────────────────────────────
     by_metric: dict[str, list] = defaultdict(list)
-    for f in findings:
-        by_metric[f.metric].append(f)
+    for r in records:
+        by_metric[r["best"].metric].append(r)
 
-    print(f"\n  {BOLD}By metric{RESET} {DIM}(all via local LLM judge){RESET}")
+    panel_note = (" · vote = models agreeing" if len(models) > 1 else "")
+    print(f"\n  {BOLD}By metric{RESET} {DIM}(local LLM judge{panel_note}){RESET}")
     for metric in _audit.ALL_METRICS:
-        fs = by_metric.get(metric, [])
-        n = len(fs)
-        maxsev = max((f.severity for f in fs), default=0)
+        rs = by_metric.get(metric, [])
+        n = len(rs)
+        maxsev = max((r["best"].severity for r in rs), default=0)
         color = BRED if maxsev >= 3 else (
             BYELLOW if maxsev >= 2 else (CYAN if maxsev >= 1 else DIM))
         desc = _audit.METRIC_DESC.get(metric, "")
         print(f"    {color}{metric:<22}{RESET} {n:>3}  {DIM}{desc}{RESET}")
 
-    # ── Top findings ────────────────────────────────────────────────────────
-    if findings:
-        ranked = sorted(findings, key=lambda f: (-f.severity,))[:limit]
-        print(f"\n  {BOLD}Top findings{RESET} {DIM}(most severe first, "
+    # ── Top findings (consensus first when there's a panel) ─────────────────
+    if records:
+        records.sort(key=lambda r: (-len(r["voters"]), -r["best"].severity))
+        print(f"\n  {BOLD}Top findings{RESET} {DIM}(most agreed / severe first, "
               f"max {limit}){RESET}")
-        for f in ranked:
+        for r in records[:limit]:
+            f = r["best"]
             sev = _AUDIT_SEV_COLOR[f.severity]
             lbl = _AUDIT_SEV_LABEL[f.severity]
             when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
             proj = normalize_project(f.project) if f.project else "?"
             tcol = TOOL_COLORS.get(f.tool, "")
+            vote = (f"{BOLD}{len(r['voters'])}/{len(models)}{RESET}{DIM} · "
+                    if len(models) > 1 else "")
             print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
-                  f"{BOLD}{f.metric}{RESET} {DIM}· {tcol}{f.tool}{RESET}{DIM} · "
-                  f"{when} · {proj}{RESET}")
+                  f"{BOLD}{f.metric}{RESET} {DIM}· {vote}{tcol}{f.tool}{RESET}"
+                  f"{DIM} · {when} · {proj}{RESET}")
+            if len(models) > 1:
+                print(f"        {DIM}votes:{RESET} {', '.join(sorted(r['voters']))}")
             print(f"        {DIM}why:{RESET} {f.rationale}")
             if f.evidence:
                 ev = " ".join(str(f.evidence).split())[:160]
                 print(f"        {DIM}evidence:{RESET} \"{ev}\"")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
-    print(f"\n  {DIM}⚠ Findings come from a local LLM judge — treat them as "
-          f"leads to review, not verdicts. A small local model misses things "
-          f"and can misjudge; factual hallucination in particular needs "
+    tip = (" A panel agreeing raises confidence; a lone vote is weak."
+           if len(models) > 1 else "")
+    print(f"\n  {DIM}⚠ Findings come from local LLM judge(s) — leads to review, "
+          f"not verdicts.{tip} Factual hallucination in particular needs "
           f"external ground truth beyond the transcript.{RESET}\n")
 
 
