@@ -1734,10 +1734,10 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
         desc = _audit.METRIC_DESC.get(metric, "")
         print(f"    {color}{metric:<22}{RESET} {n:>3}  {DIM}{tier:<5} · {desc}{RESET}")
 
-    total_det = sum(1 for f in findings if f.source == "heuristic")
     if not use_judge:
-        print(f"\n  {DIM}6 semantic metrics ({', '.join(_audit.JUDGE_METRICS)}) "
-              f"need --judge (LLM).{RESET}")
+        print(f"\n  {DIM}{len(_audit.JUDGE_METRICS)} semantic metrics "
+              f"({', '.join(_audit.JUDGE_METRICS)}) need --judge (local "
+              f"Ollama).{RESET}")
 
     # ── Top findings ────────────────────────────────────────────────────────
     if findings:

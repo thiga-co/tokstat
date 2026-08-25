@@ -336,8 +336,8 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
-  tokstat --audit [--judge]                Conversation quality audit (6 local
-                                           deterministic checks; --judge adds 6
+  tokstat --audit [--judge]                Conversation quality audit (5 local
+                                           deterministic checks; --judge adds 7
                                            semantic checks via a LOCAL Ollama
                                            model — nothing leaves the machine)
                                            [--model <name>] [--judge-max <n>]
