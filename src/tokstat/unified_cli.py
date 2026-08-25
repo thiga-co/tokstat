@@ -57,7 +57,7 @@ from tokstat._core import (
     resolve_period,
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact,
+    show_activity, show_total, show_impact, show_audit,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
     compute_overview_state,
@@ -267,7 +267,8 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool", "--watch", "-w",
+    "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
+    "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
 _DEFAULT_WATCH_INTERVAL = 5.0
@@ -325,6 +326,9 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
+  tokstat --audit [--judge]                Conversation quality audit (6 local
+                                           deterministic checks; --judge adds 6
+                                           LLM-based checks via Anthropic API)
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips
@@ -397,6 +401,8 @@ def cli():
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+    elif "--audit" in args:
+        show_audit(period, tool, use_judge="--judge" in args)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

@@ -329,6 +329,46 @@ it permanent, set it in `~/.config/tokstat/impact.json`:
 multipliers (each a scalar or a `[lo, hi]` range); omit them to keep the
 defaults above.
 
+### `--audit` — conversation quality audit *(experimental)*
+
+Scans your local transcripts for behavioural/quality issues in the assistant's
+messages, across 12 metrics split into two tiers by how they can honestly be
+detected:
+
+```sh
+tokstat --audit                 # 6 deterministic checks (local, free)
+tokstat --audit --judge         # + 6 LLM checks (sends transcripts to the API)
+```
+
+**Deterministic tier** (local, free, precision-favouring — checkable against the
+transcript itself, no external ground truth):
+
+| metric | what it flags |
+|---|---|
+| `contradiction` | assistant self-reversal markers ("actually, that was wrong") |
+| `gaslighting` | assistant quotes the user saying something absent from prior turns |
+| `memory_fabrication` | references a shared past on the first exchange (no prior context) |
+| `constraint_violation` | user prohibits an action on a file/command and the assistant *immediately* issues a matching tool call (scoped to before the user speaks again, so a lifted constraint isn't a false positive) |
+| `blame_shifting` | after an error/complaint, the assistant attributes it to the user |
+| `tool_misuse` | declaring success right after a tool error; repeating an identical call that already errored (associated by `tool_use_id`) |
+
+These are **heuristics tuned to favour precision over recall** — better to miss
+than to falsely accuse. `contradiction` here means a *self-reversal marker*, not
+proof of a semantic contradiction; factual `hallucination` is **not** in this
+tier because verifying truth needs an external source, not the transcript alone.
+
+**Judge tier** (`--judge`, opt-in) — the 6 metrics that need semantic
+understanding: `hallucination`, `unsupported_claim`, `overconfidence`,
+`sycophancy`, `intent_misalignment`, `manipulative_behavior`. This runs an
+LLM-as-judge with an evidence-first rubric (every finding must quote the
+offending text). **It sends your transcripts to the Anthropic API and requires
+`ANTHROPIC_API_KEY`** — so it breaks tokstat's otherwise fully-local, no-network
+model; it's off unless you pass `--judge`.
+
+Prototype scope: reads Claude Code transcripts (the richest locally available
+source, with full text + tool calls). Output shows counts per metric and the
+most severe findings with their evidence.
+
 ### `--plan` — plan & optimization recommendations
 
 Cost breakdown by model, a plan recommendation **per upstream provider**

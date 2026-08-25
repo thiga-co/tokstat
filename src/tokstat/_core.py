@@ -1643,6 +1643,104 @@ def show_total(collect_fn, period_name: str | None = None,
     print()
 
 
+# ─── Conversation quality audit ────────────────────────────────────────────
+
+_AUDIT_SEV_LABEL = {0: "info", 1: "low", 2: "med", 3: "high"}
+_AUDIT_SEV_COLOR = {0: DIM, 1: CYAN, 2: BYELLOW, 3: BRED}
+
+
+def show_audit(period_name: str | None = None, tool_filter: str | None = None,
+               use_judge: bool = False, judge_model: str = "claude-sonnet-4-5",
+               limit: int = 20):
+    """Audit local conversations for behavioural/quality issues.
+
+    Runs the 6 deterministic (local, free) detectors; with use_judge=True also
+    runs the LLM judge for the 6 semantic metrics (sends transcripts to the
+    Anthropic API — requires ANTHROPIC_API_KEY)."""
+    from tokstat import _audit
+
+    print(f"\n{BOLD} Conversation Audit{RESET}")
+    print(f"{DIM}  Scanning transcripts (Claude Code)...{RESET}\n")
+
+    try:
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+
+    convs = list(_audit.iter_conversations(cutoff, cutoff_end, tool_filter))
+    if not convs:
+        print(f"  {YELLOW}No conversations found for this period.{RESET}\n")
+        return
+
+    findings: list = []
+    for c in convs:
+        findings.extend(_audit.audit_conversation_deterministic(c))
+
+    judge_note = ""
+    if use_judge:
+        import os as _os
+        if not _os.environ.get("ANTHROPIC_API_KEY"):
+            judge_note = (f"{YELLOW}  ⚠ --judge requested but ANTHROPIC_API_KEY "
+                          f"is not set — semantic metrics skipped.{RESET}")
+        else:
+            print(f"{DIM}  Running LLM judge on {len(convs)} conversations "
+                  f"(sending transcripts to Anthropic API)...{RESET}")
+            for c in convs:
+                findings.extend(_audit.judge_conversation(c, model=judge_model))
+
+    print(f"  Period: {BOLD}{period_label}{RESET}  ·  "
+          f"{len(convs)} conversations  ·  {len(findings)} findings")
+    if judge_note:
+        print(judge_note)
+
+    # ── Summary by metric ──────────────────────────────────────────────────
+    by_metric: dict[str, list] = defaultdict(list)
+    for f in findings:
+        by_metric[f.metric].append(f)
+
+    print(f"\n  {BOLD}By metric{RESET}  {DIM}(det = deterministic/local, "
+          f"judge = LLM){RESET}")
+    order = _audit.DETERMINISTIC_METRICS + (_audit.JUDGE_METRICS if use_judge else [])
+    for metric in order:
+        fs = by_metric.get(metric, [])
+        tier = "det" if metric in _audit.DETERMINISTIC_METRICS else "judge"
+        n = len(fs)
+        color = BRED if n and max(f.severity for f in fs) >= 3 else (
+            BYELLOW if n else DIM)
+        desc = _audit.METRIC_DESC.get(metric, "")
+        print(f"    {color}{metric:<22}{RESET} {n:>3}  {DIM}{tier:<5} · {desc}{RESET}")
+
+    total_det = sum(1 for f in findings if f.source == "heuristic")
+    if not use_judge:
+        print(f"\n  {DIM}6 semantic metrics ({', '.join(_audit.JUDGE_METRICS)}) "
+              f"need --judge (LLM).{RESET}")
+
+    # ── Top findings ────────────────────────────────────────────────────────
+    if findings:
+        ranked = sorted(findings, key=lambda f: (-f.severity,))[:limit]
+        print(f"\n  {BOLD}Top findings{RESET} {DIM}(most severe first, "
+              f"max {limit}){RESET}")
+        for f in ranked:
+            sev = _AUDIT_SEV_COLOR[f.severity]
+            lbl = _AUDIT_SEV_LABEL[f.severity]
+            when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
+            proj = normalize_project(f.project) if f.project else "?"
+            print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
+                  f"{BOLD}{f.metric}{RESET} {DIM}({f.source}) · {when} · "
+                  f"{proj}{RESET}")
+            print(f"        {DIM}why:{RESET} {f.rationale}")
+            if f.evidence:
+                ev = " ".join(str(f.evidence).split())[:160]
+                print(f"        {DIM}evidence:{RESET} \"{ev}\"")
+
+    # ── Honesty caveat ──────────────────────────────────────────────────────
+    print(f"\n  {DIM}⚠ Heuristic signals favour precision over recall and can "
+          f"still err. 'contradiction' here means a self-reversal marker; "
+          f"factual hallucination needs external ground truth (not checkable "
+          f"from the transcript alone).{RESET}\n")
+
+
 # ─── Data-retention checks ─────────────────────────────────────────────────
 # tokstat can only report what each tool still keeps on disk. Some tools purge
 # old local data on a rolling window, so history depth is capped regardless of
