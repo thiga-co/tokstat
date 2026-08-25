@@ -449,6 +449,30 @@ claude-token-usage --export out.json --period "7 days"
 }
 ```
 
+`--export` is a human-readable slice (text + basic metadata) — it does **not**
+include tokens, cost or per-tool internals. For a complete, replayable snapshot,
+use `--dump`.
+
+### `--dump` / `--load` — portable snapshot (run offline)
+
+`--dump` captures **everything tokstat's analyses use** — token records,
+output-speed records and full per-prompt exchanges (text, tools, tokens, cost) —
+into one JSON file. `--load` then runs **any** mode from that snapshot **without
+reading the agents' data**, so tokstat works standalone (e.g. on another machine,
+or to analyze someone else's dump).
+
+```sh
+tokstat --dump snapshot.json                 # capture full history, all tools
+tokstat --load snapshot.json --total         # replay any mode offline
+tokstat --load snapshot.json --plan --period "30 days"
+tokstat --load snapshot.json --audit --judge-max 10   # judge still runs locally
+```
+
+`--load` is a modifier: combine it with any mode/`--period`/`--tool`. Everything
+except the audit judge (which still calls your local Ollama) then comes purely
+from the file — no `~/.claude`, `~/.codex`, etc. access. Scope the capture with
+`--tool` if you only want one agent in the snapshot.
+
 ## Filters
 
 All modes support `--period`:
