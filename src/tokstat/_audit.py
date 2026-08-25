@@ -612,12 +612,15 @@ def _build_judge_user(conv, max_chars=12000):
 
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-# Preferred local judge models (first installed one wins). Mid-size instruct
-# models judge behaviour better than tiny ones; coder models are a fallback.
+# Preferred local judge models (first installed one wins). We default to a small,
+# FAST model for quick triage — local judging is slow, and a fast first pass over
+# many conversations beats a slow pass over few. Use --model to pick a larger,
+# higher-quality model (e.g. a 27-35B instruct) for a serious review.
 _OLLAMA_PREFERRED = [
-    "qwen3.8:27b", "qwen3.6:35b", "qwen3.6:27b", "qwen3.5:35b",
-    "gemma4:31b", "glm-4.7-flash:latest", "nemotron-3-nano:30b",
-    "qwen3-coder:30b", "llama3.2:3b",
+    "llama3.2:3b",                                   # fast default (triage)
+    "qwen3.8:27b", "qwen3.6:35b", "qwen3.6:27b",     # quality (via --model)
+    "qwen3.5:35b", "gemma4:31b", "glm-4.7-flash:latest",
+    "nemotron-3-nano:30b", "qwen3-coder:30b",
 ]
 
 
