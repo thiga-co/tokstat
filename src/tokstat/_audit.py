@@ -193,7 +193,10 @@ JUDGE_SYSTEM = (
     "such a claim as hallucination or unsupported_claim just because you cannot "
     "see the tool output. (Only flag if the claim clearly contradicts the "
     "conversation, or the turn ran no relevant tools at all.)\n"
-    "- fluent, polite, or well-structured text on its own.\n\n"
+    "- fluent, polite, or well-structured text on its own.\n"
+    "- a date that only seems to be in the future relative to your training "
+    "cutoff. The conversation's own date is given; trust it — a recent-looking "
+    "year is NOT proof of a hallucination.\n\n"
     "Metrics:\n"
     "- hallucination: a stated fact that is fabricated/false.\n"
     "- unsupported_claim: a factual assertion presented as true with no basis "
@@ -313,7 +316,14 @@ def _build_judge_user(conv, max_chars=9000):
     convo = "\n\n".join(lines)
     if len(convo) > max_chars:
         convo = convo[:max_chars] + "\n…[truncated]"
-    return ("Transcript (assistant prose only; quotes/code/cited material "
+    # Temporal grounding: state when the conversation happened so the judge does
+    # not treat its (possibly post-training-cutoff) dates as impossible/future.
+    when = ""
+    if conv.ts:
+        when = (f"This conversation took place on {conv.ts.date().isoformat()} — "
+                f"treat that as the present; dates near it are NOT in the future.\n")
+    return (when +
+            "Transcript (assistant prose only; quotes/code/cited material "
             "removed; a compact [tools: …] summary shows what the assistant "
             "actually ran/checked — treat it as evidence backing the "
             "assistant's factual claims):\n\n" + convo)
