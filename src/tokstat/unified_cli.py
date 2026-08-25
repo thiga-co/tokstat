@@ -137,6 +137,19 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
     return all_exchanges, tool_counts
 
 
+def _span_label(timestamps: list) -> str:
+    """Human span between the earliest and latest timestamp: '—' for none,
+    days up to ~2 months, then months."""
+    if not timestamps:
+        return "—"
+    d = (max(timestamps) - min(timestamps)).total_seconds() / 86400.0
+    if d < 1:
+        return "1 day"
+    if d < 60:
+        return f"{round(d)} days"
+    return f"{round(d / 30.44)} months"
+
+
 # ─── Main (aggregated overview) ──────────────────────────────────────────────
 
 def _render_overview(period_name: str | None, tool_filter: str | None,
@@ -168,9 +181,12 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
     for tool_name, n_total, data_path in counts:
         if n_total == 0:
             continue
-        n_in_period = sum(1 for r in records if r.get("tool") == tool_name)
+        tool_ts = [r["ts"] for r in records if r.get("tool") == tool_name]
+        n_in_period = len(tool_ts)
         color = TOOL_COLORS.get(tool_name, "")
-        print(f"  {color}●{RESET} {tool_name:<12} {n_in_period:>6} records from {data_path}")
+        span = f"{DIM}{_span_label(tool_ts):>10}{RESET}"
+        print(f"  {color}●{RESET} {tool_name:<12} {n_in_period:>6} records · "
+              f"{span} from {data_path}")
 
     print(f"\n  Period: {BOLD}{period_label}{RESET}")
 
