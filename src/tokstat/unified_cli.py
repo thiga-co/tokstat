@@ -185,8 +185,10 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
         n_in_period = len(tool_ts)
         color = TOOL_COLORS.get(tool_name, "")
         span = f"{DIM}{_span_label(tool_ts):>10}{RESET}"
+        since = (f"{DIM}since {min(tool_ts).strftime('%Y-%m-%d')}{RESET}"
+                 if tool_ts else f"{DIM}{'—':>16}{RESET}")
         print(f"  {color}●{RESET} {tool_name:<12} {n_in_period:>6} records · "
-              f"{span} from {data_path}")
+              f"{span} · {since} from {data_path}")
 
     print(f"\n  Period: {BOLD}{period_label}{RESET}")
 
