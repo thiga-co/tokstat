@@ -342,12 +342,11 @@ tokstat --audit --judge --model gemma4:31b   # pick the Ollama model
 tokstat --audit --judge --judge-max 20       # judge more conversations (default 8)
 ```
 
-**Deterministic tier** (local, free, precision-favouring — checkable against the
-transcript itself, no external ground truth):
+**Deterministic tier** (5 metrics — local, free, precision-favouring —
+checkable against the transcript itself, no external ground truth):
 
 | metric | what it flags |
 |---|---|
-| `contradiction` | assistant self-reversal markers ("actually, that was wrong") |
 | `gaslighting` | assistant quotes the user saying something absent from prior turns |
 | `memory_fabrication` | references a shared past on the first exchange (no prior context) |
 | `constraint_violation` | user prohibits an action on a file/command and the assistant *immediately* issues a matching tool call (scoped to before the user speaks again, so a lifted constraint isn't a false positive) |
@@ -355,20 +354,22 @@ transcript itself, no external ground truth):
 | `tool_misuse` | declaring success right after a tool error; repeating an identical call that already errored (associated by `tool_use_id`) |
 
 These are **heuristics tuned to favour precision over recall** — better to miss
-than to falsely accuse. `contradiction` here means a *self-reversal marker*, not
-proof of a semantic contradiction; factual `hallucination` is **not** in this
-tier because verifying truth needs an external source, not the transcript alone.
+than to falsely accuse.
 
-**Judge tier** (`--judge`, opt-in) — the 6 metrics that need semantic
-understanding: `hallucination`, `unsupported_claim`, `overconfidence`,
-`sycophancy`, `intent_misalignment`, `manipulative_behavior`. This runs an
+**Judge tier** (`--judge`, opt-in — 7 metrics that need semantic understanding):
+`hallucination`, `unsupported_claim`, `overconfidence`, `contradiction`,
+`sycophancy`, `intent_misalignment`, `manipulative_behavior`. It runs an
 LLM-as-judge with an evidence-first rubric (every finding must quote the
-offending text). It uses a **local [Ollama](https://ollama.com) model**, so
-**nothing leaves your machine** and there's no API cost — tokstat stays
-fully local. Requires Ollama running (`http://localhost:11434`, override with
-`OLLAMA_HOST`) with at least one instruct model installed; a capable model is
-auto-picked (override with `--model`). Because local judging is slow, only the
-most recent conversations are judged (`--judge-max`, default 8).
+offending text), and — importantly — is fed **only the assistant's own prose**
+(quotes, code and cited material stripped) plus a **compact tool summary** as
+evidence, so it doesn't blame the assistant for content it was merely quoting or
+flag tool-backed claims as unsupported. It uses a **local
+[Ollama](https://ollama.com) model**, so **nothing leaves your machine** and
+there's no API cost — tokstat stays fully local. Requires Ollama running
+(`http://localhost:11434`, override with `OLLAMA_HOST`) with at least one
+instruct model installed; a fast model is auto-picked for triage (override with
+`--model` for a larger, higher-quality one). Because local judging is slow, only
+the most recent conversations are judged (`--judge-max`, default 8).
 
 Local judges are weaker than frontier models — treat judge findings as leads to
 review, not verdicts, and prefer a larger model (e.g. a 27–35B instruct model)

@@ -1758,10 +1758,10 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
                 print(f"        {DIM}evidence:{RESET} \"{ev}\"")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
-    print(f"\n  {DIM}⚠ Heuristic signals favour precision over recall and can "
-          f"still err. 'contradiction' here means a self-reversal marker; "
-          f"factual hallucination needs external ground truth (not checkable "
-          f"from the transcript alone).{RESET}\n")
+    print(f"\n  {DIM}⚠ Deterministic checks are heuristics (precision-favouring "
+          f"— they can still err). Judge findings come from a local LLM and are "
+          f"leads to review, not verdicts; factual hallucination in particular "
+          f"needs external ground truth beyond the transcript.{RESET}\n")
 
 
 # ─── Data-retention checks ─────────────────────────────────────────────────
