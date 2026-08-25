@@ -389,8 +389,17 @@ _TOOL_ALIASES = {
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
+    "--model", "--judge-max",
     "--export", "--period", "--since", "--tool",
 }
+
+
+def _arg_value(args, flag, default=None):
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
 
 
 def _parse_tool(args: list[str]) -> str | None:
@@ -423,6 +432,8 @@ def show_help():
   claude-token-usage --activity                 Activity calendar (GitHub-style, by day)
   claude-token-usage --total                    Compact totals (tokens + cost + data span)
   claude-token-usage --audit [--judge]          Conversation quality audit
+                                                (--judge = local Ollama; --model,
+                                                --judge-max supported)
   claude-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
   claude-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   claude-token-usage --export   [file.json]     Export all exchanges to JSON
@@ -489,7 +500,12 @@ def cli():
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
     elif "--audit" in args:
-        show_audit(period, "claude", use_judge="--judge" in args)
+        try:
+            jmax = int(_arg_value(args, "--judge-max", "8"))
+        except ValueError:
+            jmax = 8
+        show_audit(period, "claude", use_judge="--judge" in args,
+                   judge_model=_arg_value(args, "--model"), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

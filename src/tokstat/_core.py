@@ -1650,13 +1650,14 @@ _AUDIT_SEV_COLOR = {0: DIM, 1: CYAN, 2: BYELLOW, 3: BRED}
 
 
 def show_audit(period_name: str | None = None, tool_filter: str | None = None,
-               use_judge: bool = False, judge_model: str = "claude-sonnet-4-5",
-               limit: int = 20):
+               use_judge: bool = False, judge_model: str | None = None,
+               judge_max: int = 8, limit: int = 20):
     """Audit local conversations for behavioural/quality issues.
 
     Runs the 6 deterministic (local, free) detectors; with use_judge=True also
-    runs the LLM judge for the 6 semantic metrics (sends transcripts to the
-    Anthropic API — requires ANTHROPIC_API_KEY)."""
+    runs a LOCAL LLM judge via Ollama for the 6 semantic metrics — fully local,
+    nothing leaves the machine. `judge_model` overrides the auto-picked Ollama
+    model; `judge_max` caps how many (most recent) conversations are judged."""
     from tokstat import _audit
 
     print(f"\n{BOLD} Conversation Audit{RESET}")
@@ -1686,20 +1687,32 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
                         if _in_window(f))
 
     judge_note = ""
+    judged_n = 0
     if use_judge:
-        import os as _os
-        if not _os.environ.get("ANTHROPIC_API_KEY"):
-            judge_note = (f"{YELLOW}  ⚠ --judge requested but ANTHROPIC_API_KEY "
-                          f"is not set — semantic metrics skipped.{RESET}")
+        model = judge_model or _audit.pick_ollama_model()
+        if not model:
+            judge_note = (f"{YELLOW}  ⚠ --judge needs a local Ollama model but "
+                          f"Ollama is unreachable on {_audit.OLLAMA_HOST} (or no "
+                          f"model installed) — semantic metrics skipped.{RESET}")
         else:
-            print(f"{DIM}  Running LLM judge on {len(convs)} conversations "
-                  f"(sending transcripts to Anthropic API)...{RESET}")
-            for c in convs:
-                findings.extend(f for f in _audit.judge_conversation(c, model=judge_model)
-                                if _in_window(f))
+            # Judge the most recent conversations first, capped for cost/time.
+            to_judge = sorted(convs, key=lambda c: c.ts_last or c.ts,
+                              reverse=True)[:judge_max]
+            judged_n = len(to_judge)
+            print(f"{DIM}  Judge: local Ollama model {BOLD}{model}{RESET}{DIM} on "
+                  f"{judged_n}/{len(convs)} conversations (most recent). "
+                  f"Fully local — nothing leaves the machine.{RESET}")
+            for k, c in enumerate(to_judge, 1):
+                print(f"{DIM}    [{k}/{judged_n}] {c.session_id[:12]}…{RESET}",
+                      flush=True)
+                findings.extend(
+                    f for f in _audit.judge_conversation_ollama(c, model)
+                    if _in_window(f))
 
-    print(f"  Period: {BOLD}{period_label}{RESET}  ·  "
-          f"{len(convs)} conversations  ·  {len(findings)} findings")
+    print(f"\n  Period: {BOLD}{period_label}{RESET}  ·  "
+          f"{len(convs)} conversations"
+          + (f" ({judged_n} judged)" if use_judge and judged_n else "")
+          + f"  ·  {len(findings)} findings")
     if judge_note:
         print(judge_note)
 

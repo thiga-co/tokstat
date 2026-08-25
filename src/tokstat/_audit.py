@@ -10,10 +10,12 @@ Two detection tiers, by design (see the README audit section):
     These are heuristic signals (regex + cross-turn checks), tuned to favour
     precision over recall: better to miss than to falsely accuse.
 
-  • JUDGE (opt-in, --judge, sends transcripts to an LLM API) — the 6 metrics
-    that need semantic understanding / external truth:
+  • JUDGE (opt-in, --judge, LLM-as-judge) — the 6 metrics that need semantic
+    understanding / external truth:
         hallucination, unsupported_claim, overconfidence,
         sycophancy, intent_misalignment, manipulative_behavior
+    Runs on a LOCAL Ollama model by default (nothing leaves the machine); an
+    Anthropic-API judge is also available for callers that opt into it.
 
 Prototype scope: reads Claude Code JSONL transcripts (the richest locally
 available source, with full text + tool calls). The reader is structured so
@@ -609,6 +611,95 @@ def _build_judge_user(conv, max_chars=12000):
     return "Transcript:\n\n" + convo
 
 
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+# Preferred local judge models (first installed one wins). Mid-size instruct
+# models judge behaviour better than tiny ones; coder models are a fallback.
+_OLLAMA_PREFERRED = [
+    "qwen3.8:27b", "qwen3.6:35b", "qwen3.6:27b", "qwen3.5:35b",
+    "gemma4:31b", "glm-4.7-flash:latest", "nemotron-3-nano:30b",
+    "qwen3-coder:30b", "llama3.2:3b",
+]
+
+
+def list_ollama_models(host: str = OLLAMA_HOST) -> list[str]:
+    """Return installed Ollama model names, or [] if Ollama is unreachable."""
+    try:
+        with urllib.request.urlopen(host.rstrip("/") + "/api/tags",
+                                    timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        return []
+
+
+def pick_ollama_model(host: str = OLLAMA_HOST) -> str | None:
+    """Choose a sensible installed judge model."""
+    installed = list_ollama_models(host)
+    if not installed:
+        return None
+    for pref in _OLLAMA_PREFERRED:
+        if pref in installed:
+            return pref
+    # else avoid pure-embedding models
+    for m in installed:
+        if "embed" not in m:
+            return m
+    return None
+
+
+def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
+                              timeout: int = 240, max_chars: int = 9000
+                              ) -> list[Finding]:
+    """Run the judge locally via Ollama. Fully local, no data leaves the
+    machine. Returns [] on failure."""
+    payload = {
+        "model": model,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0},
+        "messages": [
+            {"role": "system", "content": JUDGE_SYSTEM},
+            {"role": "user", "content": _build_judge_user(conv, max_chars)},
+        ],
+    }
+    req = urllib.request.Request(
+        host.rstrip("/") + "/api/chat",
+        data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        text = (data.get("message") or {}).get("content", "")
+        m = re.search(r"\{.*\}", text, re.S)
+        parsed = json.loads(m.group(0) if m else text)
+    except Exception:
+        return []
+    return _findings_from_judge(parsed, conv)
+
+
+def _findings_from_judge(parsed, conv) -> list[Finding]:
+    findings = []
+    items = parsed.get("findings", []) if isinstance(parsed, dict) else []
+    for f in items:
+        if not isinstance(f, dict):
+            continue
+        metric = f.get("metric")
+        if metric not in JUDGE_METRICS:
+            continue
+        try:
+            sev = max(0, min(3, int(f.get("severity", 1))))
+        except (TypeError, ValueError):
+            sev = 1
+        try:
+            idx = int(f.get("turn", -1))
+        except (TypeError, ValueError):
+            idx = -1
+        findings.append(Finding(metric, sev, idx, str(f.get("evidence", ""))[:200],
+                                str(f.get("rationale", ""))[:200], "judge", conv))
+    return findings
+
+
 def judge_conversation(conv, model="claude-sonnet-4-5", api_key=None,
                        timeout=60) -> list[Finding]:
     """Run the LLM judge over one conversation. Requires an Anthropic API key
@@ -639,16 +730,4 @@ def judge_conversation(conv, model="claude-sonnet-4-5", api_key=None,
         parsed = json.loads(m.group(0) if m else text)
     except Exception:
         return []
-    findings = []
-    for f in parsed.get("findings", []):
-        metric = f.get("metric")
-        if metric not in JUDGE_METRICS:
-            continue
-        try:
-            sev = max(0, min(3, int(f.get("severity", 1))))
-            idx = int(f.get("turn", -1))
-        except (TypeError, ValueError):
-            sev, idx = 1, -1
-        findings.append(Finding(metric, sev, idx, str(f.get("evidence", ""))[:200],
-                                str(f.get("rationale", ""))[:200], "judge", conv))
-    return findings
+    return _findings_from_judge(parsed, conv)

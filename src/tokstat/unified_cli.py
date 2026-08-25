@@ -268,8 +268,18 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
+    "--model", "--judge-max",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
+
+
+def _arg_value(args, flag, default=None):
+    """Return the value following `flag`, or default."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
 
 _DEFAULT_WATCH_INTERVAL = 5.0
 
@@ -328,7 +338,9 @@ def show_help():
   tokstat --total                          Compact totals (tokens + cost + data span)
   tokstat --audit [--judge]                Conversation quality audit (6 local
                                            deterministic checks; --judge adds 6
-                                           LLM-based checks via Anthropic API)
+                                           semantic checks via a LOCAL Ollama
+                                           model — nothing leaves the machine)
+                                           [--model <name>] [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips
@@ -402,7 +414,12 @@ def cli():
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
     elif "--audit" in args:
-        show_audit(period, tool, use_judge="--judge" in args)
+        try:
+            jmax = int(_arg_value(args, "--judge-max", "8"))
+        except ValueError:
+            jmax = 8
+        show_audit(period, tool, use_judge="--judge" in args,
+                   judge_model=_arg_value(args, "--model"), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

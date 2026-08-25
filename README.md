@@ -336,8 +336,10 @@ messages, across 12 metrics split into two tiers by how they can honestly be
 detected:
 
 ```sh
-tokstat --audit                 # 6 deterministic checks (local, free)
-tokstat --audit --judge         # + 6 LLM checks (sends transcripts to the API)
+tokstat --audit                              # 6 deterministic checks (local, free)
+tokstat --audit --judge                      # + 6 semantic checks via local Ollama
+tokstat --audit --judge --model gemma4:31b   # pick the Ollama model
+tokstat --audit --judge --judge-max 20       # judge more conversations (default 8)
 ```
 
 **Deterministic tier** (local, free, precision-favouring — checkable against the
@@ -361,9 +363,16 @@ tier because verifying truth needs an external source, not the transcript alone.
 understanding: `hallucination`, `unsupported_claim`, `overconfidence`,
 `sycophancy`, `intent_misalignment`, `manipulative_behavior`. This runs an
 LLM-as-judge with an evidence-first rubric (every finding must quote the
-offending text). **It sends your transcripts to the Anthropic API and requires
-`ANTHROPIC_API_KEY`** — so it breaks tokstat's otherwise fully-local, no-network
-model; it's off unless you pass `--judge`.
+offending text). It uses a **local [Ollama](https://ollama.com) model**, so
+**nothing leaves your machine** and there's no API cost — tokstat stays
+fully local. Requires Ollama running (`http://localhost:11434`, override with
+`OLLAMA_HOST`) with at least one instruct model installed; a capable model is
+auto-picked (override with `--model`). Because local judging is slow, only the
+most recent conversations are judged (`--judge-max`, default 8).
+
+Local judges are weaker than frontier models — treat judge findings as leads to
+review, not verdicts, and prefer a larger model (e.g. a 27–35B instruct model)
+for better precision.
 
 Prototype scope: reads Claude Code transcripts (the richest locally available
 source, with full text + tool calls). Output shows counts per metric and the
