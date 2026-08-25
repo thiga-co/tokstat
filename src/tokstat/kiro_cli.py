@@ -33,7 +33,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact,
+    show_activity, show_total, show_impact, show_audit,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
 )
@@ -157,6 +157,14 @@ def _extract_exchanges_kiro() -> list[dict]:
     return [e for e in exchanges if e.get("user_text") or e["num_turns"] > 0]
 
 
+def _arg_value(args, flag, default=None):
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
+
+
 def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
                            cutoff_end: datetime | None = None) -> tuple[list[dict], dict[str, int]]:
     """Collect Kiro exchanges filtered by time."""
@@ -225,7 +233,7 @@ _TOOL_ALIASES = {"kiro": "Kiro"}
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--audit", "--judge", "--model", "--judge-max", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -301,6 +309,14 @@ def cli():
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+    elif "--audit" in args:
+        jmax_raw = _arg_value(args, "--judge-max")
+        try:
+            jmax = int(jmax_raw) if jmax_raw is not None else None
+        except ValueError:
+            jmax = None
+        show_audit(_collect_all_exchanges, period, tool,
+                   judge_model=_arg_value(args, "--model"), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

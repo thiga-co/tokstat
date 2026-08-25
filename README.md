@@ -332,14 +332,16 @@ defaults above.
 ### `--audit` — conversation quality audit *(experimental)*
 
 Scans your local transcripts for behavioural/quality issues in the assistant's
-messages. **All 12 metrics are evaluated by a local LLM-as-judge** (via
-[Ollama](https://ollama.com)), so **nothing leaves your machine** and there's no
-API cost — tokstat stays fully local.
+messages, **across every supported tool** (Claude Code, Codex, Cursor, Kiro,
+Gemini, opencode, and imported web exports). **All 12 metrics are evaluated by a
+local LLM-as-judge** (via [Ollama](https://ollama.com)), so **nothing leaves
+your machine** and there's no API cost — tokstat stays fully local.
 
 ```sh
-tokstat --audit                            # judge all 12 metrics (local Ollama)
+tokstat --audit                            # judge all 12 metrics, all tools
+tokstat --audit --tool codex               # scope to one tool
 tokstat --audit --model gemma4:31b         # pick a larger, higher-quality model
-tokstat --audit --judge-max 20             # judge more conversations (default 8)
+tokstat --audit --judge-max 20             # cap conversations judged (default: no cap)
 ```
 
 | metric | |
@@ -368,13 +370,14 @@ the judge covers the same ground with far better precision.
 Requires Ollama running (`http://localhost:11434`, override with `OLLAMA_HOST`)
 with at least one instruct model installed. A fast model is auto-picked for
 triage; pass `--model` for a larger, higher-quality one (e.g. a 27–35B instruct
-model). Because local judging is slow, only the most recent conversations are
-judged (`--judge-max`, default 8).
+model). By default **every** conversation in the period is judged; because local
+judging is slow (and there can be hundreds across all tools), use `--judge-max`
+to cap it, and `--period` / `--tool` to narrow the scope.
 
 > Findings are **leads to review, not verdicts** — a small local model misses
 > things and can misjudge; factual hallucination in particular needs external
-> ground truth beyond the transcript. Prototype scope: reads Claude Code
-> transcripts.
+> ground truth beyond the transcript. Conversations are grouped per
+> (tool, project, day).
 
 Local judges are weaker than frontier models — treat judge findings as leads to
 review, not verdicts, and prefer a larger model (e.g. a 27–35B instruct model)

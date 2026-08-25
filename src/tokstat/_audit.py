@@ -18,9 +18,9 @@ the assistant for content it merely quoted, nor flag tool-backed claims as
 unsupported. It runs on a LOCAL Ollama model by default (nothing leaves the
 machine); an Anthropic-API judge is also available for callers that opt in.
 
-Prototype scope: reads Claude Code JSONL transcripts (the richest locally
-available source, with full text + tool calls). The reader is structured so
-other tools can be added later.
+Works across ALL supported tools: it builds conversations from the per-prompt
+`exchanges` that each tool's collect_fn already produces (reusing their
+maintained parsers), grouped per (tool, project, day).
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -32,8 +32,9 @@ import json
 import os
 import re
 import urllib.request
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
+
+_MIN_TS = datetime.min.replace(tzinfo=timezone.utc)   # sort fallback
 
 # ─── The 12 metrics ─────────────────────────────────────────────────────────
 # All 12 metrics are evaluated by the LLM judge (the deterministic heuristics
@@ -78,11 +79,12 @@ class Turn:
 
 
 class Conversation:
-    __slots__ = ("session_id", "project", "turns")
+    __slots__ = ("session_id", "project", "tool", "turns")
 
-    def __init__(self, session_id, project, turns):
+    def __init__(self, session_id, project, tool, turns):
         self.session_id = session_id
         self.project = project
+        self.tool = tool
         self.turns = turns
 
     @property
@@ -100,125 +102,55 @@ class Conversation:
         return None
 
 
-def _parse_ts(s):
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
-    except (ValueError, AttributeError):
-        return None
+def conversations_from_exchanges(exchanges: list[dict]):
+    """Build Conversation objects from the per-prompt `exchanges` that every
+    tool's collect_fn already produces — so the audit works uniformly across
+    ALL tools, reusing their maintained parsers.
 
+    Each exchange (one user prompt + the assistant's reply) becomes a user turn
+    followed by an assistant turn. Exchanges are grouped into a conversation per
+    (tool, project, day), which approximates a working session and keeps each
+    conversation a sensible size for the judge."""
+    groups: dict[tuple, list] = {}
+    for ex in exchanges:
+        ts = ex.get("ts")
+        tool = ex.get("tool", "?")
+        project = ex.get("project") or "unknown"
+        day = ts.astimezone().date().isoformat() if ts else "?"
+        groups.setdefault((tool, project, day), []).append(ex)
 
-def _read_claude_session(path: Path) -> list[Turn]:
-    """Parse one Claude Code JSONL transcript into ordered turns."""
-    turns: list[Turn] = []
-    try:
-        with open(path, "r", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                rtype = rec.get("type")
-                msg = rec.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content", "")
-                ts = _parse_ts(rec.get("timestamp"))
-                if rtype == "user":
-                    text, results = "", []
-                    if isinstance(content, str):
-                        text = content.strip()
-                    elif isinstance(content, list):
-                        parts = []
-                        for c in content:
-                            if not isinstance(c, dict):
-                                continue
-                            if c.get("type") == "text":
-                                parts.append(c.get("text", ""))
-                            elif c.get("type") == "tool_result":
-                                body = c.get("content", "")
-                                if isinstance(body, list):
-                                    body = " ".join(str(b.get("text", b))
-                                                    if isinstance(b, dict) else str(b)
-                                                    for b in body)
-                                results.append({"is_error": bool(c.get("is_error")),
-                                                "content": str(body)[:500],
-                                                "tool_use_id": c.get("tool_use_id")})
-                        text = "\n".join(p for p in parts if p).strip()
-                    # A pure tool_result user record continues the assistant's
-                    # turn (attach results to the last assistant turn).
-                    if results and not text and turns and turns[-1].role == "assistant":
-                        turns[-1].tool_results.extend(results)
-                        continue
-                    turns.append(Turn("user", ts, text, [], results, None))
-                elif rtype == "assistant":
-                    text_parts, uses = [], []
-                    if isinstance(content, list):
-                        for c in content:
-                            if not isinstance(c, dict):
-                                continue
-                            if c.get("type") == "text":
-                                text_parts.append(c.get("text", ""))
-                            elif c.get("type") == "tool_use":
-                                uses.append({"name": c.get("name", "unknown"),
-                                             "input": c.get("input", {}),
-                                             "id": c.get("id")})
-                    elif isinstance(content, str):
-                        text_parts.append(content)
-                    text = "\n".join(p for p in text_parts if p).strip()
-                    # Merge consecutive assistant records into one logical turn.
-                    if turns and turns[-1].role == "assistant":
-                        prev = turns[-1]
-                        if text:
-                            prev.text = (prev.text + "\n" + text).strip()
-                        prev.tool_uses.extend(uses)
-                        if not prev.model:
-                            prev.model = msg.get("model")
-                    else:
-                        turns.append(Turn("assistant", ts, text, uses, [],
-                                          msg.get("model")))
-    except (OSError, IOError):
-        return []
-    return turns
-
-
-def iter_conversations(cutoff: datetime, cutoff_end: datetime | None = None,
-                       tool_filter: str | None = None):
-    """Yield Conversation objects from local transcripts within [cutoff, end).
-    Prototype: Claude Code only."""
-    if tool_filter and tool_filter != "claude":
-        return
-    base = Path.home() / ".claude" / "projects"
-    if not base.exists():
-        return
-    for proj_dir in sorted(base.iterdir()):
-        if not proj_dir.is_dir():
-            continue
-        for jsonl in sorted(proj_dir.rglob("*.jsonl")):
-            turns = _read_claude_session(jsonl)
-            if not turns:
-                continue
-            conv = Conversation(jsonl.stem, proj_dir.name, turns)
-            first, last = conv.ts, conv.ts_last
-            if first is None:
-                continue
-            # Include a session that OVERLAPS the window — it may have started
-            # before the cutoff but stayed active inside it (cross-turn context
-            # is needed for the detectors anyway).
-            if last < cutoff:
-                continue
-            if cutoff_end is not None and first >= cutoff_end:
-                continue
-            yield conv
+    convs = []
+    for (tool, project, day), exs in groups.items():
+        exs.sort(key=lambda e: e.get("ts") or _MIN_TS)
+        turns: list[Turn] = []
+        for ex in exs:
+            ts = ex.get("ts")
+            ut = (ex.get("user_text") or "").strip()
+            if ut:
+                turns.append(Turn("user", ts, ut, [], [], None))
+            atexts = ex.get("assistant_texts") or []
+            atext = "\n".join(a for a in atexts if a).strip()
+            # tools_used is {name: count}; expand (capped) into tool_uses, and
+            # surface tool errors as results (no per-call ids at this layer).
+            uses = []
+            for name, cnt in (ex.get("tools_used") or {}).items():
+                for _ in range(min(int(cnt or 0), 10)):
+                    uses.append({"name": name, "input": {}, "id": None})
+            results = [{"is_error": True, "content": str(e)[:300], "tool_use_id": None}
+                       for e in (ex.get("tool_errors") or [])]
+            if atext or uses or results:
+                turns.append(Turn("assistant", ts, atext, uses, results,
+                                  ex.get("model")))
+        if turns:
+            convs.append(Conversation(f"{tool}:{project}:{day}", project, tool, turns))
+    return convs
 
 
 # ─── Finding model ──────────────────────────────────────────────────────────
 
 class Finding:
     __slots__ = ("metric", "severity", "turn_index", "evidence", "rationale",
-                 "source", "session_id", "project", "ts")
+                 "source", "session_id", "project", "tool", "ts")
 
     def __init__(self, metric, severity, turn_index, evidence, rationale,
                  source, conv):
@@ -230,6 +162,7 @@ class Finding:
         self.source = source                # "heuristic" | "judge"
         self.session_id = conv.session_id
         self.project = conv.project
+        self.tool = conv.tool
         # Attribute the finding to the offending turn's time when known, so the
         # "when" and any period filtering reflect when the issue occurred.
         turn_ts = None

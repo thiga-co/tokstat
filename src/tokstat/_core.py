@@ -1649,19 +1649,20 @@ _AUDIT_SEV_LABEL = {0: "info", 1: "low", 2: "med", 3: "high"}
 _AUDIT_SEV_COLOR = {0: DIM, 1: CYAN, 2: BYELLOW, 3: BRED}
 
 
-def show_audit(period_name: str | None = None, tool_filter: str | None = None,
-               judge_model: str | None = None, judge_max: int = 8,
-               limit: int = 20):
-    """Audit local conversations for behavioural/quality issues.
+def show_audit(collect_fn, period_name: str | None = None,
+               tool_filter: str | None = None, judge_model: str | None = None,
+               judge_max: int | None = None, limit: int = 20):
+    """Audit conversations across all tools for behavioural/quality issues.
 
     Every one of the 12 metrics is evaluated by a LOCAL LLM judge via Ollama —
     fully local, nothing leaves the machine. `judge_model` overrides the
     auto-picked Ollama model; `judge_max` caps how many (most recent)
-    conversations are judged (local judging is slow)."""
+    conversations are judged (None = no cap — local judging is slow, so this
+    can take a while)."""
     from tokstat import _audit
 
     print(f"\n{BOLD} Conversation Audit{RESET}")
-    print(f"{DIM}  Scanning transcripts (Claude Code)...{RESET}\n")
+    print(f"{DIM}  Scanning conversations across all tools...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -1669,7 +1670,8 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    convs = list(_audit.iter_conversations(cutoff, cutoff_end, tool_filter))
+    all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    convs = _audit.conversations_from_exchanges(all_exchanges)
     if not convs:
         print(f"  {YELLOW}No conversations found for this period.{RESET}\n")
         return
@@ -1684,18 +1686,18 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
         return
 
     def _in_window(f):
-        # The judge sees full sessions (cross-turn context); keep only findings
-        # whose offending turn falls in the selected period.
+        # Keep only findings whose offending turn falls in the selected period.
         if f.ts is None:
             return True
         return f.ts >= cutoff and (cutoff_end is None or f.ts < cutoff_end)
 
-    # Judge the most recent conversations first, capped for time.
-    to_judge = sorted(convs, key=lambda c: c.ts_last or c.ts,
-                      reverse=True)[:judge_max]
+    # Judge the most recent conversations first; judge_max=None means all.
+    ordered = sorted(convs, key=lambda c: c.ts_last or c.ts, reverse=True)
+    to_judge = ordered if judge_max is None else ordered[:judge_max]
     judged_n = len(to_judge)
+    cap_note = "" if judge_max is None else f" (capped at {judge_max})"
     print(f"{DIM}  Judge: local Ollama model {BOLD}{model}{RESET}{DIM} on "
-          f"{judged_n}/{len(convs)} conversations (most recent). "
+          f"{judged_n}/{len(convs)} conversations{cap_note}. "
           f"Fully local — nothing leaves the machine.{RESET}")
     findings: list = []
     for k, c in enumerate(to_judge, 1):
@@ -1732,8 +1734,10 @@ def show_audit(period_name: str | None = None, tool_filter: str | None = None,
             lbl = _AUDIT_SEV_LABEL[f.severity]
             when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
             proj = normalize_project(f.project) if f.project else "?"
+            tcol = TOOL_COLORS.get(f.tool, "")
             print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
-                  f"{BOLD}{f.metric}{RESET} {DIM}· {when} · {proj}{RESET}")
+                  f"{BOLD}{f.metric}{RESET} {DIM}· {tcol}{f.tool}{RESET}{DIM} · "
+                  f"{when} · {proj}{RESET}")
             print(f"        {DIM}why:{RESET} {f.rationale}")
             if f.evidence:
                 ev = " ".join(str(f.evidence).split())[:160]

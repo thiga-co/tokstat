@@ -413,11 +413,12 @@ def cli():
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
     elif "--audit" in args:
+        jmax_raw = _arg_value(args, "--judge-max")   # default: no cap
         try:
-            jmax = int(_arg_value(args, "--judge-max", "8"))
+            jmax = int(jmax_raw) if jmax_raw is not None else None
         except ValueError:
-            jmax = 8
-        show_audit(period, tool,
+            jmax = None
+        show_audit(_collect_all_exchanges, period, tool,
                    judge_model=_arg_value(args, "--model"), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
