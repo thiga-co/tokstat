@@ -391,6 +391,13 @@ is reported per model rather than silently counted as "clean".
 > things and can misjudge; factual hallucination in particular needs external
 > ground truth beyond the transcript. Conversations are grouped per
 > (tool, project, day).
+>
+> It's tuned for **coding sessions**, where tool calls (grep/read/bash) verify
+> the assistant's claims. In document/analysis/consulting work there are no such
+> tools and the source material is stripped from the judge's view, so
+> `unsupported_claim` is a weaker signal there — the judge is told not to flag
+> summaries of provided material or claims transparently attributed to a source,
+> but treat those findings with extra caution.
 
 Local judges are weaker than frontier models — treat judge findings as leads to
 review, not verdicts, and prefer a larger model (e.g. a 27–35B instruct model)
