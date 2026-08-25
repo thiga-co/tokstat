@@ -59,6 +59,7 @@ from tokstat._core import (
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact,
     export_conversations, _parse_period, _parse_region, print_update_notice,
+    print_retention_alerts,
     compute_overview_state,
 )
 
@@ -190,7 +191,10 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
         print(f"  {color}●{RESET} {tool_name:<12} {n_in_period:>6} records · "
               f"{span} · {since} from {data_path}")
 
-    print(f"\n  Period: {BOLD}{period_label}{RESET}")
+    print()
+    print_retention_alerts(name for name, n_total, _ in counts if n_total > 0)
+
+    print(f"  Period: {BOLD}{period_label}{RESET}")
 
     state = compute_overview_state(records, exchanges, cutoff, cutoff_end, period_label)
     changed_keys: set | None = None

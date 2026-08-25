@@ -1643,6 +1643,62 @@ def show_total(collect_fn, period_name: str | None = None,
     print()
 
 
+# ─── Data-retention checks ─────────────────────────────────────────────────
+# tokstat can only report what each tool still keeps on disk. Some tools purge
+# old local data on a rolling window, so history depth is capped regardless of
+# --period. We warn when a tool's retention is NOT effectively "forever" so the
+# numbers (and the "since" dates) aren't mistaken for full lifetime usage.
+
+# A retention this long (10 years) is treated as "keeps everything".
+_RETENTION_FOREVER_DAYS = 3650
+
+
+def _claude_retention_days() -> int:
+    """Claude Code purges transcripts older than `cleanupPeriodDays`
+    (~/.claude/settings.json), defaulting to 30. Return the effective value."""
+    days = 30  # Claude Code's built-in default
+    try:
+        cfg = json.loads((_Path.home() / ".claude" / "settings.json").read_text())
+        v = cfg.get("cleanupPeriodDays")
+        if isinstance(v, (int, float)) and v > 0:
+            days = int(v)
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return days
+
+
+def retention_alerts(tools) -> list[str]:
+    """Return warning lines for any present tool whose local data is NOT
+    retained ~forever. `tools` is an iterable of tool display names.
+
+    Only tools with a known, finite retention window are flagged; tools that
+    keep everything (e.g. Codex session rollouts, which are never auto-pruned)
+    and tools with no known pruning mechanism produce no alert."""
+    tset = set(tools)
+    alerts: list[str] = []
+    if "Claude Code" in tset:
+        days = _claude_retention_days()
+        if days < _RETENTION_FOREVER_DAYS:
+            alerts.append(
+                f"Claude Code keeps only the last {days} days of transcripts "
+                f"(cleanupPeriodDays) — older sessions are purged and "
+                f"unrecoverable. Raise it in ~/.claude/settings.json to keep "
+                f"full history."
+            )
+    # Codex: ~/.codex/sessions/ rollouts have no retention setting and are not
+    # auto-pruned → effectively forever, so no alert.
+    return alerts
+
+
+def print_retention_alerts(tools) -> None:
+    """Print a retention warning block for the given tools, if any apply."""
+    alerts = retention_alerts(tools)
+    for msg in alerts:
+        print(f"  {YELLOW}⚠ Retention: {msg}{RESET}")
+    if alerts:
+        print()
+
+
 # ─── Shared display: environmental impact ─────────────────────────────────
 
 # Electricity-mix GWP presets (kgCO2eq/kWh) and a config override.
