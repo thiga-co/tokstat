@@ -410,6 +410,25 @@ def _arg_value(args, flag, default=None):
             return args[i + 1]
     return default
 
+
+def _model_list(args):
+    """Parse --model as a comma/space-separated list, tolerating stray spaces
+    (e.g. "a,b ,c" or "a b c"). Consumes every token after --model up to the
+    next flag, then splits on commas/whitespace. Returns a comma-joined string
+    (for a single judge model or a panel), or None."""
+    if "--model" not in args:
+        return None
+    i = args.index("--model")
+    parts = []
+    for a in args[i + 1:]:
+        if a.startswith("-"):
+            break
+        parts.append(a)
+    models = [m for m in " ".join(parts).replace(",", " ").split() if m]
+    # de-dup, preserve order
+    models = list(dict.fromkeys(models))
+    return ",".join(models) if models else None
+
 _DEFAULT_WATCH_INTERVAL = 5.0
 
 
@@ -545,7 +564,7 @@ def cli():
 
     # --bench: measure the local judge model(s) speed on this machine.
     if "--bench" in args:
-        show_bench(_arg_value(args, "--model"))
+        show_bench(_model_list(args))
         return
 
     watch_interval = _parse_watch_interval(args)
@@ -573,7 +592,7 @@ def cli():
         except ValueError:
             jmax = None
         show_audit(_collect_all_exchanges, period, tool,
-                   judge_model=_arg_value(args, "--model"), judge_max=jmax)
+                   judge_model=_model_list(args), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:
