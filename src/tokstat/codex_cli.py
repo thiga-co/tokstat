@@ -294,6 +294,7 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 exchanges.append(current)
             current = {
                 "user_text": text, "assistant_texts": [], "tool_errors": [],
+                "tool_outputs": [],
                 "tools_used": {}, "num_turns": 0,
                 "model": _label(current_model, current_effort),
                 "project": current_cwd, "ts": ts,
@@ -308,6 +309,23 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                     t = c.get("text", "").strip()
                     if t:
                         current["assistant_texts"].append(t)
+
+        elif rec_type == "response_item" and payload.get("type") == "function_call" and current:
+            name = payload.get("name") or "tool"
+            current["tools_used"][name] = current["tools_used"].get(name, 0) + 1
+
+        elif (rec_type == "response_item" and current
+              and payload.get("type") in ("function_call_output",
+                                           "custom_tool_call_output",
+                                           "local_shell_call_output")):
+            out = payload.get("output")
+            if isinstance(out, dict):
+                out = out.get("content") or out.get("output") or ""
+            out = str(out or "").strip()
+            if out:
+                # Capture a short snippet of what the tool returned (stdout,
+                # file listing, …) so the judge sees the evidence.
+                current["tool_outputs"].append(out[:300])
 
         elif rec_type == "event_msg" and payload.get("type") == "token_count" and current:
             info = payload.get("info") or {}

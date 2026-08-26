@@ -231,6 +231,7 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     ts = None
                 current = {
                     "user_text": text, "assistant_texts": [], "tool_errors": [],
+                    "tool_outputs": [],
                     "tools_used": defaultdict(int), "num_turns": 0, "model": None,
                     "project": rec.get("cwd"), "ts": ts,
                     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
@@ -238,11 +239,19 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                 }
             elif current and isinstance(content, list):
                 for c in content:
-                    if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"):
-                        err = c.get("content", "")
-                        if isinstance(err, list):
-                            err = " ".join(str(e) for e in err)
-                        current["tool_errors"].append(str(err)[:200])
+                    if not (isinstance(c, dict) and c.get("type") == "tool_result"):
+                        continue
+                    body = c.get("content", "")
+                    if isinstance(body, list):
+                        body = " ".join(str(b.get("text", b)) if isinstance(b, dict)
+                                        else str(b) for b in body)
+                    body = str(body).strip()
+                    if c.get("is_error"):
+                        current["tool_errors"].append(body[:200])
+                    elif body:
+                        # Capture a short snippet of the tool's OUTPUT so the
+                        # judge can see what a Bash/Read/grep actually returned.
+                        current["tool_outputs"].append(body[:300])
 
         elif rec_type == "assistant" and current is not None:
             if not current["model"]:

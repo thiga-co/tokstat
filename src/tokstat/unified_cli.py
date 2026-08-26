@@ -165,7 +165,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 # ─── Snapshot: --dump / --load ──────────────────────────────────────────────
 
-_DUMP_VERSION = 1
+_DUMP_VERSION = 2   # v2 adds per-exchange tool_outputs (captured tool result snippets)
 
 
 def _iso(dt):

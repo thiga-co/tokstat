@@ -139,6 +139,9 @@ def conversations_from_exchanges(exchanges: list[dict]):
                     uses.append({"name": name, "input": {}, "id": None})
             results = [{"is_error": True, "content": str(e)[:300], "tool_use_id": None}
                        for e in (ex.get("tool_errors") or [])]
+            # Successful tool OUTPUTS (stdout, file listings, …) as evidence.
+            results += [{"is_error": False, "content": str(o)[:300], "tool_use_id": None}
+                        for o in (ex.get("tool_outputs") or [])]
             if atext or uses or results:
                 turns.append(Turn("assistant", ts, atext, uses, results,
                                   ex.get("model")))
@@ -186,13 +189,12 @@ JUDGE_SYSTEM = (
     "like a quotation is not the assistant's own claim.\n"
     "- an honest self-correction or admission of uncertainty (\"I was wrong\", "
     "\"I'm not sure\") — that is NOT a defect.\n"
-    "- a factual claim in an assistant turn whose [tools: …] summary shows it "
-    "ran fact-finding tools (Bash, Read, Grep, Glob, Find, WebFetch, etc.). The "
-    "summary lists WHAT was run, not the output it returned — assume the "
-    "assistant is faithfully reporting what those tools found, and do NOT flag "
-    "such a claim as hallucination or unsupported_claim just because you cannot "
-    "see the tool output. (Only flag if the claim clearly contradicts the "
-    "conversation, or the turn ran no relevant tools at all.)\n"
+    "- a factual claim in an assistant turn that ran fact-finding tools (Bash, "
+    "Read, Grep, Glob, Find, WebFetch, etc.). A '[tools: …]' line lists what ran "
+    "and a 'tools returned: …' line shows a snippet of the ACTUAL output — use it "
+    "to verify. Only a snippet is shown, so assume the assistant faithfully "
+    "reports the full result; do NOT flag such a claim as hallucination or "
+    "unsupported_claim unless the returned snippet plainly contradicts it.\n"
     "- fluent, polite, or well-structured text on its own.\n"
     "- a date that only seems to be in the future relative to your training "
     "cutoff. The conversation's own date is given; trust it — a recent-looking "
@@ -301,7 +303,16 @@ def _tool_summary(turn) -> str:
     if not parts and n_err:
         parts.append("tool")
     tail = f"; {n_err} errored" if n_err else ""
-    return "[tools: " + "; ".join(parts) + tail + "]"
+    head = "[tools: " + "; ".join(parts) + tail + "]"
+    # Include a snippet of what the tools actually RETURNED, so the judge can
+    # verify tool-backed claims instead of flagging them 'unsupported'.
+    outs = [" ".join(str(r.get("content", "")).split())
+            for r in turn.tool_results
+            if not r.get("is_error") and str(r.get("content", "")).strip()]
+    if outs:
+        joined = " | ".join(o[:140] for o in outs[:3])
+        head += f"\n  tools returned: {joined[:400]}"
+    return head
 
 
 def _build_judge_user(conv, max_chars=9000):
