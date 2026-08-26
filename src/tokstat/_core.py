@@ -1707,7 +1707,8 @@ def _audit_finding_context(conv, turn_index, evidence=""):
 
 def show_audit(collect_fn, period_name: str | None = None,
                tool_filter: str | None = None, judge_model: str | None = None,
-               judge_max: int | None = None, limit: int = 20):
+               judge_max: int | None = None, limit: int = 20,
+               verify: bool = False):
     """Audit conversations across all tools for behavioural/quality issues.
 
     Every one of the 12 metrics is evaluated by a LOCAL LLM judge via Ollama —
@@ -1835,6 +1836,32 @@ def show_audit(collect_fn, period_name: str | None = None,
         return
 
     records = list(agg.values())
+
+    # ── Adversarial verify pass (opt-in): re-check each finding with a narrow,
+    # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
+    # cation/repetition mistaken for a defect" over-flagging.
+    if verify and records:
+        vmodel = live[0]
+        print(f"{DIM}  Verifying {len(records)} findings with {BOLD}{vmodel}{RESET}"
+              f"{DIM} (skeptical second pass)…{RESET}", flush=True)
+        kept = []
+        dropped = 0
+        for r in records:
+            f = r["best"]
+            v = _audit.verify_finding_ollama(
+                f.metric, f.evidence, r.get("excerpt", ""), r.get("ask", ""),
+                vmodel)
+            if v is None:               # verifier errored → keep (don't hide)
+                kept.append(r)
+            elif v[0]:                  # confirmed real
+                r["verify_reason"] = v[1]
+                kept.append(r)
+            else:
+                dropped += 1
+        records = kept
+        print(f"{DIM}  Verify: kept {len(records)}, dropped {dropped} "
+              f"unconfirmed.{RESET}")
+
     err_note = ""
     if any(model_errors.values()):
         err_note = ("  ·  " + YELLOW + "; ".join(

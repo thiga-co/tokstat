@@ -382,6 +382,13 @@ model). By default **every** conversation in the period is judged; because local
 judging is slow (and there can be hundreds across all tools), use `--judge-max`
 to cap it, and `--period` / `--tool` to narrow the scope.
 
+**Verify pass** (`--verify`). Small judges over-flag — they call a clarification,
+a restatement or a mere observation a "contradiction". `--verify` re-checks each
+finding with a narrow, skeptical second prompt ("is this GENUINELY that defect?
+default no") and drops the ones it can't confirm. Verifying is far easier than
+detecting, so this cuts false positives even with the same local model (one
+extra call per finding). Findings that survive show the verifier's reason.
+
 **Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
 each conversation judged by every model and the findings **aggregated by vote**:
 a finding flagged by more models ranks higher and shows its tally (e.g. `2/3`),

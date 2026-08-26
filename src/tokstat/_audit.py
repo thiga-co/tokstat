@@ -504,6 +504,57 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
     return _findings_from_judge(parsed, conv), stats
 
 
+_VERIFY_SYSTEM = (
+    "You double-check ONE audit finding. Be SKEPTICAL and DEFAULT TO NOT A "
+    "DEFECT — verifying is easier than detecting, so reject anything that isn't "
+    "clearly the claimed defect. Given the metric, the flagged quote, the "
+    "assistant's turn and the user's request, decide if it is GENUINELY that "
+    "defect.\n"
+    "It is NOT a defect (real=false) if it is any of: a clarification or "
+    "correction of the user's mistaken premise; a restatement or rephrasing of "
+    "the same fact; a refinement of an estimate; an honest self-correction; a "
+    "claim transparently attributed to a source; two statements about different "
+    "things; a factual claim the assistant verified with a tool; or a mere "
+    "observation. For 'contradiction' specifically, real=true ONLY if the two "
+    "statements are LOGICALLY INCOMPATIBLE (both cannot be true at once).\n"
+    "Return JSON {\"real\": <bool>, \"reason\": \"<one sentence>\"}."
+)
+
+_VERIFY_FORMAT = {
+    "type": "object",
+    "properties": {"real": {"type": "boolean"}, "reason": {"type": "string"}},
+    "required": ["real"],
+}
+
+
+def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
+                          model, host: str = OLLAMA_HOST, timeout: int = 120):
+    """Adversarial second pass: re-check ONE finding with a narrow, skeptical
+    prompt. Returns (real: bool, reason: str), or None if the check couldn't
+    run (caller should then KEEP the finding rather than silently drop it)."""
+    user = ("Metric claimed: " + str(metric) + "\n"
+            "Flagged quote: " + str(evidence or "")[:400] + "\n"
+            "User asked: " + str(user_ask or "")[:300] + "\n"
+            "Assistant turn: " + str(assistant_excerpt or "")[:800] + "\n\n"
+            "Is this GENUINELY '" + str(metric) + "'?")
+    payload = {
+        "model": model, "stream": False, "format": _VERIFY_FORMAT,
+        "options": {"temperature": 0, "num_predict": 400}, "think": False,
+        "messages": [{"role": "system", "content": _VERIFY_SYSTEM},
+                     {"role": "user", "content": user}],
+    }
+    req = urllib.request.Request(host.rstrip("/") + "/api/chat",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        parsed = _parse_judge_json((data.get("message") or {}).get("content", ""))
+        return bool(parsed.get("real")), str(parsed.get("reason", ""))[:200]
+    except Exception:
+        return None
+
+
 def benchmark_ollama(model: str, host: str = OLLAMA_HOST,
                      timeout: int = 300) -> dict:
     """Measure the judge model's speed on this machine via Ollama's own timing
