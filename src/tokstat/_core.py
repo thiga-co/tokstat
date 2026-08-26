@@ -1708,7 +1708,7 @@ def _audit_finding_context(conv, turn_index, evidence=""):
 def show_audit(collect_fn, period_name: str | None = None,
                tool_filter: str | None = None, judge_model: str | None = None,
                judge_max: int | None = None, limit: int = 20,
-               verify: bool = False, verify_model: str | None = None):
+               verify: bool = False):
     """Audit conversations across all tools for behavioural/quality issues.
 
     Every one of the 12 metrics is evaluated by a LOCAL LLM judge via Ollama —
@@ -1841,11 +1841,7 @@ def show_audit(collect_fn, period_name: str | None = None,
     # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
     # cation/repetition mistaken for a defect" over-flagging.
     if verify and records:
-        vmodel = verify_model or live[0]
-        if verify_model and not _audit.ollama_has_model(verify_model):
-            print(f"  {YELLOW}⚠ verify model '{verify_model}' not installed — "
-                  f"using {live[0]} instead.{RESET}")
-            vmodel = live[0]
+        vmodel = live[0]
         print(f"{DIM}  Verifying {len(records)} findings with {BOLD}{vmodel}{RESET}"
               f"{DIM} (skeptical second pass)…{RESET}", flush=True)
         kept = []

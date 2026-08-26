@@ -516,9 +516,7 @@ _VERIFY_SYSTEM = (
     "claim transparently attributed to a source; two statements about different "
     "things; a factual claim the assistant verified with a tool; or a mere "
     "observation. For 'contradiction' specifically, real=true ONLY if the two "
-    "statements are LOGICALLY INCOMPATIBLE (both cannot be true at once). A "
-    "plan or sequence with several milestone dates/numbers (e.g. start J+6, end "
-    "J+8, go-live J+12) is ONE coherent timeline, NOT a contradiction.\n"
+    "statements are LOGICALLY INCOMPATIBLE (both cannot be true at once).\n"
     "Return JSON {\"real\": <bool>, \"reason\": \"<one sentence>\"}."
 )
 
