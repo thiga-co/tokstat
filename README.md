@@ -6,7 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
-- **unreleased** — `--audit` *(experimental)*: local conversation-quality audit across all tools, scoring 12 behavioural metrics with a local Ollama LLM-as-judge (nothing leaves the machine). Judge sees the assistant's own prose + real tool-output snippets; multi-model **panel with vote aggregation**; a skeptical **`--verify`** second pass and optional stronger **`--claude-judge` / `--codex-judge` "juges de paix"** (run the same audit through the Claude and/or Codex CLI as independent references — the one off-machine part, opt-in and warned) that confirm/overturn local findings and surface what they missed; each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model size.
+- **unreleased** — `--audit` *(experimental)*: conversation-quality audit across all tools, scoring 12 behavioural metrics with an LLM-as-judge. You pick the judge explicitly (at least one, else it errors): **`--ollama-judge`** (LOCAL, nothing leaves the machine; `--model` picks it), **`--claude-judge`** and **`--codex-judge`** (via that CLI, off-machine, opt-in + warned). Each is an autonomous judge; combine them for a **voting panel** (findings aggregated by vote, tally shown). Judge sees the assistant's own prose + real tool-output snippets; a skeptical **`--verify`** second pass (Ollama) cuts false positives (with a dedicated contradiction check that makes the model name both incompatible statements); each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model strength.
 - **1.9.0** — Overview now shows, per tool, the **data span** and the **"since" date** of its records in the selected period (next to the record count), so history depth is visible at a glance. Added **data-retention alerts**: when a tool purges old local data on a rolling window (e.g. Claude Code's `cleanupPeriodDays`, default 30), a warning appears at the top of both `tokstat` and the per-tool commands so the numbers and "since" dates aren't mistaken for full lifetime usage. Tools that keep everything (e.g. Codex session rollouts) produce no alert.
 - **1.8.2** — `--impact` correctness fixes: (1) honor EcoLogits' `active_parameters` field for MoE models given as a scalar total + separate active count (e.g. `command-a-plus`: 218B total / 25B active — was counted as 218B active); (2) constrain model matching to exact + version-boundary base names, so a generic name no longer resolves to an arbitrary specific variant (`claude-sonnet-4` → `claude-sonnet-4-5`, `gemini-2.5` → `gemini-2.5-flash-image`); (3) base the "matched / not in DB" accounting on computed energy, so a known model with only prefill/cache tokens (no output) is no longer reported as unmatched; (4) actually read `prefill_factor` / `cache_read_factor` from `impact.json` (previously documented but ignored).
 - **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
@@ -334,16 +334,28 @@ defaults above.
 
 Scans your local transcripts for behavioural/quality issues in the assistant's
 messages, **across every supported tool** (Claude Code, Codex, Cursor, Kiro,
-Gemini, opencode, and imported web exports). **All 12 metrics are evaluated by a
-local LLM-as-judge** (via [Ollama](https://ollama.com)), so **nothing leaves
-your machine** and there's no API cost — tokstat stays fully local.
+Gemini, opencode, and imported web exports). All 12 metrics are evaluated by an
+**LLM-as-judge**, and you **choose the judge** explicitly — there is no implicit
+default, so `--audit` with no judge selected errors out. Pick at least one of:
+
+- **`--ollama-judge`** — judge **locally** via [Ollama](https://ollama.com):
+  nothing leaves your machine, no API cost. `--model` picks the model(s).
+- **`--claude-judge`** — judge via the **Claude CLI** (`claude -p`).
+- **`--codex-judge`** — judge via the **Codex CLI** (`codex exec`).
+
+Each selected judge is **autonomous**: it runs the full audit and produces its
+own findings (the CLI judges are *not* arbiters of Ollama's output). Select
+several and they form a **voting panel** — a finding flagged by more judges ranks
+higher and shows its tally (e.g. `2/3`).
 
 ```sh
-tokstat --audit                            # judge all 12 metrics, all tools
-tokstat --audit --tool codex               # scope to one tool
-tokstat --audit --model gemma4:31b         # pick a larger, higher-quality model
-tokstat --audit --model llama3.2:3b,qwen3.8:27b,gemma4:31b   # judge PANEL (votes)
-tokstat --audit --judge-max 20             # cap conversations judged (default: no cap)
+tokstat --audit --ollama-judge                       # local judge, auto-picked model
+tokstat --audit --ollama-judge --model gemma4:31b    # local, a larger/better model
+tokstat --audit --claude-judge                       # judge via Claude (off-machine)
+tokstat --audit --codex-judge                        # judge via Codex  (off-machine)
+tokstat --audit --ollama-judge --claude-judge --codex-judge   # 3-way voting panel
+tokstat --audit --ollama-judge --model a,b,c         # multi-model local panel
+tokstat --audit --ollama-judge --judge-max 20        # cap conversations judged
 ```
 
 | metric | |
@@ -375,12 +387,14 @@ always quotes the assistant, never the user (the user is not audited). An earlie
 (regex/heuristic) tier was dropped: on real data it mostly surfaced noise, and
 the judge covers the same ground with far better precision.
 
-Requires Ollama running (`http://localhost:11434`, override with `OLLAMA_HOST`)
-with at least one instruct model installed. A fast model is auto-picked for
-triage; pass `--model` for a larger, higher-quality one (e.g. a 27–35B instruct
-model). By default **every** conversation in the period is judged; because local
-judging is slow (and there can be hundreds across all tools), use `--judge-max`
-to cap it, and `--period` / `--tool` to narrow the scope.
+The local judge (`--ollama-judge`) requires Ollama running
+(`http://localhost:11434`, override with `OLLAMA_HOST`) with at least one instruct
+model installed; a fast model is auto-picked for triage, pass `--model` for a
+larger, higher-quality one (e.g. a 27–35B instruct model). The CLI judges
+(`--claude-judge` / `--codex-judge`) require that CLI on your `PATH` and logged
+in. By default **every** conversation in the period is judged; because judging is
+slow (and there can be hundreds across all tools) — and the CLI judges cost API
+usage — use `--judge-max` to cap it, and `--period` / `--tool` to narrow scope.
 
 **Verify pass** (`--verify`). Small judges over-flag — they call a clarification,
 a restatement or a mere observation a "contradiction". `--verify` re-checks each
@@ -398,40 +412,28 @@ by a plain yes/no verify but correctly dropped once the same small model is made
 to name the two statements, while a genuine "uses PostgreSQL" / "uses MySQL"
 conflict is kept.
 
-**Juge de paix** (`--claude-judge`, `--codex-judge`). Local judges are the ceiling
-— small models over-flag and miss subtle issues. These opt-in modes run the
-**same audit through the Claude CLI** (`claude -p`) and/or the **Codex CLI**
-(`codex exec`) over the same conversations, as independent, much stronger
-reference judges. You can enable either or both; each one's findings are compared
-to the local panel:
+**Off-machine judges** (`--claude-judge`, `--codex-judge`). The local models are
+the quality ceiling — small ones over-flag and miss subtle issues. The CLI judges
+are much stronger. They run the **same audit** autonomously (Claude via
+`claude -p`, Codex via `codex exec`) and, when combined with `--ollama-judge`,
+vote alongside it.
 
-- each local finding is marked `✓ Claude` / `✓ Codex` (independently confirmed) or
-  `✗ Claude` / `✗ Codex` (that arbiter disagrees — likely a false positive);
-- a **Missed by the local panel** section per arbiter lists what it caught that
-  the local judges didn't;
-- API cost (Claude) or token usage (Codex — usually covered by your plan) is
-  reported.
+> ⚠ Unlike `--ollama-judge`, these **send transcript excerpts to the Claude /
+> Codex API** — the part that leaves the machine. Opt-in, with a warning before
+> running. `--claude-model` / `--codex-model <name>` pick the model (default:
+> your configured one). Claude costs roughly a few cents to ~$0.15 per
+> conversation and is reported at the end; Codex under a ChatGPT plan has no
+> per-call cost. Pair with `--judge-max`.
 
-> ⚠ Unlike the rest of the audit, these **send transcript excerpts to the Claude
-> / Codex API** — the one part that leaves the machine. Strictly opt-in, with a
-> warning before running. `--claude-model` / `--codex-model <name>` pick the
-> model (default: your configured one). Claude costs roughly a few cents to
-> ~$0.15 per conversation, so pair it with `--judge-max`.
-
-In a real run both arbiters overturned a 4B panel's `contradiction` finding
-(a false positive — `✗ Claude ✗ Codex`) **and** independently flagged the same
-sentence the panel had missed — a claim about purged/irrecoverable data asserted
-as fact before the tools had checked (Claude called it `unsupported_claim`, Codex
-`overconfidence`). Two strong judges converging is a much stronger signal than a
-panel of small local models agreeing.
-
-**Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
-each conversation judged by every model and the findings **aggregated by vote**:
-a finding flagged by more models ranks higher and shows its tally (e.g. `2/3`),
-so consensus stands out and lone calls are visibly weak. It costs one judge run
-per model per conversation, so it's slower. If a model isn't installed the run
-stops with the list of available models; if a judge errors at runtime the error
-is reported per model rather than silently counted as "clean".
+**Voting panel.** Select several judges (any mix of `--ollama-judge` models and
+the CLI judges) and each conversation is judged by every one; findings are
+**aggregated by vote** — a finding flagged by more judges ranks higher and shows
+its tally (e.g. `2/3`), so consensus stands out and lone calls are visibly weak.
+A mixed panel is the strongest signal: in a real run a 4B local judge flagged a
+`contradiction` that both a Claude and a Codex judge declined (`1/3` — a visible
+false positive), while a claim about purged/irrecoverable data asserted as fact
+was caught by the stronger judges. If a judge errors at runtime the error is
+reported per judge rather than silently counted as "clean".
 
 > Findings are **leads to review, not verdicts** — a small local model misses
 > things and can misjudge; factual hallucination in particular needs external

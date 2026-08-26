@@ -1726,22 +1726,28 @@ def show_audit(collect_fn, period_name: str | None = None,
                tool_filter: str | None = None, judge_model: str | None = None,
                judge_max: int | None = None, limit: int = 20,
                verify: bool = False,
+               ollama_judge: bool = False,
                claude_judge: bool = False, claude_model: str | None = None,
                codex_judge: bool = False, codex_model: str | None = None):
     """Audit conversations across all tools for behavioural/quality issues.
 
-    Every one of the 12 metrics is evaluated by a LOCAL LLM judge via Ollama —
-    fully local, nothing leaves the machine. `judge_model` overrides the
-    auto-picked Ollama model; `judge_max` caps how many (most recent)
-    conversations are judged (None = no cap — local judging is slow, so this
-    can take a while).
+    The judge is chosen explicitly — at least one of these must be passed, or
+    the audit errors out (there is no implicit default judge):
 
-    `claude_judge` / `codex_judge` add independent, stronger "juges de paix":
-    the SAME audit run through the Claude and/or Codex CLI over the same
-    conversations, whose findings are compared to the local panel (agreement +
-    what the local panel missed). These send transcript excerpts to the
-    respective API — the one non-local part — so they are opt-in and warned.
-    `claude_model` / `codex_model` override which model each one uses."""
+      • `ollama_judge`  — judge LOCALLY via Ollama (nothing leaves the machine).
+                          `judge_model` picks the model(s), comma-separated for
+                          a multi-model panel; auto-picks one if omitted.
+      • `claude_judge`  — judge via the Claude CLI (`claude_model` picks it).
+      • `codex_judge`   — judge via the Codex CLI (`codex_model` picks it).
+
+    Each selected backend is an AUTONOMOUS judge that runs the full audit and
+    produces its own findings; the CLI judges are NOT arbiters of Ollama's
+    output. When several are selected they form a PANEL and findings are
+    aggregated by vote (a finding flagged by more judges ranks higher). The CLI
+    judges send transcript excerpts to their API — the non-local part — so they
+    are opt-in and warned. `judge_max` caps how many (most recent) conversations
+    are judged (None = no cap). `verify` re-checks findings with a skeptical
+    second pass and only applies when an Ollama judge is active."""
     from tokstat import _audit
 
     print(f"\n{BOLD} Conversation Audit{RESET}")
@@ -1759,28 +1765,63 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"  {YELLOW}No conversations found for this period.{RESET}\n")
         return
 
-    installed = _audit.list_ollama_models()
-    if not installed:
-        print(f"  {YELLOW}⚠ The audit judge needs a local Ollama model, but "
-              f"Ollama is unreachable on {_audit.OLLAMA_HOST} (or no model is "
-              f"installed).{RESET}")
-        print(f"  {DIM}Install Ollama (https://ollama.com), pull a model "
-              f"(e.g. `ollama pull llama3.2:3b`), then retry.{RESET}\n")
+    # ── Select judge backend(s). Each is an AUTONOMOUS judge (runs the full
+    # audit, produces its own findings); several → a panel aggregated by vote.
+    # At least one must be requested — there is no implicit default judge.
+    if not (ollama_judge or claude_judge or codex_judge):
+        print(f"  {RED}⚠ No judge selected — nothing to do.{RESET}")
+        print(f"  {DIM}Pass at least one judge: {BOLD}--ollama-judge{RESET}{DIM} "
+              f"(local, via Ollama), {BOLD}--claude-judge{RESET}{DIM} or "
+              f"{BOLD}--codex-judge{RESET}{DIM} (off-machine, via that CLI). "
+              f"Combine them for a voting panel.{RESET}\n")
         return
-    # A comma-separated --model runs a PANEL of judges (votes shown per finding).
-    if judge_model:
-        models = list(dict.fromkeys(m.strip() for m in judge_model.split(",")
-                                    if m.strip()))
-    else:
-        auto = _audit.pick_ollama_model()
-        models = [auto] if auto else []
-    missing = [m for m in models if not _audit.ollama_has_model(m)]
-    if missing or not models:
-        print(f"  {YELLOW}⚠ Ollama model(s) not installed: "
-              f"{', '.join(missing) or '(none given)'} — the judge cannot run.{RESET}")
-        print(f"  {DIM}Installed models: {', '.join(installed)}{RESET}")
-        print(f"  {DIM}Pass one or more with --model a,b,c or "
-              f"`ollama pull {(missing or ['llama3.2:3b'])[0]}`.{RESET}\n")
+
+    # voters: each {label, kind, fn(conv)->(findings, stats)}
+    voters: list = []
+    if ollama_judge:
+        installed = _audit.list_ollama_models()
+        if not installed:
+            print(f"  {YELLOW}⚠ --ollama-judge: Ollama unreachable on "
+                  f"{_audit.OLLAMA_HOST} (or no model installed) — skipped.{RESET}")
+        else:
+            if judge_model:
+                oms = list(dict.fromkeys(m.strip() for m in judge_model.split(",")
+                                         if m.strip()))
+            else:
+                auto = _audit.pick_ollama_model()
+                oms = [auto] if auto else []
+            missing = [m for m in oms if not _audit.ollama_has_model(m)]
+            if missing:
+                print(f"  {YELLOW}⚠ Ollama model(s) not installed: "
+                      f"{', '.join(missing)} — skipped.{RESET}")
+                print(f"  {DIM}Installed: {', '.join(installed)}{RESET}")
+            for m in oms:
+                if m and m not in missing:
+                    voters.append({"label": m, "kind": "ollama",
+                                   "fn": (lambda c, _m=m:
+                                          _audit.judge_conversation_ollama(c, _m))})
+            if not any(v["kind"] == "ollama" for v in voters):
+                print(f"  {YELLOW}⚠ --ollama-judge: no usable model "
+                      f"(pass one with --model).{RESET}")
+    if claude_judge:
+        if _audit.claude_cli_available():
+            voters.append({"label": "Claude", "kind": "claude",
+                           "fn": (lambda c: _audit.judge_conversation_claude(
+                               c, claude_model))})
+        else:
+            print(f"  {YELLOW}⚠ --claude-judge: 'claude' CLI not found on PATH — "
+                  f"skipped.{RESET}")
+    if codex_judge:
+        if _audit.codex_cli_available():
+            voters.append({"label": "Codex", "kind": "codex",
+                           "fn": (lambda c: _audit.judge_conversation_codex(
+                               c, codex_model))})
+        else:
+            print(f"  {YELLOW}⚠ --codex-judge: 'codex' CLI not found on PATH — "
+                  f"skipped.{RESET}")
+
+    if not voters:
+        print(f"\n  {RED}⚠ No usable judge — nothing was audited.{RESET}\n")
         return
 
     def _in_window(f):
@@ -1794,51 +1835,38 @@ def show_audit(collect_fn, period_name: str | None = None,
     to_judge = ordered if judge_max is None else ordered[:judge_max]
     judged_n = len(to_judge)
     cap_note = "" if judge_max is None else f" (capped at {judge_max})"
-    panel = (f"panel of {len(models)}: {', '.join(models)}"
-             if len(models) > 1 else f"model {models[0]}")
-    print(f"{DIM}  Judge: local Ollama {BOLD}{panel}{RESET}{DIM} on "
-          f"{judged_n}/{len(convs)} conversations{cap_note}. "
-          f"Fully local — nothing leaves the machine.{RESET}")
-    # Optional stronger "juges de paix": independent CLI judges (Claude / Codex)
-    # that re-run the SAME audit as a reference. They send excerpts off-machine,
-    # so each is opt-in and warned. (label, key, judge_fn, model, has_usd_cost)
-    arbiters_cfg = []
-    if claude_judge:
-        if _audit.claude_cli_available():
-            arbiters_cfg.append(("Claude", "claude",
-                                 _audit.judge_conversation_claude,
-                                 claude_model, True))
-        else:
-            print(f"  {YELLOW}⚠ --claude-judge: 'claude' CLI not found on PATH — "
-                  f"skipped.{RESET}")
-    if codex_judge:
-        if _audit.codex_cli_available():
-            arbiters_cfg.append(("Codex", "codex",
-                                 _audit.judge_conversation_codex,
-                                 codex_model, False))
-        else:
-            print(f"  {YELLOW}⚠ --codex-judge: 'codex' CLI not found on PATH — "
-                  f"skipped.{RESET}")
-    if arbiters_cfg:
-        names = " + ".join(a[0] for a in arbiters_cfg)
-        print(f"  {BYELLOW}⚠ juge de paix ({names}) sends conversation excerpts "
-              f"to the {names} API{RESET}{DIM} — the one part of this audit that "
-              f"leaves the machine. Ctrl-C now to cancel.{RESET}")
+    labels = ", ".join(v["label"] for v in voters)
+    kinds = {v["kind"] for v in voters}
+    where = ("Fully local — nothing leaves the machine."
+             if kinds == {"ollama"} else "")
+    head = "Judge panel" if len(voters) > 1 else "Judge"
+    print(f"{DIM}  {head}: {BOLD}{labels}{RESET}{DIM} on "
+          f"{judged_n}/{len(convs)} conversations{cap_note}. {where}{RESET}")
+    cli_labels = [v["label"] for v in voters if v["kind"] in ("claude", "codex")]
+    if cli_labels:
+        names = " + ".join(cli_labels)
+        print(f"  {BYELLOW}⚠ {names}: conversation excerpts are sent to the "
+              f"provider API{RESET}{DIM} — off-machine. Ctrl-C now to cancel.{RESET}")
 
-    # Aggregate findings across models: same (session, metric, turn) → one
-    # issue, with the set of models that flagged it (its "votes").
+    # Aggregate findings across judges: same (session, metric, turn) → one
+    # issue, with the set of judges that flagged it (its "votes").
     #
-    # One WAVE PER MODEL (model in the outer loop): Ollama keeps a model warm
-    # in VRAM between consecutive calls, so judging every conversation with one
-    # model before moving to the next avoids reloading models on each item.
+    # One WAVE PER JUDGE (judge in the outer loop): for Ollama this keeps a
+    # model warm in VRAM between consecutive calls; for the CLI judges it just
+    # runs them in turn.
     agg: dict = {}
-    model_errors: dict = {m: 0 for m in models}
-    # Ollama timing accumulators per model → prefill/decode throughput.
-    perf: dict = {m: {"p_tok": 0, "p_ns": 0, "o_tok": 0, "o_ns": 0} for m in models}
-    live = []
-    for mi, m in enumerate(models, 1):
-        if len(models) > 1:
-            print(f"{DIM}  Model {mi}/{len(models)}: {BOLD}{m}{RESET}", flush=True)
+    verrors: dict = {v["label"]: 0 for v in voters}
+    # Per-judge stats: Ollama timing (p_tok/…) OR CLI cost/tokens (cost/in/…).
+    vstats: dict = {v["label"]: {"p_tok": 0, "p_ns": 0, "o_tok": 0, "o_ns": 0,
+                                 "cost": 0.0, "in": 0, "out": 0, "tokens": 0}
+                    for v in voters}
+    live = []           # judge labels that ran at least partly
+    live_ollama = []    # Ollama judge labels (for --verify + speed table)
+    for vi, v in enumerate(voters, 1):
+        label = v["label"]
+        if len(voters) > 1:
+            print(f"{DIM}  Judge {vi}/{len(voters)}: {BOLD}{label}{RESET}",
+                  flush=True)
         broke = False
         for k, c in enumerate(to_judge, 1):
             proj = normalize_project(c.project) if c.project else "?"
@@ -1848,38 +1876,46 @@ def show_audit(collect_fn, period_name: str | None = None,
             print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
                   f"{proj} · {day} · {len(c.turns)} turns{RESET}", flush=True)
             try:
-                res, stats = _audit.judge_conversation_ollama(c, m)
+                res, stats = v["fn"](c)
             except _audit.JudgeError as e:
-                model_errors[m] += 1
-                print(f"      {YELLOW}⚠ {m} failed: {e}{RESET}")
-                # A model that fails on its very first call can't run at all —
-                # skip the rest of its wave instead of churning through every
-                # conversation repeating the same error.
+                verrors[label] += 1
+                print(f"      {YELLOW}⚠ {label} failed: {e}{RESET}")
+                # A judge that fails on its very first call can't run at all —
+                # skip the rest of its wave instead of repeating the error.
                 if k == 1:
-                    print(f"      {YELLOW}↳ skipping {m}.{RESET}")
+                    print(f"      {YELLOW}↳ skipping {label}.{RESET}")
                     broke = True
                     break
                 continue
-            for key_ in ("p_tok", "p_ns", "o_tok", "o_ns"):
-                perf[m][key_] += stats.get(key_, 0)
+            s = vstats[label]
+            if v["kind"] == "ollama":
+                for key_ in ("p_tok", "p_ns", "o_tok", "o_ns"):
+                    s[key_] += stats.get(key_, 0)
+            else:
+                s["cost"] += stats.get("cost_usd", 0.0)
+                s["in"] += stats.get("in_tok", 0)
+                s["out"] += stats.get("out_tok", 0)
+                s["tokens"] += stats.get("tokens", 0)
             for f in res:
                 if not _in_window(f):
                     continue
                 excerpt, ask, turn_ok, ridx = _audit_finding_context(
                     c, f.turn_index, f.evidence)
                 # Key on the RESOLVED turn so panel votes aggregate even when
-                # models report different (wrong) indices for the same issue.
+                # judges report different (wrong) indices for the same issue.
                 key = (f.session_id, f.metric, ridx if turn_ok else f.turn_index)
                 rec = agg.get(key)
                 if rec is None:
-                    agg[key] = {"best": f, "voters": {m}, "excerpt": excerpt,
+                    agg[key] = {"best": f, "voters": {label}, "excerpt": excerpt,
                                 "ask": ask, "turn_ok": turn_ok, "turn": ridx}
                 else:
-                    rec["voters"].add(m)
+                    rec["voters"].add(label)
                     if f.severity > rec["best"].severity:
                         rec["best"] = f
         if not broke:
-            live.append(m)
+            live.append(label)
+            if v["kind"] == "ollama":
+                live_ollama.append(label)
 
     if not live:
         print(f"\n  {RED}⚠ Every judge failed — no audit was performed "
@@ -1891,8 +1927,11 @@ def show_audit(collect_fn, period_name: str | None = None,
     # ── Adversarial verify pass (opt-in): re-check each finding with a narrow,
     # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
     # cation/repetition mistaken for a defect" over-flagging.
-    if verify and records:
-        vmodel = live[0]
+    if verify and records and not live_ollama:
+        print(f"{DIM}  --verify skipped: it re-checks findings with a local "
+              f"Ollama model, and no --ollama-judge is active.{RESET}")
+    if verify and records and live_ollama:
+        vmodel = live_ollama[0]
         total = len(records)
         print(f"{DIM}  Verifying {total} findings with {BOLD}{vmodel}{RESET}"
               f"{DIM} (skeptical second pass)…{RESET}", flush=True)
@@ -1925,74 +1964,19 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"\r{' ':<72}\r{DIM}  Verify: kept {len(records)}, dropped "
               f"{dropped} unconfirmed.{RESET}")
 
-    # ── Juges de paix: independent CLI judges over the same conversations.
-    # Each one's findings become a reference: every local finding is marked
-    # confirmed / not-flagged per arbiter, and anything an arbiter caught that
-    # the local panel missed is surfaced. (Off-machine — announced + warned.)
-    arbiter_results: list = []
-    for label, key, judge_fn, amodel, has_cost in arbiters_cfg:
-        print(f"\n  {BOLD}Juge de paix — {label}{RESET} {DIM}(independent, same "
-              f"{judged_n} conversations)…{RESET}", flush=True)
-        sm: dict = {}   # (session_id, metric) -> [finding info]
-        acc = {"cost": 0.0, "in": 0, "out": 0, "tokens": 0, "err": 0,
-               "model": amodel}
-        for k, c in enumerate(to_judge, 1):
-            proj = normalize_project(c.project) if c.project else "?"
-            proj = "/".join(proj.rstrip("/").split("/")[-2:]) or proj
-            day = c.ts.date().isoformat() if c.ts else "?"
-            tcol = TOOL_COLORS.get(c.tool, "")
-            print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
-                  f"{proj} · {day}{RESET}", flush=True)
-            try:
-                res, st = judge_fn(c, amodel)
-            except _audit.JudgeError as e:
-                acc["err"] += 1
-                print(f"      {YELLOW}⚠ {label} failed: {e}{RESET}")
-                continue
-            acc["cost"] += st.get("cost_usd", 0.0)
-            acc["in"] += st.get("in_tok", 0)
-            acc["out"] += st.get("out_tok", 0)
-            acc["tokens"] += st.get("tokens", 0)
-            acc["model"] = st.get("model") or amodel
-            for f in res:
-                if not _in_window(f):
-                    continue
-                excerpt, ask, turn_ok, ridx = _audit_finding_context(
-                    c, f.turn_index, f.evidence)
-                sm.setdefault((f.session_id, f.metric), []).append(
-                    {"f": f, "excerpt": excerpt, "ask": ask,
-                     "turn_ok": turn_ok, "turn": ridx})
-        # Match by (session, metric): turn-level matching across different judges
-        # is too noisy. A local finding is "confirmed" by this arbiter when it
-        # independently flagged the same metric in the same conversation.
-        akeys = set(sm.keys())
-        for r in records:
-            r.setdefault("arb", {})[key] = (
-                (r["best"].session_id, r["best"].metric) in akeys)
-        local_keys = {(r["best"].session_id, r["best"].metric) for r in records}
-        only = [i for smk, infos in sm.items() if smk not in local_keys
-                for i in infos]
-        arbiter_results.append({
-            "label": label, "key": key, "has_cost": has_cost,
-            "confirmed": sum(1 for r in records if r["arb"].get(key)),
-            "only": only, "err": acc["err"], "cost": acc["cost"],
-            "in": acc["in"], "out": acc["out"], "tokens": acc["tokens"],
-            "model": acc["model"],
-        })
-
     err_note = ""
-    if any(model_errors.values()):
+    if any(verrors.values()):
         err_note = ("  ·  " + YELLOW + "; ".join(
-            f"{m}: {model_errors[m]} errors" for m in models if model_errors[m])
+            f"{lbl}: {verrors[lbl]} errors" for lbl in verrors if verrors[lbl])
             + RESET)
     print(f"\n  Period: {BOLD}{period_label}{RESET}  ·  "
           f"{len(convs)} conversations ({judged_n} judged)  ·  "
           f"{len(records)} findings{err_note}")
 
-    # ── Judge speed on this machine (from Ollama's timing stats) ────────────
+    # ── Judge speed on this machine (Ollama judges only, from timing stats) ──
     speed_rows = []
-    for m in models:
-        p = perf[m]
+    for m in live_ollama:
+        p = vstats[m]
         pf = (p["p_tok"] / (p["p_ns"] / 1e9)) if p["p_ns"] else None
         dc = (p["o_tok"] / (p["o_ns"] / 1e9)) if p["o_ns"] else None
         if pf or dc:
@@ -2011,9 +1995,9 @@ def show_audit(collect_fn, period_name: str | None = None,
     for r in records:
         by_metric[r["best"].metric].append(r)
 
-    n_judges = len(live)   # models that actually ran → vote denominator
-    panel_note = (" · vote = models agreeing" if n_judges > 1 else "")
-    print(f"\n  {BOLD}By metric{RESET} {DIM}(local LLM judge{panel_note}){RESET}")
+    n_judges = len(live)   # judges that actually ran → vote denominator
+    panel_note = (" · vote = judges agreeing" if n_judges > 1 else "")
+    print(f"\n  {BOLD}By metric{RESET} {DIM}({', '.join(live)}{panel_note}){RESET}")
     for metric in _audit.ALL_METRICS:
         rs = by_metric.get(metric, [])
         n = len(rs)
@@ -2039,14 +2023,9 @@ def show_audit(collect_fn, period_name: str | None = None,
                     if n_judges > 1 else "")
             turn = (f" · turn {r.get('turn')}" if r.get("turn_ok")
                     else " · turn ? (unlocatable)")
-            arb = ""
-            for ares in arbiter_results:
-                ok = r.get("arb", {}).get(ares["key"])
-                arb += (f" {GREEN}✓ {ares['label']}{RESET}" if ok
-                        else f" {DIM}✗ {ares['label']}{RESET}")
             print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
                   f"{BOLD}{f.metric}{RESET} {DIM}· {vote}{tcol}{f.tool}{RESET}"
-                  f"{DIM} · {when} · {proj}{turn}{RESET}{arb}")
+                  f"{DIM} · {when} · {proj}{turn}{RESET}")
             if n_judges > 1:
                 print(f"        {DIM}votes:{RESET} {', '.join(sorted(r['voters']))}")
             print(f"        {DIM}why:  {RESET}{f.rationale}")
@@ -2062,49 +2041,29 @@ def show_audit(collect_fn, period_name: str | None = None,
                 print(f"        {DIM}(the flagged quote matches no assistant turn "
                       f"— likely fabricated/paraphrased; treat with suspicion){RESET}")
 
-    # ── Juges de paix verdicts (independent reference judges) ───────────────
-    for ares in arbiter_results:
-        errn = (f" · {YELLOW}{ares['err']} conversations errored{RESET}"
-                if ares["err"] else "")
-        print(f"\n  {BOLD}Juge de paix verdict — {ares['label']}{RESET} "
-              f"{DIM}({ares['model'] or 'default model'}){RESET}")
-        print(f"    {GREEN}✓ {ares['confirmed']}{RESET}/{len(records)} local "
-              f"findings independently confirmed  ·  {BOLD}{len(ares['only'])}"
-              f"{RESET} it flagged that the local panel MISSED{errn}")
-        only = ares["only"]
-        if only:
-            only.sort(key=lambda i: -i["f"].severity)
-            print(f"    {BOLD}Missed by the local panel{RESET} "
-                  f"{DIM}(flagged only by {ares['label']}, max {limit}){RESET}")
-            for info in only[:limit]:
-                f = info["f"]
-                sev = _AUDIT_SEV_COLOR[f.severity]
-                when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
-                proj = normalize_project(f.project) if f.project else "?"
-                tcol = TOOL_COLORS.get(f.tool, "")
-                turn = (f" · turn {info.get('turn')}" if info.get("turn_ok")
-                        else " · turn ? (unlocatable)")
-                print(f"      {sev}●{RESET} {BOLD}{f.metric}{RESET} "
-                      f"{DIM}· {tcol}{f.tool}{RESET}{DIM} · {when} · {proj}"
-                      f"{turn}{RESET}")
-                print(f"          {DIM}why:  {RESET}{f.rationale}")
-                if f.evidence:
-                    ev = " ".join(str(f.evidence).split())[:200]
-                    print(f"          {DIM}flagged:{RESET} \"{ev}\"")
-        if ares["has_cost"]:
-            print(f"    {DIM}{ares['label']} API cost: ${ares['cost']:.4f} · "
-                  f"{fmt_tokens(ares['in'])} in / {fmt_tokens(ares['out'])} out "
-                  f"(off-machine){RESET}")
+    # ── Off-machine judge cost / usage ──────────────────────────────────────
+    cost_lines = []
+    for v in voters:
+        if v["label"] not in live or v["kind"] not in ("claude", "codex"):
+            continue
+        s = vstats[v["label"]]
+        if v["kind"] == "claude":
+            cost_lines.append(f"{v['label']}: ${s['cost']:.4f} · "
+                              f"{fmt_tokens(s['in'])} in / {fmt_tokens(s['out'])} out")
         else:
-            usage = (f"~{fmt_tokens(ares['tokens'])} tokens · "
-                     if ares["tokens"] else "")
-            print(f"    {DIM}{ares['label']} usage: {usage}included in your "
-                  f"{ares['label']} plan (off-machine){RESET}")
+            usage = f"~{fmt_tokens(s['tokens'])} tokens · " if s["tokens"] else ""
+            cost_lines.append(f"{v['label']}: {usage}covered by your plan")
+    if cost_lines:
+        print(f"\n  {DIM}Off-machine judge usage: " + "  ·  ".join(cost_lines)
+              + RESET)
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
+    local = kinds == {"ollama"}
+    src = ("local LLM judge(s)" if local
+           else "LLM judge(s) — some off-machine (Claude/Codex API)")
     tip = (" A panel agreeing raises confidence; a lone vote is weak."
            if n_judges > 1 else "")
-    print(f"\n  {DIM}⚠ Findings come from local LLM judge(s) — leads to review, "
+    print(f"\n  {DIM}⚠ Findings come from {src} — leads to review, "
           f"not verdicts.{tip} Factual hallucination in particular needs "
           f"external ground truth beyond the transcript.{RESET}\n")
 

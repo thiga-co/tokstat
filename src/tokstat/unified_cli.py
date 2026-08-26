@@ -413,7 +413,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
-    "--verify", "--claude-judge", "--claude-model",
+    "--verify", "--ollama-judge", "--claude-judge", "--claude-model",
     "--codex-judge", "--codex-model",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
@@ -501,18 +501,17 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
-  tokstat --audit                          Conversation quality audit — all 12
-                                           metrics via LOCAL Ollama model(s)
-                                           (nothing leaves the machine).
-                                           --model a,b,c = judge panel (votes);
-                                           --verify = skeptical 2nd pass (cuts
-                                           false positives);
-                                           --claude-judge / --codex-judge = add
-                                           a stronger CLI "juge de paix" (sends
-                                           excerpts off-machine to that API;
-                                           --claude-model / --codex-model <m> to
-                                           pick the model);
-                                           [--model <name(s)>] [--judge-max <n>]
+  tokstat --audit                          Conversation quality audit — 12
+                                           behavioural metrics. Pick a judge
+                                           (at least one, else it errors):
+                                           --ollama-judge = LOCAL (nothing leaves
+                                           the machine; --model a,b,c picks the
+                                           model(s)); --claude-judge / --codex-
+                                           judge = via that CLI, off-machine
+                                           (--claude-model / --codex-model <m>).
+                                           Several = voting panel. --verify =
+                                           skeptical 2nd pass (Ollama only).
+                                           [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips
@@ -630,6 +629,7 @@ def cli():
         show_audit(collect, period, tool,
                    judge_model=_model_list(args), judge_max=jmax,
                    verify="--verify" in args,
+                   ollama_judge="--ollama-judge" in args,
                    claude_judge="--claude-judge" in args,
                    claude_model=_arg_value(args, "--claude-model"),
                    codex_judge="--codex-judge" in args,
