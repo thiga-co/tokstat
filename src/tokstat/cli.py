@@ -401,7 +401,7 @@ _TOOL_ALIASES = {
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
-    "--model", "--judge-max", "--verify",
+    "--model", "--judge-max", "--verify", "--claude-judge", "--claude-model",
     "--export", "--period", "--since", "--tool",
 }
 
@@ -519,7 +519,9 @@ def cli():
             jmax = None
         show_audit(_collect_all_exchanges, period, "claude",
                    judge_model=_arg_value(args, "--model"), judge_max=jmax,
-                   verify="--verify" in args)
+                   verify="--verify" in args,
+                   claude_judge="--claude-judge" in args,
+                   claude_model=_arg_value(args, "--claude-model"))
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

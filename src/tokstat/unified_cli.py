@@ -413,7 +413,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
-    "--verify",
+    "--verify", "--claude-judge", "--claude-model",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
@@ -506,6 +506,10 @@ def show_help():
                                            --model a,b,c = judge panel (votes);
                                            --verify = skeptical 2nd pass (cuts
                                            false positives);
+                                           --claude-judge = add a stronger
+                                           Claude-CLI "juge de paix" (sends
+                                           excerpts off-machine to the Claude
+                                           API; --claude-model <m> to pick it);
                                            [--model <name(s)>] [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
@@ -623,7 +627,9 @@ def cli():
             jmax = None
         show_audit(collect, period, tool,
                    judge_model=_model_list(args), judge_max=jmax,
-                   verify="--verify" in args)
+                   verify="--verify" in args,
+                   claude_judge="--claude-judge" in args,
+                   claude_model=_arg_value(args, "--claude-model"))
     elif "--plan" in args:
         show_plan(collect, period, tool)
     elif "--export" in args:

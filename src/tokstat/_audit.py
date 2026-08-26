@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -500,6 +502,71 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
         "p_ns": data.get("prompt_eval_duration") or 0,
         "o_tok": data.get("eval_count") or 0,
         "o_ns": data.get("eval_duration") or 0,
+    }
+    return _findings_from_judge(parsed, conv), stats
+
+
+# ─── Claude CLI judge (opt-in, NOT local) ───────────────────────────────────
+# An independent, much stronger "juge de paix": the same audit run through the
+# Claude CLI (`claude -p`) as a reference against the local Ollama panel. This
+# sends transcript excerpts to the Claude API — it is the ONE part of the audit
+# that leaves the machine, so it is strictly opt-in (--claude-judge) and warned.
+
+def claude_cli_available() -> bool:
+    """True if the `claude` CLI is on PATH (required for --claude-judge)."""
+    return shutil.which("claude") is not None
+
+
+def judge_conversation_claude(conv, model: str | None = None,
+                              timeout: int = 180) -> tuple[list, dict]:
+    """Run the SAME audit as the local judge, but via the Claude CLI, as an
+    independent reference judge. Returns (findings, stats); stats carries the
+    API cost + token usage the CLI reports. Raises JudgeError on failure.
+
+    NB: this sends the (sanitised) transcript to the Claude API — unlike the
+    Ollama judge, it is NOT local. Callers gate it behind an explicit flag."""
+    if not claude_cli_available():
+        raise JudgeError("`claude` CLI not found on PATH")
+    system = JUDGE_SYSTEM
+    if conv.ts:
+        system += (f"\n\nThis conversation took place on "
+                   f"{conv.ts.date().isoformat()}; treat that as the present — "
+                   f"dates near it are NOT in the future.")
+    prompt = (system + "\n\n" + _build_judge_user(conv)
+              + "\n\nReturn ONLY the JSON object described above — no prose, no "
+                "code fences, no tool use.")
+    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    if model:
+        cmd += ["--model", model]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise JudgeError(f"claude CLI timed out after {timeout}s") from e
+    except OSError as e:
+        raise JudgeError(f"claude CLI could not run: {e}") from e
+    if proc.returncode != 0:
+        raise JudgeError(f"claude CLI exited {proc.returncode}: "
+                         f"{(proc.stderr or '').strip()[:200]}")
+    try:
+        env = json.loads(proc.stdout)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise JudgeError(f"claude CLI: unparseable envelope: {e}") from e
+    if not isinstance(env, dict):
+        raise JudgeError("claude CLI: unexpected envelope shape")
+    if env.get("is_error"):
+        raise JudgeError(f"claude CLI error: {str(env.get('result'))[:200]}")
+    parsed = _parse_judge_json(env.get("result", ""))
+    usage = env.get("usage") or {}
+    in_tok = (usage.get("input_tokens") or 0) + \
+        (usage.get("cache_read_input_tokens") or 0) + \
+        (usage.get("cache_creation_input_tokens") or 0)
+    stats = {
+        "cost_usd": env.get("total_cost_usd") or 0.0,
+        "in_tok": in_tok,
+        "out_tok": usage.get("output_tokens") or 0,
+        "dur_ms": env.get("duration_ms") or 0,
+        "model": model or "default model",
     }
     return _findings_from_judge(parsed, conv), stats
 
