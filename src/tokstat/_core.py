@@ -1663,20 +1663,46 @@ _AUDIT_SEV_LABEL = {0: "info", 1: "low", 2: "med", 3: "high"}
 _AUDIT_SEV_COLOR = {0: DIM, 1: CYAN, 2: BYELLOW, 3: BRED}
 
 
-def _audit_finding_context(conv, turn_index):
-    """Pull the real transcript context for a finding so the user can judge it:
-    an excerpt of the actual assistant turn it points to, and the user request
-    that preceded it. Returns (excerpt, user_ask, turn_ok)."""
+def _audit_norm(s: str) -> str:
+    return " ".join((s or "").lower().replace("*", "").replace("`", "").split())
+
+
+def _audit_finding_context(conv, turn_index, evidence=""):
+    """Pull the real transcript context for a finding so the user can judge it.
+
+    Small models often report a WRONG turn index while quoting real text, so we
+    locate the turn by matching the evidence quote against the assistant turns
+    (falling back to the reported index). If no turn contains the evidence, the
+    'quote' was likely fabricated — signalled via turn_ok=False.
+    Returns (excerpt, user_ask, turn_ok, resolved_index)."""
     turns = conv.turns
-    turn_ok = 0 <= turn_index < len(turns)
+    probe = _audit_norm(evidence)[:60]
+    usable = len(probe) >= 12
+    def _has(t):
+        return usable and probe in _audit_norm(t.text)
+
+    idx = turn_index if 0 <= turn_index < len(turns) else None
+    if usable:
+        # Verify/locate by the quote: trust the index only if its text contains
+        # the quote; otherwise find the assistant turn that does. If none does,
+        # the quote is fabricated/paraphrased → unlocatable.
+        if idx is not None and _has(turns[idx]):
+            turn_ok = True
+        else:
+            match = next((j for j, t in enumerate(turns)
+                          if t.role == "assistant" and _has(t)), None)
+            idx, turn_ok = (match, True) if match is not None else (idx, False)
+    else:
+        # No usable quote to verify — fall back to a valid reported index.
+        turn_ok = idx is not None
     excerpt = ask = ""
     if turn_ok:
-        excerpt = " ".join((turns[turn_index].text or "").split())[:500]
-        for j in range(turn_index - 1, -1, -1):
+        excerpt = " ".join((turns[idx].text or "").split())[:500]
+        for j in range(idx - 1, -1, -1):
             if turns[j].role == "user" and turns[j].text:
                 ask = " ".join(turns[j].text.split())[:220]
                 break
-    return excerpt, ask, turn_ok
+    return excerpt, ask, turn_ok, (idx if turn_ok else turn_index)
 
 
 def show_audit(collect_fn, period_name: str | None = None,
@@ -1787,12 +1813,15 @@ def show_audit(collect_fn, period_name: str | None = None,
             for f in res:
                 if not _in_window(f):
                     continue
-                key = (f.session_id, f.metric, f.turn_index)
+                excerpt, ask, turn_ok, ridx = _audit_finding_context(
+                    c, f.turn_index, f.evidence)
+                # Key on the RESOLVED turn so panel votes aggregate even when
+                # models report different (wrong) indices for the same issue.
+                key = (f.session_id, f.metric, ridx if turn_ok else f.turn_index)
                 rec = agg.get(key)
                 if rec is None:
-                    excerpt, ask, turn_ok = _audit_finding_context(c, f.turn_index)
                     agg[key] = {"best": f, "voters": {m}, "excerpt": excerpt,
-                                "ask": ask, "turn_ok": turn_ok}
+                                "ask": ask, "turn_ok": turn_ok, "turn": ridx}
                 else:
                     rec["voters"].add(m)
                     if f.severity > rec["best"].severity:
@@ -1863,8 +1892,8 @@ def show_audit(collect_fn, period_name: str | None = None,
             tcol = TOOL_COLORS.get(f.tool, "")
             vote = (f"{BOLD}{len(r['voters'])}/{n_judges}{RESET}{DIM} · "
                     if n_judges > 1 else "")
-            turn = (f" · turn {f.turn_index}" if r.get("turn_ok") else
-                    f" · turn ?{'' if f.turn_index < 0 else ' (out of range)'}")
+            turn = (f" · turn {r.get('turn')}" if r.get("turn_ok")
+                    else " · turn ? (unlocatable)")
             print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
                   f"{BOLD}{f.metric}{RESET} {DIM}· {vote}{tcol}{f.tool}{RESET}"
                   f"{DIM} · {when} · {proj}{turn}{RESET}")
@@ -1880,8 +1909,8 @@ def show_audit(collect_fn, period_name: str | None = None,
             if r.get("excerpt"):
                 print(f"        {DIM}assistant said: \"{r['excerpt']}\"{RESET}")
             elif not r.get("turn_ok"):
-                print(f"        {DIM}(couldn't locate the turn — the model gave "
-                      f"an invalid index; treat with suspicion){RESET}")
+                print(f"        {DIM}(the flagged quote matches no assistant turn "
+                      f"— likely fabricated/paraphrased; treat with suspicion){RESET}")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
     tip = (" A panel agreeing raises confidence; a lone vote is weak."
