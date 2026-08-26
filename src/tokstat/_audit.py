@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -512,6 +513,19 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
 # sends transcript excerpts to the Claude API — it is the ONE part of the audit
 # that leaves the machine, so it is strictly opt-in (--claude-judge) and warned.
 
+def _cli_judge_prompt(conv) -> str:
+    """The full judge prompt (system rubric + temporal grounding + transcript)
+    as ONE string, for CLI judges that take a single prompt argument."""
+    system = JUDGE_SYSTEM
+    if conv.ts:
+        system += (f"\n\nThis conversation took place on "
+                   f"{conv.ts.date().isoformat()}; treat that as the present — "
+                   f"dates near it are NOT in the future.")
+    return (system + "\n\n" + _build_judge_user(conv)
+            + "\n\nReturn ONLY the JSON object described above — no prose, no "
+              "code fences, no tool use.")
+
+
 def claude_cli_available() -> bool:
     """True if the `claude` CLI is on PATH (required for --claude-judge)."""
     return shutil.which("claude") is not None
@@ -527,14 +541,7 @@ def judge_conversation_claude(conv, model: str | None = None,
     Ollama judge, it is NOT local. Callers gate it behind an explicit flag."""
     if not claude_cli_available():
         raise JudgeError("`claude` CLI not found on PATH")
-    system = JUDGE_SYSTEM
-    if conv.ts:
-        system += (f"\n\nThis conversation took place on "
-                   f"{conv.ts.date().isoformat()}; treat that as the present — "
-                   f"dates near it are NOT in the future.")
-    prompt = (system + "\n\n" + _build_judge_user(conv)
-              + "\n\nReturn ONLY the JSON object described above — no prose, no "
-                "code fences, no tool use.")
+    prompt = _cli_judge_prompt(conv)
     cmd = ["claude", "-p", prompt, "--output-format", "json"]
     if model:
         cmd += ["--model", model]
@@ -569,6 +576,106 @@ def judge_conversation_claude(conv, model: str | None = None,
         "model": model or "default model",
     }
     return _findings_from_judge(parsed, conv), stats
+
+
+def codex_cli_available() -> bool:
+    """True if the `codex` CLI is on PATH (required for --codex-judge)."""
+    return shutil.which("codex") is not None
+
+
+def _codex_output_schema() -> dict:
+    """Like _judge_format(), but in OpenAI strict-structured-output form as
+    `codex exec --output-schema` requires: every object needs
+    additionalProperties:false and ALL its properties listed in `required`."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "metric": {"type": "string", "enum": ALL_METRICS},
+                        "severity": {"type": "integer"},
+                        "turn": {"type": "integer"},
+                        "evidence": {"type": "string"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["metric", "severity", "turn", "evidence",
+                                 "rationale"],
+                },
+            },
+        },
+        "required": ["findings"],
+    }
+
+
+def _codex_tokens_used(stdout: str) -> int:
+    """Best-effort token total from `codex exec` output. The count follows a
+    'tokens used' line in a noisy TUI format (e.g. '12 ↑243'); take the largest
+    integer in the window as the total. 0 if not found."""
+    lo = (stdout or "").lower()
+    i = lo.find("tokens used")
+    if i < 0:
+        return 0
+    nums = [int(x.replace(",", "")) for x in
+            re.findall(r"[\d,]+", stdout[i:i + 60])]
+    return max(nums) if nums else 0
+
+
+def judge_conversation_codex(conv, model: str | None = None,
+                             timeout: int = 300) -> tuple[list, dict]:
+    """Run the SAME audit via the Codex CLI (`codex exec`) as an independent
+    reference judge. Uses --output-schema to force structured output and -o to
+    capture the final message. Returns (findings, stats); raises JudgeError on
+    failure. NOT local — sends the transcript to the Codex/OpenAI API, so
+    callers gate it behind an explicit flag."""
+    if not codex_cli_available():
+        raise JudgeError("`codex` CLI not found on PATH")
+    prompt = _cli_judge_prompt(conv)
+    schema_fd, schema_path = tempfile.mkstemp(prefix="tokstat-codex-",
+                                              suffix=".json")
+    out_path = schema_path + ".out"
+    try:
+        with os.fdopen(schema_fd, "w") as fh:
+            json.dump(_codex_output_schema(), fh)
+        # read-only sandbox: the judge only analyses text, never runs commands.
+        cmd = ["codex", "exec", prompt, "-s", "read-only",
+               "--skip-git-repo-check", "--output-schema", schema_path,
+               "-o", out_path]
+        if model:
+            cmd += ["-m", model]
+        try:
+            # codex exec also reads stdin and blocks on EOF — close it.
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=timeout, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired as e:
+            raise JudgeError(f"codex CLI timed out after {timeout}s") from e
+        except OSError as e:
+            raise JudgeError(f"codex CLI could not run: {e}") from e
+        if proc.returncode != 0:
+            raise JudgeError(
+                f"codex CLI exited {proc.returncode}: "
+                f"{(proc.stderr or proc.stdout or '').strip()[:200]}")
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                answer = fh.read()
+        except OSError as e:
+            raise JudgeError(f"codex CLI: no output produced: {e}") from e
+        parsed = _parse_judge_json(answer)
+        toks = _codex_tokens_used(proc.stdout)
+        # ChatGPT-auth Codex is a subscription — no per-call USD cost to report.
+        stats = {"cost_usd": 0.0, "in_tok": 0, "out_tok": 0, "tokens": toks,
+                 "dur_ms": 0, "model": model or "default model"}
+        return _findings_from_judge(parsed, conv), stats
+    finally:
+        for p in (schema_path, out_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 _VERIFY_SYSTEM = (

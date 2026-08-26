@@ -6,7 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
-- **unreleased** — `--audit` *(experimental)*: local conversation-quality audit across all tools, scoring 12 behavioural metrics with a local Ollama LLM-as-judge (nothing leaves the machine). Judge sees the assistant's own prose + real tool-output snippets; multi-model **panel with vote aggregation**; a skeptical **`--verify`** second pass and an optional stronger **`--claude-judge` "juge de paix"** (runs the same audit through the Claude CLI as an independent reference — the one off-machine part, opt-in and warned) that confirms/overturns local findings and surfaces what they missed; each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model size.
+- **unreleased** — `--audit` *(experimental)*: local conversation-quality audit across all tools, scoring 12 behavioural metrics with a local Ollama LLM-as-judge (nothing leaves the machine). Judge sees the assistant's own prose + real tool-output snippets; multi-model **panel with vote aggregation**; a skeptical **`--verify`** second pass and optional stronger **`--claude-judge` / `--codex-judge` "juges de paix"** (run the same audit through the Claude and/or Codex CLI as independent references — the one off-machine part, opt-in and warned) that confirm/overturn local findings and surface what they missed; each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model size.
 - **1.9.0** — Overview now shows, per tool, the **data span** and the **"since" date** of its records in the selected period (next to the record count), so history depth is visible at a glance. Added **data-retention alerts**: when a tool purges old local data on a rolling window (e.g. Claude Code's `cleanupPeriodDays`, default 30), a warning appears at the top of both `tokstat` and the per-tool commands so the numbers and "since" dates aren't mistaken for full lifetime usage. Tools that keep everything (e.g. Codex session rollouts) produce no alert.
 - **1.8.2** — `--impact` correctness fixes: (1) honor EcoLogits' `active_parameters` field for MoE models given as a scalar total + separate active count (e.g. `command-a-plus`: 218B total / 25B active — was counted as 218B active); (2) constrain model matching to exact + version-boundary base names, so a generic name no longer resolves to an arbitrary specific variant (`claude-sonnet-4` → `claude-sonnet-4-5`, `gemini-2.5` → `gemini-2.5-flash-image`); (3) base the "matched / not in DB" accounting on computed energy, so a known model with only prefill/cache tokens (no output) is no longer reported as unmatched; (4) actually read `prefill_factor` / `cache_read_factor` from `impact.json` (previously documented but ignored).
 - **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
@@ -398,27 +398,32 @@ by a plain yes/no verify but correctly dropped once the same small model is made
 to name the two statements, while a genuine "uses PostgreSQL" / "uses MySQL"
 conflict is kept.
 
-**Juge de paix** (`--claude-judge`). Local judges are the ceiling — small models
-over-flag and miss subtle issues. This opt-in mode runs the **same audit through
-the Claude CLI** (`claude -p`) over the same conversations, as an independent,
-much stronger reference judge. Its findings are compared to the local panel:
+**Juge de paix** (`--claude-judge`, `--codex-judge`). Local judges are the ceiling
+— small models over-flag and miss subtle issues. These opt-in modes run the
+**same audit through the Claude CLI** (`claude -p`) and/or the **Codex CLI**
+(`codex exec`) over the same conversations, as independent, much stronger
+reference judges. You can enable either or both; each one's findings are compared
+to the local panel:
 
-- each local finding is marked `✓ juge de paix` (independently confirmed) or
-  `✗ juge de paix: not flagged` (the arbiter disagrees — likely a false positive);
-- a **Missed by the local panel** section lists what the arbiter caught that the
-  local judges didn't;
-- the Claude API cost + token usage are reported.
+- each local finding is marked `✓ Claude` / `✓ Codex` (independently confirmed) or
+  `✗ Claude` / `✗ Codex` (that arbiter disagrees — likely a false positive);
+- a **Missed by the local panel** section per arbiter lists what it caught that
+  the local judges didn't;
+- API cost (Claude) or token usage (Codex — usually covered by your plan) is
+  reported.
 
-> ⚠ Unlike the rest of the audit, `--claude-judge` **sends transcript excerpts to
-> the Claude API** — it's the one part that leaves the machine. It's strictly
-> opt-in and prints a warning before running. `--claude-model <name>` picks the
-> model (defaults to your configured Claude model). Cost is roughly a few cents
-> to ~$0.15 per conversation, so pair it with `--judge-max`.
+> ⚠ Unlike the rest of the audit, these **send transcript excerpts to the Claude
+> / Codex API** — the one part that leaves the machine. Strictly opt-in, with a
+> warning before running. `--claude-model` / `--codex-model <name>` pick the
+> model (default: your configured one). Claude costs roughly a few cents to
+> ~$0.15 per conversation, so pair it with `--judge-max`.
 
-In a real run the arbiter overturned both of a 4B panel's `contradiction`
-findings (false positives) **and** surfaced three real issues it had missed —
-claims about purged/irrecoverable data asserted as fact before the tools had
-actually checked (`unsupported_claim`, `overconfidence`).
+In a real run both arbiters overturned a 4B panel's `contradiction` finding
+(a false positive — `✗ Claude ✗ Codex`) **and** independently flagged the same
+sentence the panel had missed — a claim about purged/irrecoverable data asserted
+as fact before the tools had checked (Claude called it `unsupported_claim`, Codex
+`overconfidence`). Two strong judges converging is a much stronger signal than a
+panel of small local models agreeing.
 
 **Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
 each conversation judged by every model and the findings **aggregated by vote**:

@@ -1,0 +1,1 @@
+{"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"metric":{"type":"string"},"severity":{"type":"integer"},"turn":{"type":"integer"},"evidence":{"type":"string"},"rationale":{"type":"string"}},"required":["metric","evidence","rationale"]}}},"required":["findings"]}

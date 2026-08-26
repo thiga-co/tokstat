@@ -1709,7 +1709,8 @@ def show_audit(collect_fn, period_name: str | None = None,
                tool_filter: str | None = None, judge_model: str | None = None,
                judge_max: int | None = None, limit: int = 20,
                verify: bool = False,
-               claude_judge: bool = False, claude_model: str | None = None):
+               claude_judge: bool = False, claude_model: str | None = None,
+               codex_judge: bool = False, codex_model: str | None = None):
     """Audit conversations across all tools for behavioural/quality issues.
 
     Every one of the 12 metrics is evaluated by a LOCAL LLM judge via Ollama —
@@ -1718,11 +1719,12 @@ def show_audit(collect_fn, period_name: str | None = None,
     conversations are judged (None = no cap — local judging is slow, so this
     can take a while).
 
-    `claude_judge` adds an independent, stronger "juge de paix": the SAME audit
-    run through the Claude CLI over the same conversations, whose findings are
-    compared to the local panel (agreement + what the local panel missed). This
-    sends transcript excerpts to the Claude API — the one non-local part — so it
-    is opt-in and warned. `claude_model` overrides which Claude model it uses."""
+    `claude_judge` / `codex_judge` add independent, stronger "juges de paix":
+    the SAME audit run through the Claude and/or Codex CLI over the same
+    conversations, whose findings are compared to the local panel (agreement +
+    what the local panel missed). These send transcript excerpts to the
+    respective API — the one non-local part — so they are opt-in and warned.
+    `claude_model` / `codex_model` override which model each one uses."""
     from tokstat import _audit
 
     print(f"\n{BOLD} Conversation Audit{RESET}")
@@ -1780,16 +1782,31 @@ def show_audit(collect_fn, period_name: str | None = None,
     print(f"{DIM}  Judge: local Ollama {BOLD}{panel}{RESET}{DIM} on "
           f"{judged_n}/{len(convs)} conversations{cap_note}. "
           f"Fully local — nothing leaves the machine.{RESET}")
+    # Optional stronger "juges de paix": independent CLI judges (Claude / Codex)
+    # that re-run the SAME audit as a reference. They send excerpts off-machine,
+    # so each is opt-in and warned. (label, key, judge_fn, model, has_usd_cost)
+    arbiters_cfg = []
     if claude_judge:
-        if not _audit.claude_cli_available():
-            print(f"  {YELLOW}⚠ --claude-judge: 'claude' CLI not found on PATH — "
-                  f"the juge de paix will be skipped.{RESET}")
-            claude_judge = False
+        if _audit.claude_cli_available():
+            arbiters_cfg.append(("Claude", "claude",
+                                 _audit.judge_conversation_claude,
+                                 claude_model, True))
         else:
-            cm = claude_model or "your default Claude model"
-            print(f"  {BYELLOW}⚠ --claude-judge sends conversation excerpts to the "
-                  f"Claude API{RESET}{DIM} ({cm}) — the one part of this audit that "
-                  f"leaves the machine. Ctrl-C now to cancel.{RESET}")
+            print(f"  {YELLOW}⚠ --claude-judge: 'claude' CLI not found on PATH — "
+                  f"skipped.{RESET}")
+    if codex_judge:
+        if _audit.codex_cli_available():
+            arbiters_cfg.append(("Codex", "codex",
+                                 _audit.judge_conversation_codex,
+                                 codex_model, False))
+        else:
+            print(f"  {YELLOW}⚠ --codex-judge: 'codex' CLI not found on PATH — "
+                  f"skipped.{RESET}")
+    if arbiters_cfg:
+        names = " + ".join(a[0] for a in arbiters_cfg)
+        print(f"  {BYELLOW}⚠ juge de paix ({names}) sends conversation excerpts "
+              f"to the {names} API{RESET}{DIM} — the one part of this audit that "
+              f"leaves the machine. Ctrl-C now to cancel.{RESET}")
 
     # Aggregate findings across models: same (session, metric, turn) → one
     # issue, with the set of models that flagged it (its "votes").
@@ -1879,17 +1896,17 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"{DIM}  Verify: kept {len(records)}, dropped {dropped} "
               f"unconfirmed.{RESET}")
 
-    # ── Juge de paix: independent Claude CLI judge over the same conversations.
-    # Its findings become a reference: each local finding is marked confirmed /
-    # not-flagged, and anything Claude caught that the local panel missed is
-    # surfaced. (Off-machine — already announced + warned above.)
-    claude_stats = None
-    claude_only: list = []
-    if claude_judge:
-        print(f"\n  {BOLD}Juge de paix{RESET} {DIM}(independent Claude CLI judge, "
-              f"same {judged_n} conversations)…{RESET}", flush=True)
-        claude_sm: dict = {}   # (session_id, metric) -> [finding info]
-        cj = {"cost": 0.0, "in": 0, "out": 0, "err": 0, "model": None}
+    # ── Juges de paix: independent CLI judges over the same conversations.
+    # Each one's findings become a reference: every local finding is marked
+    # confirmed / not-flagged per arbiter, and anything an arbiter caught that
+    # the local panel missed is surfaced. (Off-machine — announced + warned.)
+    arbiter_results: list = []
+    for label, key, judge_fn, amodel, has_cost in arbiters_cfg:
+        print(f"\n  {BOLD}Juge de paix — {label}{RESET} {DIM}(independent, same "
+              f"{judged_n} conversations)…{RESET}", flush=True)
+        sm: dict = {}   # (session_id, metric) -> [finding info]
+        acc = {"cost": 0.0, "in": 0, "out": 0, "tokens": 0, "err": 0,
+               "model": amodel}
         for k, c in enumerate(to_judge, 1):
             proj = normalize_project(c.project) if c.project else "?"
             proj = "/".join(proj.rstrip("/").split("/")[-2:]) or proj
@@ -1898,36 +1915,41 @@ def show_audit(collect_fn, period_name: str | None = None,
             print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
                   f"{proj} · {day}{RESET}", flush=True)
             try:
-                res, st = _audit.judge_conversation_claude(c, claude_model)
+                res, st = judge_fn(c, amodel)
             except _audit.JudgeError as e:
-                cj["err"] += 1
-                print(f"      {YELLOW}⚠ claude failed: {e}{RESET}")
+                acc["err"] += 1
+                print(f"      {YELLOW}⚠ {label} failed: {e}{RESET}")
                 continue
-            cj["cost"] += st["cost_usd"]
-            cj["in"] += st["in_tok"]
-            cj["out"] += st["out_tok"]
-            cj["model"] = st["model"]
+            acc["cost"] += st.get("cost_usd", 0.0)
+            acc["in"] += st.get("in_tok", 0)
+            acc["out"] += st.get("out_tok", 0)
+            acc["tokens"] += st.get("tokens", 0)
+            acc["model"] = st.get("model") or amodel
             for f in res:
                 if not _in_window(f):
                     continue
                 excerpt, ask, turn_ok, ridx = _audit_finding_context(
                     c, f.turn_index, f.evidence)
-                claude_sm.setdefault((f.session_id, f.metric), []).append(
+                sm.setdefault((f.session_id, f.metric), []).append(
                     {"f": f, "excerpt": excerpt, "ask": ask,
                      "turn_ok": turn_ok, "turn": ridx})
         # Match by (session, metric): turn-level matching across different judges
-        # is too noisy to be meaningful. A local finding is "confirmed" when the
-        # arbiter independently flagged the same metric in the same conversation.
-        arbiter_keys = set(claude_sm.keys())
+        # is too noisy. A local finding is "confirmed" by this arbiter when it
+        # independently flagged the same metric in the same conversation.
+        akeys = set(sm.keys())
         for r in records:
-            r["arbiter"] = ((r["best"].session_id, r["best"].metric)
-                            in arbiter_keys)
+            r.setdefault("arb", {})[key] = (
+                (r["best"].session_id, r["best"].metric) in akeys)
         local_keys = {(r["best"].session_id, r["best"].metric) for r in records}
-        for sm, infos in claude_sm.items():
-            if sm not in local_keys:
-                claude_only.extend(infos)
-        cj["confirmed"] = sum(1 for r in records if r.get("arbiter"))
-        claude_stats = cj
+        only = [i for smk, infos in sm.items() if smk not in local_keys
+                for i in infos]
+        arbiter_results.append({
+            "label": label, "key": key, "has_cost": has_cost,
+            "confirmed": sum(1 for r in records if r["arb"].get(key)),
+            "only": only, "err": acc["err"], "cost": acc["cost"],
+            "in": acc["in"], "out": acc["out"], "tokens": acc["tokens"],
+            "model": acc["model"],
+        })
 
     err_note = ""
     if any(model_errors.values()):
@@ -1989,9 +2011,10 @@ def show_audit(collect_fn, period_name: str | None = None,
             turn = (f" · turn {r.get('turn')}" if r.get("turn_ok")
                     else " · turn ? (unlocatable)")
             arb = ""
-            if claude_stats is not None:
-                arb = (f" {GREEN}✓ juge de paix{RESET}" if r.get("arbiter")
-                       else f" {DIM}✗ juge de paix: not flagged{RESET}")
+            for ares in arbiter_results:
+                ok = r.get("arb", {}).get(ares["key"])
+                arb += (f" {GREEN}✓ {ares['label']}{RESET}" if ok
+                        else f" {DIM}✗ {ares['label']}{RESET}")
             print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
                   f"{BOLD}{f.metric}{RESET} {DIM}· {vote}{tcol}{f.tool}{RESET}"
                   f"{DIM} · {when} · {proj}{turn}{RESET}{arb}")
@@ -2010,21 +2033,21 @@ def show_audit(collect_fn, period_name: str | None = None,
                 print(f"        {DIM}(the flagged quote matches no assistant turn "
                       f"— likely fabricated/paraphrased; treat with suspicion){RESET}")
 
-    # ── Juge de paix verdict (Claude reference judge) ───────────────────────
-    if claude_stats is not None:
-        conf = claude_stats["confirmed"]
-        errn = (f" · {YELLOW}{claude_stats['err']} conversations errored{RESET}"
-                if claude_stats["err"] else "")
-        print(f"\n  {BOLD}Juge de paix verdict{RESET} "
-              f"{DIM}(Claude {claude_stats.get('model') or ''}){RESET}")
-        print(f"    {GREEN}✓ {conf}{RESET}/{len(records)} local findings "
-              f"independently confirmed  ·  {BOLD}{len(claude_only)}{RESET} it "
-              f"flagged that the local panel MISSED{errn}")
-        if claude_only:
-            claude_only.sort(key=lambda i: -i["f"].severity)
-            print(f"\n    {BOLD}Missed by the local panel{RESET} "
-                  f"{DIM}(flagged only by the juge de paix, max {limit}){RESET}")
-            for info in claude_only[:limit]:
+    # ── Juges de paix verdicts (independent reference judges) ───────────────
+    for ares in arbiter_results:
+        errn = (f" · {YELLOW}{ares['err']} conversations errored{RESET}"
+                if ares["err"] else "")
+        print(f"\n  {BOLD}Juge de paix verdict — {ares['label']}{RESET} "
+              f"{DIM}({ares['model'] or 'default model'}){RESET}")
+        print(f"    {GREEN}✓ {ares['confirmed']}{RESET}/{len(records)} local "
+              f"findings independently confirmed  ·  {BOLD}{len(ares['only'])}"
+              f"{RESET} it flagged that the local panel MISSED{errn}")
+        only = ares["only"]
+        if only:
+            only.sort(key=lambda i: -i["f"].severity)
+            print(f"    {BOLD}Missed by the local panel{RESET} "
+                  f"{DIM}(flagged only by {ares['label']}, max {limit}){RESET}")
+            for info in only[:limit]:
                 f = info["f"]
                 sev = _AUDIT_SEV_COLOR[f.severity]
                 when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
@@ -2039,9 +2062,15 @@ def show_audit(collect_fn, period_name: str | None = None,
                 if f.evidence:
                     ev = " ".join(str(f.evidence).split())[:200]
                     print(f"          {DIM}flagged:{RESET} \"{ev}\"")
-        print(f"    {DIM}Claude API cost: ${claude_stats['cost']:.4f} · "
-              f"{fmt_tokens(claude_stats['in'])} in / "
-              f"{fmt_tokens(claude_stats['out'])} out (off-machine){RESET}")
+        if ares["has_cost"]:
+            print(f"    {DIM}{ares['label']} API cost: ${ares['cost']:.4f} · "
+                  f"{fmt_tokens(ares['in'])} in / {fmt_tokens(ares['out'])} out "
+                  f"(off-machine){RESET}")
+        else:
+            usage = (f"~{fmt_tokens(ares['tokens'])} tokens · "
+                     if ares["tokens"] else "")
+            print(f"    {DIM}{ares['label']} usage: {usage}included in your "
+                  f"{ares['label']} plan (off-machine){RESET}")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
     tip = (" A panel agreeing raises confidence; a lone vote is weak."
