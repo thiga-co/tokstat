@@ -1876,12 +1876,18 @@ def show_audit(collect_fn, period_name: str | None = None,
     # cation/repetition mistaken for a defect" over-flagging.
     if verify and records:
         vmodel = live[0]
-        print(f"{DIM}  Verifying {len(records)} findings with {BOLD}{vmodel}{RESET}"
+        total = len(records)
+        print(f"{DIM}  Verifying {total} findings with {BOLD}{vmodel}{RESET}"
               f"{DIM} (skeptical second pass)…{RESET}", flush=True)
         kept = []
         dropped = 0
-        for r in records:
+        for i, r in enumerate(records, 1):
             f = r["best"]
+            # Live [k/N] progress on one rewritten line (padded so shrinking
+            # text doesn't leave stray characters behind).
+            line = (f"    [{i}/{total}] {f.metric} · "
+                    f"kept {len(kept)} · dropped {dropped}")
+            print(f"\r{DIM}{line:<68}{RESET}", end="", flush=True)
             v = _audit.verify_finding_ollama(
                 f.metric, f.evidence, r.get("excerpt", ""), r.get("ask", ""),
                 vmodel)
@@ -1893,8 +1899,8 @@ def show_audit(collect_fn, period_name: str | None = None,
             else:
                 dropped += 1
         records = kept
-        print(f"{DIM}  Verify: kept {len(records)}, dropped {dropped} "
-              f"unconfirmed.{RESET}")
+        print(f"\r{' ':<72}\r{DIM}  Verify: kept {len(records)}, dropped "
+              f"{dropped} unconfirmed.{RESET}")
 
     # ── Juges de paix: independent CLI judges over the same conversations.
     # Each one's findings become a reference: every local finding is marked
