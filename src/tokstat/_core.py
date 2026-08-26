@@ -1663,6 +1663,22 @@ _AUDIT_SEV_LABEL = {0: "info", 1: "low", 2: "med", 3: "high"}
 _AUDIT_SEV_COLOR = {0: DIM, 1: CYAN, 2: BYELLOW, 3: BRED}
 
 
+def _audit_finding_context(conv, turn_index):
+    """Pull the real transcript context for a finding so the user can judge it:
+    an excerpt of the actual assistant turn it points to, and the user request
+    that preceded it. Returns (excerpt, user_ask, turn_ok)."""
+    turns = conv.turns
+    turn_ok = 0 <= turn_index < len(turns)
+    excerpt = ask = ""
+    if turn_ok:
+        excerpt = " ".join((turns[turn_index].text or "").split())[:500]
+        for j in range(turn_index - 1, -1, -1):
+            if turns[j].role == "user" and turns[j].text:
+                ask = " ".join(turns[j].text.split())[:220]
+                break
+    return excerpt, ask, turn_ok
+
+
 def show_audit(collect_fn, period_name: str | None = None,
                tool_filter: str | None = None, judge_model: str | None = None,
                judge_max: int | None = None, limit: int = 20):
@@ -1774,7 +1790,9 @@ def show_audit(collect_fn, period_name: str | None = None,
                 key = (f.session_id, f.metric, f.turn_index)
                 rec = agg.get(key)
                 if rec is None:
-                    agg[key] = {"best": f, "voters": {m}}
+                    excerpt, ask, turn_ok = _audit_finding_context(c, f.turn_index)
+                    agg[key] = {"best": f, "voters": {m}, "excerpt": excerpt,
+                                "ask": ask, "turn_ok": turn_ok}
                 else:
                     rec["voters"].add(m)
                     if f.severity > rec["best"].severity:
@@ -1845,15 +1863,25 @@ def show_audit(collect_fn, period_name: str | None = None,
             tcol = TOOL_COLORS.get(f.tool, "")
             vote = (f"{BOLD}{len(r['voters'])}/{n_judges}{RESET}{DIM} · "
                     if n_judges > 1 else "")
+            turn = (f" · turn {f.turn_index}" if r.get("turn_ok") else
+                    f" · turn ?{'' if f.turn_index < 0 else ' (out of range)'}")
             print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
                   f"{BOLD}{f.metric}{RESET} {DIM}· {vote}{tcol}{f.tool}{RESET}"
-                  f"{DIM} · {when} · {proj}{RESET}")
+                  f"{DIM} · {when} · {proj}{turn}{RESET}")
             if n_judges > 1:
                 print(f"        {DIM}votes:{RESET} {', '.join(sorted(r['voters']))}")
-            print(f"        {DIM}why:{RESET} {f.rationale}")
+            print(f"        {DIM}why:  {RESET}{f.rationale}")
             if f.evidence:
-                ev = " ".join(str(f.evidence).split())[:160]
-                print(f"        {DIM}evidence:{RESET} \"{ev}\"")
+                ev = " ".join(str(f.evidence).split())[:200]
+                print(f"        {DIM}judge flagged:{RESET} \"{ev}\"")
+            # The REAL transcript context, so you can verify the finding yourself.
+            if r.get("ask"):
+                print(f"        {DIM}user asked:    {r['ask']}{RESET}")
+            if r.get("excerpt"):
+                print(f"        {DIM}assistant said: \"{r['excerpt']}\"{RESET}")
+            elif not r.get("turn_ok"):
+                print(f"        {DIM}(couldn't locate the turn — the model gave "
+                      f"an invalid index; treat with suspicion){RESET}")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
     tip = (" A panel agreeing raises confidence; a lone vote is weak."
