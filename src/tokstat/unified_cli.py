@@ -397,7 +397,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
-    "--model", "--judge-max", "--dump", "--load", "--bench",
+    "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
@@ -507,6 +507,8 @@ def show_help():
                        "3 months"   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
                        claude.ai, chatgpt (default: all)
+  --exclude-today      drop today's conversations (skip in-progress / meta
+                       sessions) — handy for --audit on a dump
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/                          exact tokens
@@ -567,6 +569,17 @@ def cli():
         show_bench(_model_list(args))
         return
 
+    # --exclude-today: clamp the period end to local midnight so today's
+    # (often in-progress / meta) conversations don't skew an audit of a dump.
+    collect = _collect_all_exchanges
+    if "--exclude-today" in args:
+        def collect(cutoff, tool_filter=None, cutoff_end=None,
+                    _c=_collect_all_exchanges):
+            midnight = datetime.now().astimezone().replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            end = midnight if cutoff_end is None else min(cutoff_end, midnight)
+            return _c(cutoff, tool_filter, end)
+
     watch_interval = _parse_watch_interval(args)
     if watch_interval is not None:
         if any(f in args for f in ("--prompts", "-p", "--anomalies", "--plan", "--export")):
@@ -576,31 +589,31 @@ def cli():
         return
 
     if "--prompts" in args or "-p" in args:
-        show_prompts(_collect_all_exchanges, period, tool)
+        show_prompts(collect, period, tool)
     elif "--anomalies" in args:
-        show_anomalies(_collect_all_exchanges, period, tool)
+        show_anomalies(collect, period, tool)
     elif "--activity" in args:
-        show_activity(_collect_all_exchanges, period, tool)
+        show_activity(collect, period, tool)
     elif "--total" in args:
-        show_total(_collect_all_exchanges, period, tool)
+        show_total(collect, period, tool)
     elif "--impact" in args:
-        show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+        show_impact(collect, period, tool, _parse_region(args))
     elif "--audit" in args:
         jmax_raw = _arg_value(args, "--judge-max")   # default: no cap
         try:
             jmax = int(jmax_raw) if jmax_raw is not None else None
         except ValueError:
             jmax = None
-        show_audit(_collect_all_exchanges, period, tool,
+        show_audit(collect, period, tool,
                    judge_model=_model_list(args), judge_max=jmax)
     elif "--plan" in args:
-        show_plan(_collect_all_exchanges, period, tool)
+        show_plan(collect, period, tool)
     elif "--export" in args:
         idx = args.index("--export")
         out = "conversations.json"
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             out = args[idx + 1]
-        export_conversations(_collect_all_exchanges, out, period, tool)
+        export_conversations(collect, out, period, tool)
     else:
         main(period, tool)
 
