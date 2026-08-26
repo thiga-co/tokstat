@@ -389,6 +389,15 @@ default no") and drops the ones it can't confirm. Verifying is far easier than
 detecting, so this cuts false positives even with the same local model (one
 extra call per finding). Findings that survive show the verifier's reason.
 
+`contradiction` is where small judges misfire most (they call a phased timeline
+or a restatement "contradictory"), so it gets a sharper check: the verifier must
+**extract the two supposedly-incompatible statements verbatim**. Forcing it to
+show both sides flips its verdict to *not a contradiction* when there aren't
+really two conflicting claims — e.g. a `J+6 / J+8 / J+12` milestone plan is kept
+by a plain yes/no verify but correctly dropped once the same small model is made
+to name the two statements, while a genuine "uses PostgreSQL" / "uses MySQL"
+conflict is kept.
+
 **Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
 each conversation judged by every model and the findings **aggregated by vote**:
 a finding flagged by more models ranks higher and shows its tally (e.g. `2/3`),

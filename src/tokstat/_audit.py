@@ -526,21 +526,47 @@ _VERIFY_FORMAT = {
     "required": ["real"],
 }
 
+# 'contradiction' is where small judges over-flag the most: they see several
+# numbers/dates and cry "contradiction" when it's really one coherent plan, a
+# restatement or a clarification. Instead of a yes/no, we make the SAME model
+# EXTRACT the two supposedly-incompatible statements verbatim. Forcing it to
+# show both sides collapses the false positives — if it can't name two genuinely
+# distinct, incompatible statements, there is no contradiction. (Verified: on a
+# phased "J+6 / J+8 / J+12" timeline gemma4:e4b returns incompatible=false with
+# this prompt, where a plain yes/no verify wrongly kept it.)
+_VERIFY_CONTRADICTION_SYSTEM = (
+    "You double-check ONE 'contradiction' finding. A contradiction requires TWO "
+    "statements by the ASSISTANT that are LOGICALLY INCOMPATIBLE — both cannot "
+    "be true at once. Extract statement_a and statement_b VERBATIM from the "
+    "assistant's turn. It is NOT a contradiction (incompatible=false, leave the "
+    "statements empty) if any of these holds: you cannot find two genuinely "
+    "distinct incompatible statements; the numbers/dates are sequential "
+    "milestones of ONE plan or timeline (e.g. start J+6, end J+8, go-live J+12); "
+    "one statement restates, refines or clarifies the other; or the two "
+    "statements are about different things. Default to NOT a contradiction.\n"
+    "Return JSON {\"statement_a\": \"<verbatim or empty>\", \"statement_b\": "
+    "\"<verbatim or empty>\", \"incompatible\": <bool>, \"reason\": "
+    "\"<one sentence>\"}."
+)
+_VERIFY_CONTRADICTION_FORMAT = {
+    "type": "object",
+    "properties": {
+        "statement_a": {"type": "string"},
+        "statement_b": {"type": "string"},
+        "incompatible": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+    "required": ["statement_a", "statement_b", "incompatible"],
+}
 
-def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
-                          model, host: str = OLLAMA_HOST, timeout: int = 120):
-    """Adversarial second pass: re-check ONE finding with a narrow, skeptical
-    prompt. Returns (real: bool, reason: str), or None if the check couldn't
-    run (caller should then KEEP the finding rather than silently drop it)."""
-    user = ("Metric claimed: " + str(metric) + "\n"
-            "Flagged quote: " + str(evidence or "")[:400] + "\n"
-            "User asked: " + str(user_ask or "")[:300] + "\n"
-            "Assistant turn: " + str(assistant_excerpt or "")[:800] + "\n\n"
-            "Is this GENUINELY '" + str(metric) + "'?")
+
+def _ollama_chat_json(model, system, user, fmt, host, timeout, num_predict=400):
+    """One structured Ollama chat call → parsed dict, or None on any failure."""
     payload = {
-        "model": model, "stream": False, "format": _VERIFY_FORMAT,
-        "options": {"temperature": 0, "num_predict": 400}, "think": False,
-        "messages": [{"role": "system", "content": _VERIFY_SYSTEM},
+        "model": model, "stream": False, "format": fmt,
+        "options": {"temperature": 0, "num_predict": num_predict},
+        "think": False,
+        "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
     }
     req = urllib.request.Request(host.rstrip("/") + "/api/chat",
@@ -549,10 +575,42 @@ def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-        parsed = _parse_judge_json((data.get("message") or {}).get("content", ""))
-        return bool(parsed.get("real")), str(parsed.get("reason", ""))[:200]
+        return _parse_judge_json((data.get("message") or {}).get("content", ""))
     except Exception:
         return None
+
+
+def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
+                          model, host: str = OLLAMA_HOST, timeout: int = 120):
+    """Adversarial second pass: re-check ONE finding with a narrow, skeptical
+    prompt. Returns (real: bool, reason: str), or None if the check couldn't
+    run (caller should then KEEP the finding rather than silently drop it)."""
+    # Contradiction: make the model extract BOTH incompatible statements; if it
+    # can't produce two distinct ones, it isn't a contradiction.
+    if metric == "contradiction":
+        user = ("Flagged quote: " + str(evidence or "")[:400] + "\n"
+                "Assistant turn: " + str(assistant_excerpt or "")[:900] + "\n\n"
+                "Are there two logically incompatible statements?")
+        parsed = _ollama_chat_json(
+            model, _VERIFY_CONTRADICTION_SYSTEM, user,
+            _VERIFY_CONTRADICTION_FORMAT, host, timeout, num_predict=500)
+        if parsed is None:
+            return None
+        # The statement_a/b fields force the model to try to name both sides
+        # (a chain-of-thought effect that flips its verdict to false on phased
+        # plans / restatements); the decision itself rests on `incompatible`.
+        return bool(parsed.get("incompatible")), str(parsed.get("reason", ""))[:200]
+
+    user = ("Metric claimed: " + str(metric) + "\n"
+            "Flagged quote: " + str(evidence or "")[:400] + "\n"
+            "User asked: " + str(user_ask or "")[:300] + "\n"
+            "Assistant turn: " + str(assistant_excerpt or "")[:800] + "\n\n"
+            "Is this GENUINELY '" + str(metric) + "'?")
+    parsed = _ollama_chat_json(model, _VERIFY_SYSTEM, user, _VERIFY_FORMAT,
+                               host, timeout, num_predict=400)
+    if parsed is None:
+        return None
+    return bool(parsed.get("real")), str(parsed.get("reason", ""))[:200]
 
 
 def benchmark_ollama(model: str, host: str = OLLAMA_HOST,
