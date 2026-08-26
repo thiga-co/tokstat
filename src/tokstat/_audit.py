@@ -395,7 +395,12 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
         "model": model,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0},
+        # Cap the output so a runaway/"thinking" model can't generate until the
+        # timeout (the findings JSON needs far less). A thinking model that
+        # burns the budget then fails to parse is reported per-model rather than
+        # hanging 240s. (We avoid the `think` flag — not all Ollama models
+        # accept it.)
+        "options": {"temperature": 0, "num_predict": 2000},
         "messages": [
             {"role": "system", "content": JUDGE_SYSTEM},
             {"role": "user", "content": _build_judge_user(conv, max_chars)},
