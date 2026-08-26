@@ -1667,6 +1667,23 @@ def _audit_norm(s: str) -> str:
     return " ".join((s or "").lower().replace("*", "").replace("`", "").split())
 
 
+def _excerpt_around(text: str, evidence: str, width: int = 800) -> str:
+    """A window of the turn CENTERED on the evidence quote, not the turn's head.
+    Long turns often carry the flagged statement far in; a head-only excerpt
+    shows unrelated intro text and makes a verifier hallucinate contradictions.
+    Falls back to the head when the quote isn't found."""
+    flat = " ".join((text or "").split())
+    if not flat:
+        return ""
+    probe = " ".join((evidence or "").split())[:40]
+    pos = flat.lower().find(probe.lower()) if len(probe) >= 12 else -1
+    if pos < 0:
+        return flat[:width]
+    start = max(0, pos - width // 2)
+    end = min(len(flat), pos + len(probe) + width // 2)
+    return ("…" if start > 0 else "") + flat[start:end] + ("…" if end < len(flat) else "")
+
+
 def _audit_finding_context(conv, turn_index, evidence=""):
     """Pull the real transcript context for a finding so the user can judge it.
 
@@ -1697,7 +1714,7 @@ def _audit_finding_context(conv, turn_index, evidence=""):
         turn_ok = idx is not None
     excerpt = ask = ""
     if turn_ok:
-        excerpt = " ".join((turns[idx].text or "").split())[:500]
+        excerpt = _excerpt_around(turns[idx].text, evidence, width=800)
         for j in range(idx - 1, -1, -1):
             if turns[j].role == "user" and turns[j].text:
                 ask = " ".join(turns[j].text.split())[:220]
@@ -1888,6 +1905,12 @@ def show_audit(collect_fn, period_name: str | None = None,
             line = (f"    [{i}/{total}] {f.metric} · "
                     f"kept {len(kept)} · dropped {dropped}")
             print(f"\r{DIM}{line:<68}{RESET}", end="", flush=True)
+            # A contradiction whose quote matches no real turn can't be
+            # confirmed (both conflicting statements must exist in the
+            # transcript) — drop it rather than let the verifier guess.
+            if f.metric == "contradiction" and not r.get("turn_ok"):
+                dropped += 1
+                continue
             v = _audit.verify_finding_ollama(
                 f.metric, f.evidence, r.get("excerpt", ""), r.get("ask", ""),
                 vmodel)
