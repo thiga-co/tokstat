@@ -1747,8 +1747,7 @@ def show_audit(collect_fn, period_name: str | None = None,
     judges send transcript excerpts to their API — the non-local part — so they
     are opt-in and warned. `judge_max` caps how many (most recent) conversations
     are judged (None = no cap). `verify` re-checks findings with a skeptical
-    second pass, using the strongest active judge (claude > codex > ollama) so a
-    weak verifier can't drop a strong judge's legitimate finding."""
+    second pass, each one via the SAME judge (engine + model) that raised it."""
     from tokstat import _audit
 
     print(f"\n{BOLD} Conversation Audit{RESET}")
@@ -1910,11 +1909,16 @@ def show_audit(collect_fn, period_name: str | None = None,
                 rec = agg.get(key)
                 if rec is None:
                     agg[key] = {"best": f, "voters": {label}, "excerpt": excerpt,
-                                "ask": ask, "turn_ok": turn_ok, "turn": ridx}
+                                "ask": ask, "turn_ok": turn_ok, "turn": ridx,
+                                # engine+model that raised the kept finding, so
+                                # --verify re-checks it with the SAME judge.
+                                "best_kind": v["kind"], "best_model": v.get("model")}
                 else:
                     rec["voters"].add(label)
                     if f.severity > rec["best"].severity:
                         rec["best"] = f
+                        rec["best_kind"] = v["kind"]
+                        rec["best_model"] = v.get("model")
         if not broke:
             live.append(label)
             if v["kind"] == "ollama":
@@ -1931,16 +1935,23 @@ def show_audit(collect_fn, period_name: str | None = None,
     # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
     # cation/repetition mistaken for a defect" over-flagging.
     if verify and records:
-        # Verify with the STRONGEST live judge (claude > codex > ollama), so a
-        # weak verifier can't drop a strong judge's legitimate finding.
-        _rank = {"claude": 0, "codex": 1, "ollama": 2}
-        vv = min((v for v in voters if v["label"] in live),
-                 key=lambda v: _rank.get(v["kind"], 9), default=None)
-        chat = _audit.make_verifier(vv["kind"], vv.get("model")) if vv else None
+        # Re-check each finding with the SAME judge (engine + model) that raised
+        # it — a weak model verifies its own over-flags, a strong judge's
+        # finding is re-checked by that strong judge. (Verifiers are cached per
+        # engine+model.)
+        _vcache: dict = {}
+
+        def _verifier_for(kind, model):
+            k = (kind, model)
+            if k not in _vcache:
+                _vcache[k] = _audit.make_verifier(kind, model)
+            return _vcache[k]
+
         total = len(records)
-        offm = "" if vv and vv["kind"] == "ollama" else " · off-machine (API)"
-        print(f"{DIM}  Verifying {total} findings with {BOLD}{vv['label']}{RESET}"
-              f"{DIM} (skeptical second pass{offm})…{RESET}", flush=True)
+        engines = sorted({r.get("best_kind") for r in records})
+        offm = "" if engines == ["ollama"] else " · some off-machine (API)"
+        print(f"{DIM}  Verifying {total} findings — each re-checked by the judge "
+              f"that flagged it{offm}…{RESET}", flush=True)
         kept = []
         dropped = 0
         for i, r in enumerate(records, 1):
@@ -1955,6 +1966,11 @@ def show_audit(collect_fn, period_name: str | None = None,
             # transcript) — drop it rather than let the verifier guess.
             if f.metric == "contradiction" and not r.get("turn_ok"):
                 dropped += 1
+                continue
+            chat = _verifier_for(r.get("best_kind", "ollama"),
+                                 r.get("best_model"))
+            if chat is None:            # unknown engine → keep (don't hide)
+                kept.append(r)
                 continue
             v = _audit.verify_finding(
                 chat, f.metric, f.evidence, r.get("excerpt", ""),
