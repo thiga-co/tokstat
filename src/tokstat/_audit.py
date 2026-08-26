@@ -383,6 +383,49 @@ class JudgeError(RuntimeError):
     response). Distinct from 'ran fine and found nothing'."""
 
 
+def _judge_format() -> dict:
+    """A JSON Schema for Ollama's structured output. Constraining the shape
+    (and the metric to the known enum) makes even small models emit valid,
+    on-schema JSON — far more reliable than format:"json" alone."""
+    return {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "metric": {"type": "string", "enum": ALL_METRICS},
+                        "severity": {"type": "integer"},
+                        "turn": {"type": "integer"},
+                        "evidence": {"type": "string"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["metric", "evidence", "rationale"],
+                },
+            },
+        },
+        "required": ["findings"],
+    }
+
+
+def _parse_judge_json(text: str):
+    """Parse the judge's response, tolerating markdown fences / stray prose."""
+    if not text or not text.strip():
+        raise JudgeError("empty judge response")
+    t = re.sub(r"```(?:json)?|```", "", text).strip()
+    try:
+        return json.loads(t)
+    except (json.JSONDecodeError, TypeError):
+        m = re.search(r"\{.*\}", t, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except (json.JSONDecodeError, TypeError) as e:
+                raise JudgeError(f"unparseable judge response: {e}") from e
+        raise JudgeError("no JSON object in judge response")
+
+
 def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
                               timeout: int = 240, max_chars: int = 9000
                               ) -> tuple[list, dict]:
@@ -391,46 +434,47 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
     counters (prompt/eval token counts + durations) so callers can report
     prefill/decode throughput. Raises JudgeError if the judge could not run, so
     callers never mistake a failure for a clean 'no findings'."""
-    payload = {
-        "model": model,
-        "stream": False,
-        "format": "json",
-        # Cap the output so a runaway/"thinking" model can't generate until the
-        # timeout (the findings JSON needs far less). A thinking model that
-        # burns the budget then fails to parse is reported per-model rather than
-        # hanging 240s. (We avoid the `think` flag — not all Ollama models
-        # accept it.)
-        "options": {"temperature": 0, "num_predict": 2000},
-        "messages": [
-            {"role": "system", "content": JUDGE_SYSTEM},
-            {"role": "user", "content": _build_judge_user(conv, max_chars)},
-        ],
-    }
-    req = urllib.request.Request(
-        host.rstrip("/") + "/api/chat",
-        data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json"},
-    )
-    try:
+    def _payload(think):
+        p = {
+            "model": model,
+            "stream": False,
+            # Structured output: constrain to the findings schema so small
+            # models can't emit malformed JSON or off-schema items.
+            "format": _judge_format(),
+            "options": {"temperature": 0, "num_predict": 2000},
+            "messages": [
+                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user", "content": _build_judge_user(conv, max_chars)},
+            ],
+        }
+        # think:false stops reasoning models (e.g. Qwen3) from spending the
+        # whole token budget on a <think> block and emitting empty content.
+        if think is not None:
+            p["think"] = think
+        return p
+
+    def _post(payload):
+        req = urllib.request.Request(
+            host.rstrip("/") + "/api/chat",
+            data=json.dumps(payload).encode(),
+            headers={"content-type": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
+            return json.loads(resp.read().decode())
+
+    try:
+        data = _post(_payload(think=False))
     except urllib.error.HTTPError as e:
-        body = ""
+        # Some models/servers reject the `think` field → retry without it.
         try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        raise JudgeError(f"Ollama HTTP {e.code}: {body or e.reason}") from e
+            data = _post(_payload(think=None))
+        except Exception as e2:
+            raise JudgeError(f"Ollama request failed: {e2}") from e2
     except Exception as e:
         raise JudgeError(f"Ollama request failed: {e}") from e
     if data.get("error"):
         raise JudgeError(f"Ollama error: {data['error']}")
-    text = (data.get("message") or {}).get("content", "")
-    try:
-        m = re.search(r"\{.*\}", text, re.S)
-        parsed = json.loads(m.group(0) if m else text)
-    except (json.JSONDecodeError, TypeError) as e:
-        raise JudgeError(f"unparseable judge response: {e}") from e
+    parsed = _parse_judge_json((data.get("message") or {}).get("content", ""))
     stats = {
         "p_tok": data.get("prompt_eval_count") or 0,
         "p_ns": data.get("prompt_eval_duration") or 0,
