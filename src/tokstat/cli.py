@@ -249,9 +249,12 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     if c.get("is_error"):
                         current["tool_errors"].append(body[:200])
                     elif body:
-                        # Capture a short snippet of the tool's OUTPUT so the
-                        # judge can see what a Bash/Read/grep actually returned.
-                        current["tool_outputs"].append(body[:300])
+                        # Capture the tool's OUTPUT so the judge can verify
+                        # claims. Head+tail keeps both ends (e.g. a git log's
+                        # first AND last commit, a table's header AND total).
+                        current["tool_outputs"].append(
+                            body if len(body) <= 1000
+                            else body[:700] + " … " + body[-300:])
 
         elif rec_type == "assistant" and current is not None:
             if not current["model"]:

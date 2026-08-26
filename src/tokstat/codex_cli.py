@@ -323,9 +323,11 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 out = out.get("content") or out.get("output") or ""
             out = str(out or "").strip()
             if out:
-                # Capture a short snippet of what the tool returned (stdout,
-                # file listing, …) so the judge sees the evidence.
-                current["tool_outputs"].append(out[:300])
+                # Capture what the tool returned (stdout, file listing, …) so
+                # the judge sees the evidence. Head+tail keeps both ends.
+                current["tool_outputs"].append(
+                    out if len(out) <= 1000
+                    else out[:700] + " … " + out[-300:])
 
         elif rec_type == "event_msg" and payload.get("type") == "token_count" and current:
             info = payload.get("info") or {}
