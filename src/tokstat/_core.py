@@ -1947,16 +1947,22 @@ def show_bench(judge_model: str | None = None):
         print(f"  {DIM}Installed: {', '.join(installed)}{RESET}\n")
         return
 
-    print(f"    {DIM}{'model':<22}{'prompt':>7}{'prefill':>11}"
+    # Column width adapts to the longest model name (some are 40+ chars).
+    nw = min(max((len(m) for m in models), default=5), 48)
+
+    def _fit(name):
+        return name if len(name) <= nw else name[:nw - 1] + "…"
+
+    print(f"    {DIM}{'model':<{nw}}{'prompt':>8}{'prefill':>11}"
           f"{'output':>8}{'decode':>10}{'load':>8}{RESET}")
-    print(f"    {DIM}{'':<22}{'tok':>7}{'tok/s':>11}{'tok':>8}{'tok/s':>10}"
+    print(f"    {DIM}{'':<{nw}}{'tok':>8}{'tok/s':>11}{'tok':>8}{'tok/s':>10}"
           f"{'s':>8}{RESET}")
     for m in models:
-        print(f"{DIM}    {m} …{RESET}", end="", flush=True)
+        print(f"{DIM}    {_fit(m)} …{RESET}", end="", flush=True)
         try:
             r = _audit.benchmark_ollama(m)
         except _audit.JudgeError as e:
-            print(f"\r    {m:<22}{RED}  benchmark failed: {e}{RESET}")
+            print(f"\r    {_fit(m):<{nw}}{RED}  benchmark failed: {e}{RESET}")
             continue
         pf = f"{r['prefill_tps']:.0f}" if r['prefill_tps'] else "—"
         dc = f"{r['decode_tps']:.1f}" if r['decode_tps'] else "—"
@@ -1964,7 +1970,7 @@ def show_bench(judge_model: str | None = None):
             BYELLOW if (r['prefill_tps'] or 0) < 800 else GREEN)
         dcc = BRED if (r['decode_tps'] or 0) < 15 else (
             BYELLOW if (r['decode_tps'] or 0) < 40 else GREEN)
-        print(f"\r    {m:<22}{(r['prompt_tokens'] or 0):>7}"
+        print(f"\r    {_fit(m):<{nw}}{(r['prompt_tokens'] or 0):>8}"
               f"{pfc}{pf:>11}{RESET}{(r['output_tokens'] or 0):>8}"
               f"{dcc}{dc:>10}{RESET}{r['load_s']:>8.1f}")
     print(f"\n  {DIM}Tip: for the audit, prefill speed matters most (long "
