@@ -337,14 +337,9 @@ def _build_judge_user(conv, max_chars=9000):
     convo = "\n\n".join(lines)
     if len(convo) > max_chars:
         convo = convo[:max_chars] + "\n…[truncated]"
-    # Temporal grounding: state when the conversation happened so the judge does
-    # not treat its (possibly post-training-cutoff) dates as impossible/future.
-    when = ""
-    if conv.ts:
-        when = (f"This conversation took place on {conv.ts.date().isoformat()} — "
-                f"treat that as the present; dates near it are NOT in the future.\n")
-    return (when +
-            "Transcript (assistant prose only; quotes/code/cited material "
+    # NB: temporal grounding lives in the SYSTEM prompt, NOT here — putting it in
+    # the transcript made weak models quote it as if it were assistant text.
+    return ("Transcript (assistant prose only; quotes/code/cited material "
             "removed; a compact [tools: …] summary shows what the assistant "
             "actually ran/checked — treat it as evidence backing the "
             "assistant's factual claims):\n\n" + convo)
@@ -445,6 +440,15 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
     counters (prompt/eval token counts + durations) so callers can report
     prefill/decode throughput. Raises JudgeError if the judge could not run, so
     callers never mistake a failure for a clean 'no findings'."""
+    # Temporal grounding in the SYSTEM prompt (not the transcript): tells the
+    # judge the conversation's date so it won't treat post-cutoff dates as
+    # impossible — without the line being quotable as assistant text.
+    system = JUDGE_SYSTEM
+    if conv.ts:
+        system += (f"\n\nThis conversation took place on "
+                   f"{conv.ts.date().isoformat()}; treat that as the present — "
+                   f"dates near it are NOT in the future.")
+
     def _payload(think):
         p = {
             "model": model,
@@ -454,7 +458,7 @@ def judge_conversation_ollama(conv, model: str, host: str = OLLAMA_HOST,
             "format": _judge_format(),
             "options": {"temperature": 0, "num_predict": 2000},
             "messages": [
-                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": _build_judge_user(conv, max_chars)},
             ],
         }
