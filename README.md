@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **unreleased** — `--audit` *(experimental)*: local conversation-quality audit across all tools, scoring 12 behavioural metrics with a local Ollama LLM-as-judge (nothing leaves the machine). Judge sees the assistant's own prose + real tool-output snippets; multi-model **panel with vote aggregation**; each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model size.
 - **1.9.0** — Overview now shows, per tool, the **data span** and the **"since" date** of its records in the selected period (next to the record count), so history depth is visible at a glance. Added **data-retention alerts**: when a tool purges old local data on a rolling window (e.g. Claude Code's `cleanupPeriodDays`, default 30), a warning appears at the top of both `tokstat` and the per-tool commands so the numbers and "since" dates aren't mistaken for full lifetime usage. Tools that keep everything (e.g. Codex session rollouts) produce no alert.
 - **1.8.2** — `--impact` correctness fixes: (1) honor EcoLogits' `active_parameters` field for MoE models given as a scalar total + separate active count (e.g. `command-a-plus`: 218B total / 25B active — was counted as 218B active); (2) constrain model matching to exact + version-boundary base names, so a generic name no longer resolves to an arbitrary specific variant (`claude-sonnet-4` → `claude-sonnet-4-5`, `gemini-2.5` → `gemini-2.5-flash-image`); (3) base the "matched / not in DB" accounting on computed energy, so a known model with only prefill/cache tokens (no output) is no longer reported as unmatched; (4) actually read `prefill_factor` / `cache_read_factor` from `impact.json` (previously documented but ignored).
 - **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
@@ -362,9 +363,11 @@ tokstat --audit --judge-max 20             # cap conversations judged (default: 
 
 The judge uses an evidence-first rubric (every finding must quote the offending
 text) and — importantly — is fed **only the assistant's own prose** (quotes,
-code and cited material stripped) plus a **compact per-turn tool summary** as
-evidence, so it doesn't blame the assistant for content it was merely quoting,
-nor flag tool-backed claims as unsupported. It also reads the **user's
+code and cited material stripped) plus, per turn, the tools it ran **and a
+snippet of what each returned** (`tools returned: …`, head+tail up to ~1 KB from
+the transcripts on disk), so it doesn't blame the assistant for content it was
+merely quoting, and can *verify* tool-backed claims (a git log, an AWS table)
+instead of flagging them unsupported. It also reads the **user's
 reactions** as a signal: when you correct or push back on an answer ("no, that's
 wrong", "you already said that", "it still doesn't work"), that's flagged as
 strong evidence of a defect in the *preceding* assistant turn — but the finding
@@ -401,11 +404,14 @@ is reported per model rather than silently counted as "clean".
 
 Local judges are weaker than frontier models — treat judge findings as leads to
 review, not verdicts, and prefer a larger model (e.g. a 27–35B instruct model)
-for better precision.
+for better precision. A big **panel of tiny models does not help** — small
+models share the same blind spots, so voting amplifies their errors instead of
+cancelling them; use 1–2 capable models, not many weak ones.
 
-Prototype scope: reads Claude Code transcripts (the richest locally available
-source, with full text + tool calls). Output shows counts per metric and the
-most severe findings with their evidence.
+Each finding shows the offending turn, the judge's quote, the user's request,
+and the real assistant excerpt — enough to confirm or dismiss it at a glance.
+Captured tool outputs come from Claude Code and Codex transcripts (the tools
+with recorded results); other tools are audited on text alone.
 
 ### `--plan` — plan & optimization recommendations
 
