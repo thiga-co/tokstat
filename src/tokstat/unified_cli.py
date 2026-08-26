@@ -181,18 +181,33 @@ def _from_iso(s):
         return None
 
 
-def _dump_snapshot(path: str, tool_filter: str | None = None) -> None:
+def _today_midnight() -> datetime:
+    """Local midnight today (tz-aware) — the boundary for --exclude-today."""
+    return datetime.now().astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0)
+
+
+def _dump_snapshot(path: str, tool_filter: str | None = None,
+                   exclude_today: bool = False) -> None:
     """Capture everything tokstat's analyses use — token records, output-speed
     records and full per-prompt exchanges (with text, tools, tokens, cost) — to
-    a portable JSON file that `--load` can replay offline."""
+    a portable JSON file that `--load` can replay offline. With exclude_today,
+    today's records/exchanges are left out of the snapshot."""
     from tokstat._core import BOLD, DIM, RESET, YELLOW
     print(f"\n{BOLD} Dumping tokstat snapshot{RESET}")
-    print(f"{DIM}  Scanning all data sources (full history)...{RESET}\n")
+    print(f"{DIM}  Scanning all data sources"
+          f"{' (excluding today)' if exclude_today else ' (full history)'}...{RESET}\n")
 
     load_pricing()   # so per-record cost is computed and captured in the dump
     records, speed_records, counts = _scan_all(tool_filter)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
-    exchanges, _ = _collect_all_exchanges(epoch, tool_filter, None)
+    end = _today_midnight() if exclude_today else None
+    exchanges, _ = _collect_all_exchanges(epoch, tool_filter, end)
+    if exclude_today:
+        records = [r for r in records if not r.get("ts") or r["ts"] < end]
+        speed_records = [s for s in speed_records if not s.get("ts") or s["ts"] < end]
+        counts = [(t, sum(1 for r in records if r.get("tool") == t), p)
+                  for (t, _n, p) in counts]
 
     def _ser_record(r):
         d = dict(r)
@@ -561,7 +576,7 @@ def cli():
     # --dump: capture everything to a snapshot file, then stop.
     if "--dump" in args:
         out = _arg_value(args, "--dump") or "tokstat-dump.json"
-        _dump_snapshot(out, tool)
+        _dump_snapshot(out, tool, exclude_today="--exclude-today" in args)
         return
 
     # --bench: measure the local judge model(s) speed on this machine.
@@ -575,8 +590,7 @@ def cli():
     if "--exclude-today" in args:
         def collect(cutoff, tool_filter=None, cutoff_end=None,
                     _c=_collect_all_exchanges):
-            midnight = datetime.now().astimezone().replace(
-                hour=0, minute=0, second=0, microsecond=0)
+            midnight = _today_midnight()
             end = midnight if cutoff_end is None else min(cutoff_end, midnight)
             return _c(cutoff, tool_filter, end)
 
