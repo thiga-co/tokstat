@@ -1747,7 +1747,8 @@ def show_audit(collect_fn, period_name: str | None = None,
     judges send transcript excerpts to their API — the non-local part — so they
     are opt-in and warned. `judge_max` caps how many (most recent) conversations
     are judged (None = no cap). `verify` re-checks findings with a skeptical
-    second pass and only applies when an Ollama judge is active."""
+    second pass, using the strongest active judge (claude > codex > ollama) so a
+    weak verifier can't drop a strong judge's legitimate finding."""
     from tokstat import _audit
 
     print(f"\n{BOLD} Conversation Audit{RESET}")
@@ -1797,7 +1798,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                 print(f"  {DIM}Installed: {', '.join(installed)}{RESET}")
             for m in oms:
                 if m and m not in missing:
-                    voters.append({"label": m, "kind": "ollama",
+                    voters.append({"label": m, "kind": "ollama", "model": m,
                                    "fn": (lambda c, _m=m:
                                           _audit.judge_conversation_ollama(c, _m))})
             if not any(v["kind"] == "ollama" for v in voters):
@@ -1806,6 +1807,7 @@ def show_audit(collect_fn, period_name: str | None = None,
     if claude_judge:
         if _audit.claude_cli_available():
             voters.append({"label": "Claude", "kind": "claude",
+                           "model": claude_model,
                            "fn": (lambda c: _audit.judge_conversation_claude(
                                c, claude_model))})
         else:
@@ -1814,6 +1816,7 @@ def show_audit(collect_fn, period_name: str | None = None,
     if codex_judge:
         if _audit.codex_cli_available():
             voters.append({"label": "Codex", "kind": "codex",
+                           "model": codex_model,
                            "fn": (lambda c: _audit.judge_conversation_codex(
                                c, codex_model))})
         else:
@@ -1927,14 +1930,17 @@ def show_audit(collect_fn, period_name: str | None = None,
     # ── Adversarial verify pass (opt-in): re-check each finding with a narrow,
     # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
     # cation/repetition mistaken for a defect" over-flagging.
-    if verify and records and not live_ollama:
-        print(f"{DIM}  --verify skipped: it re-checks findings with a local "
-              f"Ollama model, and no --ollama-judge is active.{RESET}")
-    if verify and records and live_ollama:
-        vmodel = live_ollama[0]
+    if verify and records:
+        # Verify with the STRONGEST live judge (claude > codex > ollama), so a
+        # weak verifier can't drop a strong judge's legitimate finding.
+        _rank = {"claude": 0, "codex": 1, "ollama": 2}
+        vv = min((v for v in voters if v["label"] in live),
+                 key=lambda v: _rank.get(v["kind"], 9), default=None)
+        chat = _audit.make_verifier(vv["kind"], vv.get("model")) if vv else None
         total = len(records)
-        print(f"{DIM}  Verifying {total} findings with {BOLD}{vmodel}{RESET}"
-              f"{DIM} (skeptical second pass)…{RESET}", flush=True)
+        offm = "" if vv and vv["kind"] == "ollama" else " · off-machine (API)"
+        print(f"{DIM}  Verifying {total} findings with {BOLD}{vv['label']}{RESET}"
+              f"{DIM} (skeptical second pass{offm})…{RESET}", flush=True)
         kept = []
         dropped = 0
         for i, r in enumerate(records, 1):
@@ -1950,9 +1956,9 @@ def show_audit(collect_fn, period_name: str | None = None,
             if f.metric == "contradiction" and not r.get("turn_ok"):
                 dropped += 1
                 continue
-            v = _audit.verify_finding_ollama(
-                f.metric, f.evidence, r.get("excerpt", ""), r.get("ask", ""),
-                vmodel)
+            v = _audit.verify_finding(
+                chat, f.metric, f.evidence, r.get("excerpt", ""),
+                r.get("ask", ""))
             if v is None:               # verifier errored → keep (don't hide)
                 kept.append(r)
             elif v[0]:                  # confirmed real

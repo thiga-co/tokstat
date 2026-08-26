@@ -760,24 +760,115 @@ def _ollama_chat_json(model, system, user, fmt, host, timeout, num_predict=400):
         return None
 
 
-def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
-                          model, host: str = OLLAMA_HOST, timeout: int = 120):
+def _strictify_schema(schema):
+    """Return a copy of a JSON Schema in OpenAI strict-structured-output form
+    (every object gets additionalProperties:false and all its keys required),
+    as `codex exec --output-schema` requires."""
+    if isinstance(schema, dict):
+        out = {k: _strictify_schema(v) for k, v in schema.items()}
+        if out.get("type") == "object":
+            out["additionalProperties"] = False
+            out["required"] = list((out.get("properties") or {}).keys())
+        return out
+    if isinstance(schema, list):
+        return [_strictify_schema(x) for x in schema]
+    return schema
+
+
+def _claude_chat_json(system, user, model=None, timeout=120):
+    """One structured Claude-CLI call → parsed dict, or None on any failure.
+    Claude can't enforce a schema, so we ask for JSON and parse it."""
+    prompt = (system + "\n\n" + user
+              + "\n\nReturn ONLY the JSON object, no prose, no code fences.")
+    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    if model:
+        cmd += ["--model", model]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        env = json.loads(proc.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(env, dict) or env.get("is_error"):
+        return None
+    try:
+        return _parse_judge_json(env.get("result", ""))
+    except JudgeError:
+        return None
+
+
+def _codex_chat_json(system, user, fmt, model=None, timeout=300):
+    """One structured Codex-CLI call → parsed dict, or None on any failure.
+    Uses --output-schema (strict form) to force the JSON shape."""
+    prompt = system + "\n\n" + user + "\n\nReturn ONLY the JSON object."
+    schema_fd, schema_path = tempfile.mkstemp(prefix="tokstat-cxv-",
+                                              suffix=".json")
+    out_path = schema_path + ".out"
+    try:
+        with os.fdopen(schema_fd, "w") as fh:
+            json.dump(_strictify_schema(fmt), fh)
+        cmd = ["codex", "exec", prompt, "-s", "read-only",
+               "--skip-git-repo-check", "--output-schema", schema_path,
+               "-o", out_path]
+        if model:
+            cmd += ["-m", model]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=timeout, stdin=subprocess.DEVNULL)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                return _parse_judge_json(fh.read())
+        except (OSError, JudgeError):
+            return None
+    finally:
+        for p in (schema_path, out_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def make_verifier(kind: str, model: str | None = None):
+    """Return a `chat(system, user, fmt) -> dict|None` callable for the given
+    judge backend, so the verify pass can re-check findings with ANY judge
+    (local Ollama, or the Claude / Codex CLI)."""
+    if kind == "ollama":
+        return lambda system, user, fmt: _ollama_chat_json(
+            model, system, user, fmt, OLLAMA_HOST, 120, num_predict=500)
+    if kind == "claude":
+        return lambda system, user, fmt: _claude_chat_json(system, user, model, 120)
+    if kind == "codex":
+        return lambda system, user, fmt: _codex_chat_json(system, user, fmt,
+                                                          model, 300)
+    return None
+
+
+def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask):
     """Adversarial second pass: re-check ONE finding with a narrow, skeptical
-    prompt. Returns (real: bool, reason: str), or None if the check couldn't
-    run (caller should then KEEP the finding rather than silently drop it)."""
-    # Contradiction: make the model extract BOTH incompatible statements; if it
+    prompt via `chat` (any judge backend — see make_verifier). Returns
+    (real: bool, reason: str), or None if the check couldn't run (caller should
+    then KEEP the finding rather than silently drop it)."""
+    # Contradiction: make the judge extract BOTH incompatible statements; if it
     # can't produce two distinct ones, it isn't a contradiction.
     if metric == "contradiction":
         user = ("Flagged quote: " + str(evidence or "")[:400] + "\n"
                 "Assistant turn: " + str(assistant_excerpt or "")[:900] + "\n\n"
                 "Are there two logically incompatible statements?")
-        parsed = _ollama_chat_json(
-            model, _VERIFY_CONTRADICTION_SYSTEM, user,
-            _VERIFY_CONTRADICTION_FORMAT, host, timeout, num_predict=500)
+        parsed = chat(_VERIFY_CONTRADICTION_SYSTEM, user,
+                      _VERIFY_CONTRADICTION_FORMAT)
         if parsed is None:
             return None
-        # The statement_a/b fields force the model to try to name both sides
-        # (a chain-of-thought effect that flips its verdict to false on phased
+        # The statement_a/b fields force the judge to try to name both sides
+        # (a chain-of-thought effect that flips the verdict to false on phased
         # plans / restatements); the decision itself rests on `incompatible`.
         return bool(parsed.get("incompatible")), str(parsed.get("reason", ""))[:200]
 
@@ -786,11 +877,18 @@ def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
             "User asked: " + str(user_ask or "")[:300] + "\n"
             "Assistant turn: " + str(assistant_excerpt or "")[:800] + "\n\n"
             "Is this GENUINELY '" + str(metric) + "'?")
-    parsed = _ollama_chat_json(model, _VERIFY_SYSTEM, user, _VERIFY_FORMAT,
-                               host, timeout, num_predict=400)
+    parsed = chat(_VERIFY_SYSTEM, user, _VERIFY_FORMAT)
     if parsed is None:
         return None
     return bool(parsed.get("real")), str(parsed.get("reason", ""))[:200]
+
+
+def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
+                          model, host: str = OLLAMA_HOST, timeout: int = 120):
+    """Backward-compatible Ollama verifier (thin wrapper over verify_finding)."""
+    chat = lambda system, user, fmt: _ollama_chat_json(
+        model, system, user, fmt, host, timeout, num_predict=500)
+    return verify_finding(chat, metric, evidence, assistant_excerpt, user_ask)
 
 
 def benchmark_ollama(model: str, host: str = OLLAMA_HOST,
