@@ -413,7 +413,7 @@ _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
-    "--verify",
+    "--verify", "--verify-model",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
@@ -505,7 +505,8 @@ def show_help():
                                            (nothing leaves the machine).
                                            --model a,b,c = judge panel (votes);
                                            --verify = skeptical 2nd pass (cuts
-                                           false positives);
+                                           false positives; --verify-model <m>
+                                           to verify with a bigger model);
                                            [--model <name(s)>] [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
@@ -623,7 +624,8 @@ def cli():
             jmax = None
         show_audit(collect, period, tool,
                    judge_model=_model_list(args), judge_max=jmax,
-                   verify="--verify" in args)
+                   verify=("--verify" in args or "--verify-model" in args),
+                   verify_model=_arg_value(args, "--verify-model"))
     elif "--plan" in args:
         show_plan(collect, period, tool)
     elif "--export" in args:

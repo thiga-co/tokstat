@@ -389,6 +389,14 @@ default no") and drops the ones it can't confirm. Verifying is far easier than
 detecting, so this cuts false positives even with the same local model (one
 extra call per finding). Findings that survive show the verifier's reason.
 
+Best of all, **verify with a bigger model** (`--verify-model qwen3.6:35b`):
+detect fast with a small model, then confirm precisely with a large one. Since
+the verify pass runs only on the handful of findings (not every conversation),
+the slow model's cost is bounded. This is the cheap-detector / expensive-verifier
+pattern — e.g. a 4B judge over-flagged a phased J+6/J+8/J+12 timeline as a
+"contradiction" and its own 4B verify kept it, but a 35B verifier correctly
+dropped it ("one coherent timeline").
+
 **Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
 each conversation judged by every model and the findings **aggregated by vote**:
 a finding flagged by more models ranks higher and shows its tally (e.g. `2/3`),
