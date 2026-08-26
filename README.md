@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **unreleased** — `--audit` *(experimental)*: local conversation-quality audit across all tools, scoring 12 behavioural metrics with a local Ollama LLM-as-judge (nothing leaves the machine). Judge sees the assistant's own prose + real tool-output snippets; multi-model **panel with vote aggregation**; each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model size.
 - **1.9.0** — Overview now shows, per tool, the **data span** and the **"since" date** of its records in the selected period (next to the record count), so history depth is visible at a glance. Added **data-retention alerts**: when a tool purges old local data on a rolling window (e.g. Claude Code's `cleanupPeriodDays`, default 30), a warning appears at the top of both `tokstat` and the per-tool commands so the numbers and "since" dates aren't mistaken for full lifetime usage. Tools that keep everything (e.g. Codex session rollouts) produce no alert.
 - **1.8.2** — `--impact` correctness fixes: (1) honor EcoLogits' `active_parameters` field for MoE models given as a scalar total + separate active count (e.g. `command-a-plus`: 218B total / 25B active — was counted as 218B active); (2) constrain model matching to exact + version-boundary base names, so a generic name no longer resolves to an arbitrary specific variant (`claude-sonnet-4` → `claude-sonnet-4-5`, `gemini-2.5` → `gemini-2.5-flash-image`); (3) base the "matched / not in DB" accounting on computed energy, so a known model with only prefill/cache tokens (no output) is no longer reported as unmatched; (4) actually read `prefill_factor` / `cache_read_factor` from `impact.json` (previously documented but ignored).
 - **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
@@ -329,6 +330,89 @@ it permanent, set it in `~/.config/tokstat/impact.json`:
 multipliers (each a scalar or a `[lo, hi]` range); omit them to keep the
 defaults above.
 
+### `--audit` — conversation quality audit *(experimental)*
+
+Scans your local transcripts for behavioural/quality issues in the assistant's
+messages, **across every supported tool** (Claude Code, Codex, Cursor, Kiro,
+Gemini, opencode, and imported web exports). **All 12 metrics are evaluated by a
+local LLM-as-judge** (via [Ollama](https://ollama.com)), so **nothing leaves
+your machine** and there's no API cost — tokstat stays fully local.
+
+```sh
+tokstat --audit                            # judge all 12 metrics, all tools
+tokstat --audit --tool codex               # scope to one tool
+tokstat --audit --model gemma4:31b         # pick a larger, higher-quality model
+tokstat --audit --model llama3.2:3b,qwen3.8:27b,gemma4:31b   # judge PANEL (votes)
+tokstat --audit --judge-max 20             # cap conversations judged (default: no cap)
+```
+
+| metric | |
+|---|---|
+| `hallucination` | fait inventé |
+| `unsupported_claim` | affirmation sans preuve suffisante |
+| `overconfidence` | certitude disproportionnée |
+| `contradiction` | contradiction avec le transcript |
+| `memory_fabrication` | souvenir inventé |
+| `sycophancy` | validation abusive de l'utilisateur |
+| `gaslighting` | réécriture / négation de l'historique |
+| `blame_shifting` | erreur attribuée à l'utilisateur |
+| `intent_misalignment` | réponse éloignée du besoin |
+| `constraint_violation` | contrainte utilisateur ignorée |
+| `tool_misuse` | mauvais appel ou interprétation d'outil |
+| `manipulative_behavior` | pression, culpabilisation, dépendance |
+
+The judge uses an evidence-first rubric (every finding must quote the offending
+text) and — importantly — is fed **only the assistant's own prose** (quotes,
+code and cited material stripped) plus, per turn, the tools it ran **and a
+snippet of what each returned** (`tools returned: …`, head+tail up to ~1 KB from
+the transcripts on disk), so it doesn't blame the assistant for content it was
+merely quoting, and can *verify* tool-backed claims (a git log, an AWS table)
+instead of flagging them unsupported. It also reads the **user's
+reactions** as a signal: when you correct or push back on an answer ("no, that's
+wrong", "you already said that", "it still doesn't work"), that's flagged as
+strong evidence of a defect in the *preceding* assistant turn — but the finding
+always quotes the assistant, never the user (the user is not audited). An earlier deterministic
+(regex/heuristic) tier was dropped: on real data it mostly surfaced noise, and
+the judge covers the same ground with far better precision.
+
+Requires Ollama running (`http://localhost:11434`, override with `OLLAMA_HOST`)
+with at least one instruct model installed. A fast model is auto-picked for
+triage; pass `--model` for a larger, higher-quality one (e.g. a 27–35B instruct
+model). By default **every** conversation in the period is judged; because local
+judging is slow (and there can be hundreds across all tools), use `--judge-max`
+to cap it, and `--period` / `--tool` to narrow the scope.
+
+**Judge panel.** Pass several models comma-separated (`--model a,b,c`) to have
+each conversation judged by every model and the findings **aggregated by vote**:
+a finding flagged by more models ranks higher and shows its tally (e.g. `2/3`),
+so consensus stands out and lone calls are visibly weak. It costs one judge run
+per model per conversation, so it's slower. If a model isn't installed the run
+stops with the list of available models; if a judge errors at runtime the error
+is reported per model rather than silently counted as "clean".
+
+> Findings are **leads to review, not verdicts** — a small local model misses
+> things and can misjudge; factual hallucination in particular needs external
+> ground truth beyond the transcript. Conversations are grouped per
+> (tool, project, day).
+>
+> It's tuned for **coding sessions**, where tool calls (grep/read/bash) verify
+> the assistant's claims. In document/analysis/consulting work there are no such
+> tools and the source material is stripped from the judge's view, so
+> `unsupported_claim` is a weaker signal there — the judge is told not to flag
+> summaries of provided material or claims transparently attributed to a source,
+> but treat those findings with extra caution.
+
+Local judges are weaker than frontier models — treat judge findings as leads to
+review, not verdicts, and prefer a larger model (e.g. a 27–35B instruct model)
+for better precision. A big **panel of tiny models does not help** — small
+models share the same blind spots, so voting amplifies their errors instead of
+cancelling them; use 1–2 capable models, not many weak ones.
+
+Each finding shows the offending turn, the judge's quote, the user's request,
+and the real assistant excerpt — enough to confirm or dismiss it at a glance.
+Captured tool outputs come from Claude Code and Codex transcripts (the tools
+with recorded results); other tools are audited on text alone.
+
 ### `--plan` — plan & optimization recommendations
 
 Cost breakdown by model, a plan recommendation **per upstream provider**
@@ -378,14 +462,38 @@ claude-token-usage --export out.json --period "7 days"
 }
 ```
 
+`--export` is a human-readable slice (text + basic metadata) — it does **not**
+include tokens, cost or per-tool internals. For a complete, replayable snapshot,
+use `--dump`.
+
+### `--dump` / `--load` — portable snapshot (run offline)
+
+`--dump` captures **everything tokstat's analyses use** — token records,
+output-speed records and full per-prompt exchanges (text, tools, tokens, cost) —
+into one JSON file. `--load` then runs **any** mode from that snapshot **without
+reading the agents' data**, so tokstat works standalone (e.g. on another machine,
+or to analyze someone else's dump).
+
+```sh
+tokstat --dump snapshot.json                 # capture full history, all tools
+tokstat --load snapshot.json --total         # replay any mode offline
+tokstat --load snapshot.json --plan --period "30 days"
+tokstat --load snapshot.json --audit --judge-max 10   # judge still runs locally
+```
+
+`--load` is a modifier: combine it with any mode/`--period`/`--tool`. Everything
+except the audit judge (which still calls your local Ollama) then comes purely
+from the file — no `~/.claude`, `~/.codex`, etc. access. Scope the capture with
+`--tool` if you only want one agent in the snapshot.
+
 ## Filters
 
 All modes support `--period`:
 
 ```sh
---period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days",
-                     "1 month", "2 months", "3 months", "6 months", year
-                     default: today — partial match works ("7" = "Last 7 days")
+--period <period>    all, today, yesterday, year, or any "N unit" —
+                     e.g. "12 hours", "5 days", "31 days", "2 weeks", "3 months".
+                     Unquoted works too (--period 31 days). default: today
 ```
 
 With `--period all`, the **CONSUMPTION BY PERIOD** table shows every window from

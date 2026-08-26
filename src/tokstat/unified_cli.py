@@ -10,10 +10,11 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import io
+import json
 import sys
 import time
 from contextlib import redirect_stdout
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tokstat.cli import (
@@ -57,7 +58,7 @@ from tokstat._core import (
     resolve_period,
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact,
+    show_activity, show_total, show_impact, show_audit, show_bench,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
     compute_overview_state,
@@ -93,8 +94,22 @@ _TOOL_ALIASES = {
 }
 
 
+# When a snapshot is loaded (--load), all scanning reads from it instead of the
+# agents' on-disk data — tokstat then runs fully standalone/offline.
+_SNAPSHOT: dict | None = None
+
+
 def _scan_all(tool_filter: str | None) -> tuple[list[dict], list[dict], list[tuple[str, int, str]]]:
     """Run every registered scanner. Returns (records, speed_records, per_tool_counts)."""
+    if _SNAPSHOT is not None:
+        recs = [r for r in _SNAPSHOT["records"]
+                if not tool_filter or r.get("tool") == tool_filter]
+        spd = [s for s in _SNAPSHOT["speed_records"]
+               if not tool_filter or s.get("tool") == tool_filter]
+        counts = [(t, n, p) for (t, n, p) in _SNAPSHOT["counts"]
+                  if not tool_filter or t == tool_filter]
+        return recs, spd, counts
+
     records: list[dict] = []
     speed_records: list[dict] = []
     counts: list[tuple[str, int, str]] = []  # (tool, n_records, data_path)
@@ -120,6 +135,16 @@ def _scan_all(tool_filter: str | None) -> tuple[list[dict], list[dict], list[tup
 def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
                            cutoff_end: datetime | None = None) -> tuple[list[dict], dict[str, int]]:
     """Aggregate exchanges from every registered tool."""
+    if _SNAPSHOT is not None:
+        exs = [e for e in _SNAPSHOT["exchanges"]
+               if (not tool_filter or e.get("tool") == tool_filter)
+               and e.get("ts") and e["ts"] >= cutoff
+               and (cutoff_end is None or e["ts"] < cutoff_end)]
+        counts: dict[str, int] = {}
+        for e in exs:
+            counts[e["tool"]] = counts.get(e["tool"], 0) + 1
+        return exs, counts
+
     all_exchanges: list[dict] = []
     tool_counts: dict[str, int] = {}
 
@@ -136,6 +161,110 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
     return all_exchanges, tool_counts
+
+
+# ─── Snapshot: --dump / --load ──────────────────────────────────────────────
+
+_DUMP_VERSION = 2   # v2 adds per-exchange tool_outputs (captured tool result snippets)
+
+
+def _iso(dt):
+    return dt.isoformat() if dt else None
+
+
+def _from_iso(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _dump_snapshot(path: str, tool_filter: str | None = None) -> None:
+    """Capture everything tokstat's analyses use — token records, output-speed
+    records and full per-prompt exchanges (with text, tools, tokens, cost) — to
+    a portable JSON file that `--load` can replay offline."""
+    from tokstat._core import BOLD, DIM, RESET, YELLOW
+    print(f"\n{BOLD} Dumping tokstat snapshot{RESET}")
+    print(f"{DIM}  Scanning all data sources (full history)...{RESET}\n")
+
+    load_pricing()   # so per-record cost is computed and captured in the dump
+    records, speed_records, counts = _scan_all(tool_filter)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    exchanges, _ = _collect_all_exchanges(epoch, tool_filter, None)
+
+    def _ser_record(r):
+        d = dict(r)
+        d["ts"] = _iso(r.get("ts"))
+        return d
+
+    def _ser_exchange(e):
+        d = dict(e)
+        d["ts"] = _iso(e.get("ts"))
+        if e.get("tools_used") is not None:
+            d["tools_used"] = dict(e["tools_used"])   # defaultdict → dict
+        return d
+
+    snapshot = {
+        "tokstat_dump": _DUMP_VERSION,
+        "version": __version__,
+        "dumped_at": None,  # stamped by the OS mtime; avoid Date.now-style calls
+        "records": [_ser_record(r) for r in records],
+        "speed_records": [_ser_record(s) for s in speed_records],
+        "exchanges": [_ser_exchange(e) for e in exchanges],
+        "counts": [list(c) for c in counts],
+    }
+    out = Path(path)
+    out.write_text(json.dumps(snapshot, ensure_ascii=False))
+    size_mb = out.stat().st_size / (1024 * 1024)
+    if not records and not exchanges:
+        print(f"  {YELLOW}No data found to dump.{RESET}\n")
+    for tool_name, n, _p in counts:
+        if n:
+            color = TOOL_COLORS.get(tool_name, "")
+            print(f"  {color}●{RESET} {tool_name:<12} {n:>6} records")
+    print(f"\n  {BOLD}{len(exchanges)}{RESET} exchanges, "
+          f"{BOLD}{len(records)}{RESET} records → {BOLD}{path}{RESET} "
+          f"{DIM}({size_mb:.1f} MB){RESET}")
+    print(f"  {DIM}Replay offline with: tokstat --load {path} [any mode]{RESET}\n")
+
+
+def _load_snapshot(path: str) -> bool:
+    """Load a snapshot so all scanning reads from it (standalone/offline).
+    Returns True on success."""
+    global _SNAPSHOT
+    from tokstat._core import RED, YELLOW, DIM, RESET, BOLD
+    p = Path(path)
+    if not p.exists():
+        print(f"\n  {RED}Snapshot not found: {path}{RESET}\n")
+        return False
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"\n  {RED}Could not read snapshot {path}: {e}{RESET}\n")
+        return False
+    if not isinstance(data, dict) or "tokstat_dump" not in data:
+        print(f"\n  {RED}{path} is not a tokstat snapshot.{RESET}\n")
+        return False
+
+    for r in data.get("records", []):
+        r["ts"] = _from_iso(r.get("ts"))
+    for s in data.get("speed_records", []):
+        s["ts"] = _from_iso(s.get("ts"))
+    for e in data.get("exchanges", []):
+        e["ts"] = _from_iso(e.get("ts"))
+    _SNAPSHOT = {
+        "records": data.get("records", []),
+        "speed_records": data.get("speed_records", []),
+        "exchanges": data.get("exchanges", []),
+        "counts": [tuple(c) for c in data.get("counts", [])],
+    }
+    n_ex = len(_SNAPSHOT["exchanges"])
+    print(f"{DIM}  Loaded snapshot {BOLD}{path}{RESET}{DIM} "
+          f"(v{data.get('version', '?')}, {n_ex} exchanges) — "
+          f"standalone mode, not reading agent data.{RESET}")
+    return True
 
 
 def _span_label(timestamps: list) -> str:
@@ -267,8 +396,38 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool", "--watch", "-w",
+    "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
+    "--model", "--judge-max", "--dump", "--load", "--bench",
+    "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
+
+
+def _arg_value(args, flag, default=None):
+    """Return the value following `flag`, or default."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
+
+
+def _model_list(args):
+    """Parse --model as a comma/space-separated list, tolerating stray spaces
+    (e.g. "a,b ,c" or "a b c"). Consumes every token after --model up to the
+    next flag, then splits on commas/whitespace. Returns a comma-joined string
+    (for a single judge model or a panel), or None."""
+    if "--model" not in args:
+        return None
+    i = args.index("--model")
+    parts = []
+    for a in args[i + 1:]:
+        if a.startswith("-"):
+            break
+        parts.append(a)
+    models = [m for m in " ".join(parts).replace(",", " ").split() if m]
+    # de-dup, preserve order
+    models = list(dict.fromkeys(models))
+    return ",".join(models) if models else None
 
 _DEFAULT_WATCH_INTERVAL = 5.0
 
@@ -325,18 +484,27 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
+  tokstat --audit                          Conversation quality audit — all 12
+                                           metrics via LOCAL Ollama model(s)
+                                           (nothing leaves the machine).
+                                           --model a,b,c = judge panel (votes);
+                                           [--model <name(s)>] [--judge-max <n>]
   tokstat --impact [region]                Energy & CO₂ estimate (EcoLogits;
                                            region: world/eu/france/us/green)
   tokstat --plan                           Cost breakdown + optimization tips
   tokstat --export   [file.json]           Export all exchanges to JSON
+  tokstat --bench    [--model a,b,c]       Benchmark judge model speed (prefill/decode tok/s)
+  tokstat --dump     [file.json]           Capture ALL data to a portable snapshot
+  tokstat --load <file> <mode>             Run any mode from a snapshot, offline
+                                           (does not read the agents' data)
   tokstat --watch    [-w] [SECONDS]        Refresh overview live (default 5s, Ctrl+C to stop)
   tokstat --version  [-V]                  Show version
   tokstat --help     [-h]                  This help
 
 {BOLD}FILTERS{RESET}
-  --period <period>    all, hour, "5 hours", today, yesterday, "7 days",
-                       "30 days", "1 month", "2 months", "3 months",
-                       "6 months", year   (partial match works; default: today)
+  --period <period>    all, today, yesterday, year, or any "N unit" —
+                       e.g. "12 hours", "5 days", "31 days", "2 weeks",
+                       "3 months"   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
                        claude.ai, chatgpt (default: all)
 
@@ -379,6 +547,26 @@ def cli():
         print(f"\n  {RED}{e}{RESET}\n")
         sys.exit(1)
 
+    # --load: read from a snapshot instead of the agents' data (standalone).
+    if "--load" in args:
+        snap = _arg_value(args, "--load")
+        if not snap:
+            print(f"\n  {RED}--load needs a snapshot file: --load <file>{RESET}\n")
+            sys.exit(1)
+        if not _load_snapshot(snap):
+            sys.exit(1)
+
+    # --dump: capture everything to a snapshot file, then stop.
+    if "--dump" in args:
+        out = _arg_value(args, "--dump") or "tokstat-dump.json"
+        _dump_snapshot(out, tool)
+        return
+
+    # --bench: measure the local judge model(s) speed on this machine.
+    if "--bench" in args:
+        show_bench(_model_list(args))
+        return
+
     watch_interval = _parse_watch_interval(args)
     if watch_interval is not None:
         if any(f in args for f in ("--prompts", "-p", "--anomalies", "--plan", "--export")):
@@ -397,6 +585,14 @@ def cli():
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+    elif "--audit" in args:
+        jmax_raw = _arg_value(args, "--judge-max")   # default: no cap
+        try:
+            jmax = int(jmax_raw) if jmax_raw is not None else None
+        except ValueError:
+            jmax = None
+        show_audit(_collect_all_exchanges, period, tool,
+                   judge_model=_model_list(args), judge_max=jmax)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

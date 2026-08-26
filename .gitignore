@@ -10,3 +10,9 @@ __pycache__/
 # the appropriate --import flag instead.
 *.zip
 conversations.json
+
+# tokstat snapshots (--dump) and exports. These contain full conversation
+# transcripts and can include secrets (API tokens, keys) from past sessions —
+# never commit them.
+*.dump
+tokstat-dump.json

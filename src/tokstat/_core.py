@@ -199,10 +199,24 @@ def resolve_period(period_name: str | None, default: str = "today") -> tuple[dat
     name = period_name or default
     if name.lower() in ("all", "tout"):
         return datetime.min.replace(tzinfo=timezone.utc), None, "All time"
+    # Dynamic "N unit" (e.g. "5 days", "31 days", "12 hours", "2 weeks").
+    import re as _re
+    m = _re.fullmatch(r"\s*(\d+)\s*(hour|day|week|month|year)s?\s*",
+                      name, _re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        if n >= 1:
+            per_unit = {"hour": timedelta(hours=1), "day": timedelta(days=1),
+                        "week": timedelta(weeks=1), "month": timedelta(days=30),
+                        "year": timedelta(days=365)}[unit]
+            now = datetime.now(timezone.utc)
+            plural = "" if n == 1 else "s"
+            return now - per_unit * n, None, f"Last {n} {unit}{plural}"
     for bname, (start, end) in boundaries.items():
         if name.lower() in bname.lower():
             return start, end, bname
-    valid = ", ".join(list(boundaries.keys()) + ["all"])
+    valid = ", ".join(list(boundaries.keys()) + ["all", "N days/hours/weeks/..."])
     raise ValueError(f"Unknown period '{name}'. Available: {valid}")
 
 
@@ -1641,6 +1655,326 @@ def show_total(collect_fn, period_name: str | None = None,
                   f"{DIM}{fmt_tokens(d['tokens']):>7} tokens · {d['prompts']:>4} prompts · "
                   f"{span}{RESET}")
     print()
+
+
+# ─── Conversation quality audit ────────────────────────────────────────────
+
+_AUDIT_SEV_LABEL = {0: "info", 1: "low", 2: "med", 3: "high"}
+_AUDIT_SEV_COLOR = {0: DIM, 1: CYAN, 2: BYELLOW, 3: BRED}
+
+
+def _audit_norm(s: str) -> str:
+    return " ".join((s or "").lower().replace("*", "").replace("`", "").split())
+
+
+def _audit_finding_context(conv, turn_index, evidence=""):
+    """Pull the real transcript context for a finding so the user can judge it.
+
+    Small models often report a WRONG turn index while quoting real text, so we
+    locate the turn by matching the evidence quote against the assistant turns
+    (falling back to the reported index). If no turn contains the evidence, the
+    'quote' was likely fabricated — signalled via turn_ok=False.
+    Returns (excerpt, user_ask, turn_ok, resolved_index)."""
+    turns = conv.turns
+    probe = _audit_norm(evidence)[:60]
+    usable = len(probe) >= 12
+    def _has(t):
+        return usable and probe in _audit_norm(t.text)
+
+    idx = turn_index if 0 <= turn_index < len(turns) else None
+    if usable:
+        # Verify/locate by the quote: trust the index only if its text contains
+        # the quote; otherwise find the assistant turn that does. If none does,
+        # the quote is fabricated/paraphrased → unlocatable.
+        if idx is not None and _has(turns[idx]):
+            turn_ok = True
+        else:
+            match = next((j for j, t in enumerate(turns)
+                          if t.role == "assistant" and _has(t)), None)
+            idx, turn_ok = (match, True) if match is not None else (idx, False)
+    else:
+        # No usable quote to verify — fall back to a valid reported index.
+        turn_ok = idx is not None
+    excerpt = ask = ""
+    if turn_ok:
+        excerpt = " ".join((turns[idx].text or "").split())[:500]
+        for j in range(idx - 1, -1, -1):
+            if turns[j].role == "user" and turns[j].text:
+                ask = " ".join(turns[j].text.split())[:220]
+                break
+    return excerpt, ask, turn_ok, (idx if turn_ok else turn_index)
+
+
+def show_audit(collect_fn, period_name: str | None = None,
+               tool_filter: str | None = None, judge_model: str | None = None,
+               judge_max: int | None = None, limit: int = 20):
+    """Audit conversations across all tools for behavioural/quality issues.
+
+    Every one of the 12 metrics is evaluated by a LOCAL LLM judge via Ollama —
+    fully local, nothing leaves the machine. `judge_model` overrides the
+    auto-picked Ollama model; `judge_max` caps how many (most recent)
+    conversations are judged (None = no cap — local judging is slow, so this
+    can take a while)."""
+    from tokstat import _audit
+
+    print(f"\n{BOLD} Conversation Audit{RESET}")
+    print(f"{DIM}  Scanning conversations across all tools...{RESET}\n")
+
+    try:
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+
+    all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    convs = _audit.conversations_from_exchanges(all_exchanges)
+    if not convs:
+        print(f"  {YELLOW}No conversations found for this period.{RESET}\n")
+        return
+
+    installed = _audit.list_ollama_models()
+    if not installed:
+        print(f"  {YELLOW}⚠ The audit judge needs a local Ollama model, but "
+              f"Ollama is unreachable on {_audit.OLLAMA_HOST} (or no model is "
+              f"installed).{RESET}")
+        print(f"  {DIM}Install Ollama (https://ollama.com), pull a model "
+              f"(e.g. `ollama pull llama3.2:3b`), then retry.{RESET}\n")
+        return
+    # A comma-separated --model runs a PANEL of judges (votes shown per finding).
+    if judge_model:
+        models = list(dict.fromkeys(m.strip() for m in judge_model.split(",")
+                                    if m.strip()))
+    else:
+        auto = _audit.pick_ollama_model()
+        models = [auto] if auto else []
+    missing = [m for m in models if not _audit.ollama_has_model(m)]
+    if missing or not models:
+        print(f"  {YELLOW}⚠ Ollama model(s) not installed: "
+              f"{', '.join(missing) or '(none given)'} — the judge cannot run.{RESET}")
+        print(f"  {DIM}Installed models: {', '.join(installed)}{RESET}")
+        print(f"  {DIM}Pass one or more with --model a,b,c or "
+              f"`ollama pull {(missing or ['llama3.2:3b'])[0]}`.{RESET}\n")
+        return
+
+    def _in_window(f):
+        # Keep only findings whose offending turn falls in the selected period.
+        if f.ts is None:
+            return True
+        return f.ts >= cutoff and (cutoff_end is None or f.ts < cutoff_end)
+
+    # Judge the most recent conversations first; judge_max=None means all.
+    ordered = sorted(convs, key=lambda c: c.ts_last or c.ts, reverse=True)
+    to_judge = ordered if judge_max is None else ordered[:judge_max]
+    judged_n = len(to_judge)
+    cap_note = "" if judge_max is None else f" (capped at {judge_max})"
+    panel = (f"panel of {len(models)}: {', '.join(models)}"
+             if len(models) > 1 else f"model {models[0]}")
+    print(f"{DIM}  Judge: local Ollama {BOLD}{panel}{RESET}{DIM} on "
+          f"{judged_n}/{len(convs)} conversations{cap_note}. "
+          f"Fully local — nothing leaves the machine.{RESET}")
+
+    # Aggregate findings across models: same (session, metric, turn) → one
+    # issue, with the set of models that flagged it (its "votes").
+    #
+    # One WAVE PER MODEL (model in the outer loop): Ollama keeps a model warm
+    # in VRAM between consecutive calls, so judging every conversation with one
+    # model before moving to the next avoids reloading models on each item.
+    agg: dict = {}
+    model_errors: dict = {m: 0 for m in models}
+    # Ollama timing accumulators per model → prefill/decode throughput.
+    perf: dict = {m: {"p_tok": 0, "p_ns": 0, "o_tok": 0, "o_ns": 0} for m in models}
+    live = []
+    for mi, m in enumerate(models, 1):
+        if len(models) > 1:
+            print(f"{DIM}  Model {mi}/{len(models)}: {BOLD}{m}{RESET}", flush=True)
+        broke = False
+        for k, c in enumerate(to_judge, 1):
+            proj = normalize_project(c.project) if c.project else "?"
+            proj = "/".join(proj.rstrip("/").split("/")[-2:]) or proj
+            day = c.ts.date().isoformat() if c.ts else "?"
+            tcol = TOOL_COLORS.get(c.tool, "")
+            print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
+                  f"{proj} · {day} · {len(c.turns)} turns{RESET}", flush=True)
+            try:
+                res, stats = _audit.judge_conversation_ollama(c, m)
+            except _audit.JudgeError as e:
+                model_errors[m] += 1
+                print(f"      {YELLOW}⚠ {m} failed: {e}{RESET}")
+                # A model that fails on its very first call can't run at all —
+                # skip the rest of its wave instead of churning through every
+                # conversation repeating the same error.
+                if k == 1:
+                    print(f"      {YELLOW}↳ skipping {m}.{RESET}")
+                    broke = True
+                    break
+                continue
+            for key_ in ("p_tok", "p_ns", "o_tok", "o_ns"):
+                perf[m][key_] += stats.get(key_, 0)
+            for f in res:
+                if not _in_window(f):
+                    continue
+                excerpt, ask, turn_ok, ridx = _audit_finding_context(
+                    c, f.turn_index, f.evidence)
+                # Key on the RESOLVED turn so panel votes aggregate even when
+                # models report different (wrong) indices for the same issue.
+                key = (f.session_id, f.metric, ridx if turn_ok else f.turn_index)
+                rec = agg.get(key)
+                if rec is None:
+                    agg[key] = {"best": f, "voters": {m}, "excerpt": excerpt,
+                                "ask": ask, "turn_ok": turn_ok, "turn": ridx}
+                else:
+                    rec["voters"].add(m)
+                    if f.severity > rec["best"].severity:
+                        rec["best"] = f
+        if not broke:
+            live.append(m)
+
+    if not live:
+        print(f"\n  {RED}⚠ Every judge failed — no audit was performed "
+              f"(not a clean result).{RESET}\n")
+        return
+
+    records = list(agg.values())
+    err_note = ""
+    if any(model_errors.values()):
+        err_note = ("  ·  " + YELLOW + "; ".join(
+            f"{m}: {model_errors[m]} errors" for m in models if model_errors[m])
+            + RESET)
+    print(f"\n  Period: {BOLD}{period_label}{RESET}  ·  "
+          f"{len(convs)} conversations ({judged_n} judged)  ·  "
+          f"{len(records)} findings{err_note}")
+
+    # ── Judge speed on this machine (from Ollama's timing stats) ────────────
+    speed_rows = []
+    for m in models:
+        p = perf[m]
+        pf = (p["p_tok"] / (p["p_ns"] / 1e9)) if p["p_ns"] else None
+        dc = (p["o_tok"] / (p["o_ns"] / 1e9)) if p["o_ns"] else None
+        if pf or dc:
+            speed_rows.append((m, pf, dc, p["p_tok"], p["o_tok"]))
+    if speed_rows:
+        print(f"\n  {BOLD}Judge speed{RESET} {DIM}(this machine, via Ollama){RESET}")
+        for m, pf, dc, ptok, otok in speed_rows:
+            pf_s = f"{pf:.0f}" if pf else "—"
+            dc_s = f"{dc:.1f}" if dc else "—"
+            print(f"    {DIM}{m:<22}{RESET} prefill {BOLD}{pf_s}{RESET} tok/s"
+                  f"{DIM} · {RESET}decode {BOLD}{dc_s}{RESET} tok/s"
+                  f"  {DIM}({fmt_tokens(ptok)} in / {fmt_tokens(otok)} out){RESET}")
+
+    # ── Summary by metric ──────────────────────────────────────────────────
+    by_metric: dict[str, list] = defaultdict(list)
+    for r in records:
+        by_metric[r["best"].metric].append(r)
+
+    n_judges = len(live)   # models that actually ran → vote denominator
+    panel_note = (" · vote = models agreeing" if n_judges > 1 else "")
+    print(f"\n  {BOLD}By metric{RESET} {DIM}(local LLM judge{panel_note}){RESET}")
+    for metric in _audit.ALL_METRICS:
+        rs = by_metric.get(metric, [])
+        n = len(rs)
+        maxsev = max((r["best"].severity for r in rs), default=0)
+        color = BRED if maxsev >= 3 else (
+            BYELLOW if maxsev >= 2 else (CYAN if maxsev >= 1 else DIM))
+        desc = _audit.METRIC_DESC.get(metric, "")
+        print(f"    {color}{metric:<22}{RESET} {n:>3}  {DIM}{desc}{RESET}")
+
+    # ── Top findings (consensus first when there's a panel) ─────────────────
+    if records:
+        records.sort(key=lambda r: (-len(r["voters"]), -r["best"].severity))
+        print(f"\n  {BOLD}Top findings{RESET} {DIM}(most agreed / severe first, "
+              f"max {limit}){RESET}")
+        for r in records[:limit]:
+            f = r["best"]
+            sev = _AUDIT_SEV_COLOR[f.severity]
+            lbl = _AUDIT_SEV_LABEL[f.severity]
+            when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
+            proj = normalize_project(f.project) if f.project else "?"
+            tcol = TOOL_COLORS.get(f.tool, "")
+            vote = (f"{BOLD}{len(r['voters'])}/{n_judges}{RESET}{DIM} · "
+                    if n_judges > 1 else "")
+            turn = (f" · turn {r.get('turn')}" if r.get("turn_ok")
+                    else " · turn ? (unlocatable)")
+            print(f"    {sev}●{RESET} {sev}{lbl:<4}{RESET} "
+                  f"{BOLD}{f.metric}{RESET} {DIM}· {vote}{tcol}{f.tool}{RESET}"
+                  f"{DIM} · {when} · {proj}{turn}{RESET}")
+            if n_judges > 1:
+                print(f"        {DIM}votes:{RESET} {', '.join(sorted(r['voters']))}")
+            print(f"        {DIM}why:  {RESET}{f.rationale}")
+            if f.evidence:
+                ev = " ".join(str(f.evidence).split())[:200]
+                print(f"        {DIM}judge flagged:{RESET} \"{ev}\"")
+            # The REAL transcript context, so you can verify the finding yourself.
+            if r.get("ask"):
+                print(f"        {DIM}user asked:    {r['ask']}{RESET}")
+            if r.get("excerpt"):
+                print(f"        {DIM}assistant said: \"{r['excerpt']}\"{RESET}")
+            elif not r.get("turn_ok"):
+                print(f"        {DIM}(the flagged quote matches no assistant turn "
+                      f"— likely fabricated/paraphrased; treat with suspicion){RESET}")
+
+    # ── Honesty caveat ──────────────────────────────────────────────────────
+    tip = (" A panel agreeing raises confidence; a lone vote is weak."
+           if n_judges > 1 else "")
+    print(f"\n  {DIM}⚠ Findings come from local LLM judge(s) — leads to review, "
+          f"not verdicts.{tip} Factual hallucination in particular needs "
+          f"external ground truth beyond the transcript.{RESET}\n")
+
+
+def show_bench(judge_model: str | None = None):
+    """Benchmark the local judge model(s) on this machine: prefill and decode
+    tokens/s (from Ollama's own timing stats) — to compare hardware/models."""
+    from tokstat import _audit
+
+    print(f"\n{BOLD} Judge model benchmark{RESET}")
+    print(f"{DIM}  Local Ollama on {_audit.OLLAMA_HOST}. prefill = prompt "
+          f"processing, decode = generation.{RESET}\n")
+
+    installed = _audit.list_ollama_models()
+    if not installed:
+        print(f"  {YELLOW}⚠ Ollama unreachable on {_audit.OLLAMA_HOST} "
+              f"(or no model installed).{RESET}\n")
+        return
+    if judge_model:
+        models = list(dict.fromkeys(m.strip() for m in judge_model.split(",")
+                                    if m.strip()))
+    else:
+        auto = _audit.pick_ollama_model()
+        models = [auto] if auto else []
+    missing = [m for m in models if not _audit.ollama_has_model(m)]
+    if missing or not models:
+        print(f"  {YELLOW}⚠ Not installed: {', '.join(missing) or '(none given)'}"
+              f"{RESET}")
+        print(f"  {DIM}Installed: {', '.join(installed)}{RESET}\n")
+        return
+
+    # Column width adapts to the longest model name (some are 40+ chars).
+    nw = min(max((len(m) for m in models), default=5), 48)
+
+    def _fit(name):
+        return name if len(name) <= nw else name[:nw - 1] + "…"
+
+    print(f"    {DIM}{'model':<{nw}}{'prompt':>8}{'prefill':>11}"
+          f"{'output':>8}{'decode':>10}{'load':>8}{RESET}")
+    print(f"    {DIM}{'':<{nw}}{'tok':>8}{'tok/s':>11}{'tok':>8}{'tok/s':>10}"
+          f"{'s':>8}{RESET}")
+    for m in models:
+        print(f"{DIM}    {_fit(m)} …{RESET}", end="", flush=True)
+        try:
+            r = _audit.benchmark_ollama(m)
+        except _audit.JudgeError as e:
+            print(f"\r    {_fit(m):<{nw}}{RED}  benchmark failed: {e}{RESET}")
+            continue
+        pf = f"{r['prefill_tps']:.0f}" if r['prefill_tps'] else "—"
+        dc = f"{r['decode_tps']:.1f}" if r['decode_tps'] else "—"
+        pfc = BRED if (r['prefill_tps'] or 0) < 200 else (
+            BYELLOW if (r['prefill_tps'] or 0) < 800 else GREEN)
+        dcc = BRED if (r['decode_tps'] or 0) < 15 else (
+            BYELLOW if (r['decode_tps'] or 0) < 40 else GREEN)
+        print(f"\r    {_fit(m):<{nw}}{(r['prompt_tokens'] or 0):>8}"
+              f"{pfc}{pf:>11}{RESET}{(r['output_tokens'] or 0):>8}"
+              f"{dcc}{dc:>10}{RESET}{r['load_s']:>8.1f}")
+    print(f"\n  {DIM}Tip: for the audit, prefill speed matters most (long "
+          f"transcripts, short JSON output).{RESET}\n")
 
 
 # ─── Data-retention checks ─────────────────────────────────────────────────
