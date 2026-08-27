@@ -34,7 +34,7 @@ def cache_load(service: str, conv_id: str) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -56,7 +56,7 @@ def cache_iter(service: str):
         if "__" not in f.stem:
             continue
         try:
-            data = json.loads(f.read_text(errors="replace"))
+            data = json.loads(f.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(data, dict):

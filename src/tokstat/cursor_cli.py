@@ -128,7 +128,7 @@ def _composer_project_map() -> dict[str, str]:
             folder = None
             if wj.exists():
                 try:
-                    uri = json.loads(wj.read_text()).get("folder", "")
+                    uri = json.loads(wj.read_text(encoding="utf-8")).get("folder", "")
                     if uri.startswith("file://"):
                         folder = urllib.parse.unquote(uri[len("file://"):])
                 except Exception:

@@ -231,7 +231,9 @@ def _dump_snapshot(path: str, tool_filter: str | None = None,
         "counts": [list(c) for c in counts],
     }
     out = Path(path)
-    out.write_text(json.dumps(snapshot, ensure_ascii=False))
+    # UTF-8 explicitly: the snapshot holds non-ASCII text, and Windows would
+    # otherwise write/read it as cp1252 and choke (UnicodeDecodeError).
+    out.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     size_mb = out.stat().st_size / (1024 * 1024)
     if not records and not exchanges:
         print(f"  {YELLOW}No data found to dump.{RESET}\n")
@@ -255,8 +257,8 @@ def _load_snapshot(path: str) -> bool:
         print(f"\n  {RED}Snapshot not found: {path}{RESET}\n")
         return False
     try:
-        data = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError) as e:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
         print(f"\n  {RED}Could not read snapshot {path}: {e}{RESET}\n")
         return False
     if not isinstance(data, dict) or "tokstat_dump" not in data:

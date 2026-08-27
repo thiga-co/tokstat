@@ -55,7 +55,7 @@ def _load_session_cwd_map() -> dict[str, str]:
         return out
     for f in _SESS_BASE.rglob("*.json"):
         try:
-            d = json.loads(f.read_text(errors="replace"))
+            d = json.loads(f.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError):
             continue
         sid = d.get("id")
@@ -78,7 +78,7 @@ def _iter_assistant_messages():
             if not f.name.endswith(".json"):
                 continue
             try:
-                msg = json.loads(f.read_text(errors="replace"))
+                msg = json.loads(f.read_text(encoding="utf-8", errors="replace"))
             except (OSError, json.JSONDecodeError):
                 continue
             yield msg, fallback_cwd
@@ -170,7 +170,7 @@ def _extract_exchanges_opencode() -> list[dict]:
             if not f.name.endswith(".json"):
                 continue
             try:
-                m = json.loads(f.read_text(errors="replace"))
+                m = json.loads(f.read_text(encoding="utf-8", errors="replace"))
             except (OSError, json.JSONDecodeError):
                 continue
             ts = _ms_to_dt((m.get("time") or {}).get("created"))

@@ -103,7 +103,7 @@ def _extract_exchanges_kiro() -> list[dict]:
         sj = ws_dir / "sessions.json"
         if sj.exists():
             try:
-                for s in json.loads(sj.read_text(errors="replace")):
+                for s in json.loads(sj.read_text(encoding="utf-8", errors="replace")):
                     sid = s.get("sessionId")
                     if sid:
                         meta[sid] = (int(s.get("dateCreated", 0) or 0),
@@ -116,7 +116,7 @@ def _extract_exchanges_kiro() -> list[dict]:
             if sess_file.name == "sessions.json":
                 continue
             try:
-                data = json.loads(sess_file.read_text(errors="replace"))
+                data = json.loads(sess_file.read_text(encoding="utf-8", errors="replace"))
             except (json.JSONDecodeError, OSError):
                 continue
             sid = data.get("sessionId") or sess_file.stem

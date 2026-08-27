@@ -32,7 +32,7 @@ def load_pricing():
         age = datetime.now() - datetime.fromtimestamp(LITELLM_CACHE_PATH.stat().st_mtime)
         if age < LITELLM_CACHE_MAX_AGE:
             try:
-                raw = json.loads(LITELLM_CACHE_PATH.read_text())
+                raw = json.loads(LITELLM_CACHE_PATH.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 pass
     if raw is None:
@@ -46,7 +46,7 @@ def load_pricing():
             pass
     if raw is None and LITELLM_CACHE_PATH.exists():
         try:
-            raw = json.loads(LITELLM_CACHE_PATH.read_text())
+            raw = json.loads(LITELLM_CACHE_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     if raw is None:
@@ -2309,7 +2309,7 @@ def _claude_retention_days() -> int:
     (~/.claude/settings.json), defaulting to 30. Return the effective value."""
     days = 30  # Claude Code's built-in default
     try:
-        cfg = json.loads((_Path.home() / ".claude" / "settings.json").read_text())
+        cfg = json.loads((_Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
         v = cfg.get("cleanupPeriodDays")
         if isinstance(v, (int, float)) and v > 0:
             days = int(v)
@@ -2381,7 +2381,7 @@ def _load_impact_config(region_override: str | None = None):
     import tokstat._ecologits as _eco
     pue, mix, region = _eco.DEFAULT_PUE, _eco.DEFAULT_MIX_GWP, "world"
     try:
-        cfg = json.loads(_IMPACT_CONFIG.read_text())
+        cfg = json.loads(_IMPACT_CONFIG.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         cfg = {}
     if isinstance(cfg.get("pue"), (int, float)):
@@ -2818,7 +2818,7 @@ def check_for_update(current_version: str) -> str | None:
         if _UPDATE_CACHE.exists():
             age = datetime.now() - datetime.fromtimestamp(_UPDATE_CACHE.stat().st_mtime)
             if age < timedelta(hours=24):
-                data = json.loads(_UPDATE_CACHE.read_text())
+                data = json.loads(_UPDATE_CACHE.read_text(encoding="utf-8"))
                 latest = data.get("latest", current_version)
                 return latest if _version_tuple(latest) > _version_tuple(current_version) else None
 

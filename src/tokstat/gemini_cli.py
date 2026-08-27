@@ -80,7 +80,7 @@ def scan_gemini() -> list[dict]:
 
         for session_file in chats_dir.glob("session-*.json"):
             try:
-                data = json.loads(open(session_file, errors="replace").read())
+                data = json.loads(open(session_file, encoding="utf-8", errors="replace").read())
                 messages = data if isinstance(data, list) else data.get("messages", [])
                 for m in messages:
                     if not isinstance(m, dict):
@@ -130,7 +130,7 @@ def scan_speed_gemini() -> list[dict]:
             continue
         for session_file in chats_dir.glob("session-*.json"):
             try:
-                data = json.loads(open(session_file, errors="replace").read())
+                data = json.loads(open(session_file, encoding="utf-8", errors="replace").read())
                 messages = data if isinstance(data, list) else data.get("messages", [])
                 prev_ts = None
                 for m in messages:
@@ -187,7 +187,7 @@ def _extract_exchanges_gemini() -> list[dict]:
 
         for session_file in sorted(chats_dir.glob("session-*.json")):
             try:
-                data = json.loads(open(session_file, errors="replace").read())
+                data = json.loads(open(session_file, encoding="utf-8", errors="replace").read())
                 messages = data if isinstance(data, list) else data.get("messages", [])
             except (OSError, json.JSONDecodeError):
                 continue

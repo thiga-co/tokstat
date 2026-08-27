@@ -642,7 +642,7 @@ def judge_conversation_codex(conv, model: str | None = None,
                                               suffix=".json")
     out_path = schema_path + ".out"
     try:
-        with os.fdopen(schema_fd, "w") as fh:
+        with os.fdopen(schema_fd, "w", encoding="utf-8") as fh:
             json.dump(_codex_output_schema(), fh)
         # read-only sandbox: the judge only analyses text, never runs commands.
         cmd = ["codex", "exec", prompt, "-s", "read-only",
@@ -828,7 +828,7 @@ def _codex_chat_json(system, user, fmt, model=None, timeout=300):
                                               suffix=".json")
     out_path = schema_path + ".out"
     try:
-        with os.fdopen(schema_fd, "w") as fh:
+        with os.fdopen(schema_fd, "w", encoding="utf-8") as fh:
             json.dump(_strictify_schema(fmt), fh)
         cmd = ["codex", "exec", prompt, "-s", "read-only",
                "--skip-git-repo-check", "--output-schema", schema_path,

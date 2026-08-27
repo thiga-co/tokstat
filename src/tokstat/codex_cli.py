@@ -51,7 +51,7 @@ def scan_codex() -> list[dict]:
         current_model = "codex-unknown"
         current_effort = ""
         try:
-            with open(jsonl_file, "r", errors="replace") as f:
+            with open(jsonl_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -117,7 +117,7 @@ def scan_speed_codex() -> list[dict]:
     for jsonl_file in base.rglob("*.jsonl"):
         try:
             events = []
-            with open(jsonl_file, "r", errors="replace") as f:
+            with open(jsonl_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -223,7 +223,7 @@ def _is_synthetic_user_text(text: str) -> bool:
 def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
     """Parse a Codex rollout JSONL transcript into exchanges."""
     try:
-        with open(jsonl_path, "r", errors="replace") as f:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
             lines = []
             for raw in f:
                 raw = raw.strip()

@@ -116,7 +116,7 @@ def _import_from_path(path: str, account: str) -> int:
     if p.is_dir():
         for f in sorted(p.rglob("*.json")):
             if _EXPORT_PATTERN.search(f.name):
-                chunks.append(f.read_text(errors="replace"))
+                chunks.append(f.read_text(encoding="utf-8", errors="replace"))
         if not chunks:
             raise FileNotFoundError(
                 f"{p} contains no conversations.json or conversations-NNN.json")
@@ -130,7 +130,7 @@ def _import_from_path(path: str, account: str) -> int:
                 with z.open(n) as f:
                     chunks.append(f.read().decode("utf-8", errors="replace"))
     else:
-        chunks.append(p.read_text(errors="replace"))
+        chunks.append(p.read_text(encoding="utf-8", errors="replace"))
     n = 0
     for raw_text in chunks:
         data = json.loads(raw_text)

@@ -58,7 +58,7 @@ def scan_claude_code() -> list[dict]:
             try:
                 prev_msg_id = None
                 pending = None
-                with open(jsonl_file, "r", errors="replace") as f:
+                with open(jsonl_file, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -124,7 +124,7 @@ def scan_speed_claude_code() -> list[dict]:
         for jsonl_file in proj_dir.rglob("*.jsonl"):
             try:
                 msgs = []
-                with open(jsonl_file, "r", errors="replace") as f:
+                with open(jsonl_file, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -193,7 +193,7 @@ def scan_speed_claude_code() -> list[dict]:
 def _extract_exchanges(jsonl_path: str) -> list[dict]:
     """Parse a Claude Code JSONL transcript into exchanges."""
     try:
-        with open(jsonl_path, "r", errors="replace") as f:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
             lines = [json.loads(raw.strip()) for raw in f
                      if raw.strip() and _safe_json(raw.strip())]
     except (OSError, IOError):

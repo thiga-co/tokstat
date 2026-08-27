@@ -182,7 +182,7 @@ def load_ecologits_db() -> dict:
         age = datetime.now() - datetime.fromtimestamp(ECOLOGITS_CACHE.stat().st_mtime)
         if age < ECOLOGITS_CACHE_MAX_AGE:
             try:
-                _DB = _build_db(json.loads(ECOLOGITS_CACHE.read_text()))
+                _DB = _build_db(json.loads(ECOLOGITS_CACHE.read_text(encoding="utf-8")))
                 return _DB
             except (OSError, json.JSONDecodeError):
                 pass
@@ -199,7 +199,7 @@ def load_ecologits_db() -> dict:
         # stale fallback
         if ECOLOGITS_CACHE.exists():
             try:
-                _DB = _build_db(json.loads(ECOLOGITS_CACHE.read_text()))
+                _DB = _build_db(json.loads(ECOLOGITS_CACHE.read_text(encoding="utf-8")))
                 return _DB
             except (OSError, json.JSONDecodeError):
                 pass
