@@ -1691,7 +1691,9 @@ def _audit_finding_context(conv, turn_index, evidence=""):
     locate the turn by matching the evidence quote against the assistant turns
     (falling back to the reported index). If no turn contains the evidence, the
     'quote' was likely fabricated — signalled via turn_ok=False.
-    Returns (excerpt, user_ask, turn_ok, resolved_index)."""
+    Returns (excerpt, user_ask, user_reaction, turn_ok, resolved_index), where
+    user_reaction is the FIRST user turn AFTER the flagged one — so a verifier
+    can see whether a claim was retracted only after the user pushed back."""
     turns = conv.turns
     probe = _audit_norm(evidence)[:60]
     usable = len(probe) >= 12
@@ -1712,14 +1714,18 @@ def _audit_finding_context(conv, turn_index, evidence=""):
     else:
         # No usable quote to verify — fall back to a valid reported index.
         turn_ok = idx is not None
-    excerpt = ask = ""
+    excerpt = ask = reaction = ""
     if turn_ok:
         excerpt = _excerpt_around(turns[idx].text, evidence, width=800)
-        for j in range(idx - 1, -1, -1):
+        for j in range(idx - 1, -1, -1):            # the preceding user request
             if turns[j].role == "user" and turns[j].text:
                 ask = " ".join(turns[j].text.split())[:220]
                 break
-    return excerpt, ask, turn_ok, (idx if turn_ok else turn_index)
+        for j in range(idx + 1, len(turns)):         # the following user reaction
+            if turns[j].role == "user" and turns[j].text:
+                reaction = " ".join(turns[j].text.split())[:220]
+                break
+    return excerpt, ask, reaction, turn_ok, (idx if turn_ok else turn_index)
 
 
 def show_audit(collect_fn, period_name: str | None = None,
@@ -1901,7 +1907,7 @@ def show_audit(collect_fn, period_name: str | None = None,
             for f in res:
                 if not _in_window(f):
                     continue
-                excerpt, ask, turn_ok, ridx = _audit_finding_context(
+                excerpt, ask, reaction, turn_ok, ridx = _audit_finding_context(
                     c, f.turn_index, f.evidence)
                 # Key on the RESOLVED turn so panel votes aggregate even when
                 # judges report different (wrong) indices for the same issue.
@@ -1909,7 +1915,8 @@ def show_audit(collect_fn, period_name: str | None = None,
                 rec = agg.get(key)
                 if rec is None:
                     agg[key] = {"best": f, "voters": {label}, "excerpt": excerpt,
-                                "ask": ask, "turn_ok": turn_ok, "turn": ridx,
+                                "ask": ask, "reaction": reaction,
+                                "turn_ok": turn_ok, "turn": ridx,
                                 # engine+model that raised the kept finding, so
                                 # --verify re-checks it with the SAME judge.
                                 "best_kind": v["kind"], "best_model": v.get("model")}
@@ -1974,7 +1981,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                 continue
             v = _audit.verify_finding(
                 chat, f.metric, f.evidence, r.get("excerpt", ""),
-                r.get("ask", ""))
+                r.get("ask", ""), r.get("reaction", ""))
             if v is None:               # verifier errored → keep (don't hide)
                 kept.append(r)
             elif v[0]:                  # confirmed real

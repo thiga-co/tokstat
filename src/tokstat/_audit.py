@@ -863,11 +863,16 @@ def make_verifier(kind: str, model: str | None = None):
     return None
 
 
-def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask):
+def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask,
+                   user_reaction=""):
     """Adversarial second pass: re-check ONE finding with a narrow, skeptical
     prompt via `chat` (any judge backend — see make_verifier). Returns
     (real: bool, reason: str), or None if the check couldn't run (caller should
-    then KEEP the finding rather than silently drop it)."""
+    then KEEP the finding rather than silently drop it).
+
+    user_reaction is the user's NEXT turn after the flagged one; it lets the
+    verifier see a pushback ("es-tu sûr ?") that only came AFTER a confident
+    claim, so a claim retracted under pressure isn't excused as self-correction."""
     # Contradiction: make the judge extract BOTH incompatible statements; if it
     # can't produce two distinct ones, it isn't a contradiction.
     if metric == "contradiction":
@@ -883,10 +888,13 @@ def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask):
         # plans / restatements); the decision itself rests on `incompatible`.
         return bool(parsed.get("incompatible")), str(parsed.get("reason", ""))[:200]
 
+    reaction_line = ("User's NEXT turn (their reaction to this): "
+                     + str(user_reaction)[:300] + "\n") if user_reaction else ""
     user = ("Metric claimed: " + str(metric) + "\n"
             "Flagged quote: " + str(evidence or "")[:400] + "\n"
             "User asked: " + str(user_ask or "")[:300] + "\n"
-            "Assistant turn: " + str(assistant_excerpt or "")[:800] + "\n\n"
+            + reaction_line
+            + "Assistant turn: " + str(assistant_excerpt or "")[:800] + "\n\n"
             "Is this GENUINELY '" + str(metric) + "'?")
     parsed = chat(_VERIFY_SYSTEM, user, _VERIFY_FORMAT)
     if parsed is None:
@@ -895,11 +903,13 @@ def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask):
 
 
 def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,
-                          model, host: str = OLLAMA_HOST, timeout: int = 120):
+                          model, host: str = OLLAMA_HOST, timeout: int = 120,
+                          user_reaction=""):
     """Backward-compatible Ollama verifier (thin wrapper over verify_finding)."""
     chat = lambda system, user, fmt: _ollama_chat_json(
         model, system, user, fmt, host, timeout, num_predict=500)
-    return verify_finding(chat, metric, evidence, assistant_excerpt, user_ask)
+    return verify_finding(chat, metric, evidence, assistant_excerpt, user_ask,
+                          user_reaction)
 
 
 def benchmark_ollama(model: str, host: str = OLLAMA_HOST,
