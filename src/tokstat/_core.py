@@ -2165,15 +2165,17 @@ def show_audit(collect_fn, period_name: str | None = None,
                 "gaslighting": "GAS", "blame_shifting": "BLM",
                 "intent_misalignment": "INT", "constraint_violation": "CST",
                 "tool_misuse": "TLM", "manipulative_behavior": "MAN"}
-        vcol = {"confirmed": GREEN, "refined": CYAN,
-                "refuted": RED, "dropped_unlocatable": RED}
-        # (session, judge) -> list of (code, verdict)
+        # FINAL status only: keep findings that survived verify (confirmed or
+        # refined, or anything when --verify is off); drop the rejected ones.
+        _dropped = {"refuted", "dropped_unlocatable"}
+        # (session, judge) -> list of surviving codes
         cellmap: dict = {}
         for r in all_records:
+            if r.get("pass2") in _dropped:
+                continue
             c3 = code.get(r["best"].metric, r["best"].metric[:3].upper())
             for j in r["voters"]:
-                cellmap.setdefault((r["best"].session_id, j), []).append(
-                    (c3, r.get("pass2")))
+                cellmap.setdefault((r["best"].session_id, j), []).append(c3)
         rows_c = [c for c in to_judge
                   if any((c.session_id, j) in cellmap for j in judges)]
         rows_c.sort(key=lambda c: -sum(len(cellmap.get((c.session_id, j), []))
@@ -2184,23 +2186,19 @@ def show_audit(collect_fn, period_name: str | None = None,
             if not items:
                 return f"{DIM}·{RESET}" + " " * (w - 1)
             shown, extra = items[:3], max(0, len(items) - 3)
-            plain = ",".join(c for c, _ in shown) + (f"+{extra}" if extra else "")
-            col = ",".join((vcol[v] + c + RESET) if v in vcol else c
-                           for c, v in shown) + (f"{DIM}+{extra}{RESET}"
-                                                 if extra else "")
+            plain = ",".join(shown) + (f"+{extra}" if extra else "")
+            col = f"{BOLD}" + ",".join(shown) + RESET + (f"{DIM}+{extra}{RESET}"
+                                                         if extra else "")
             return col + " " * max(0, w - len(plain))
 
         colw = 13   # fits ~3 three-letter codes
-        vhdr = " · colour = final verdict" if verify else ""
+        note = " kept after --verify" if verify else " raised"
         print(f"\n  {BOLD}Recap matrix{RESET} {DIM}(one row per conversation · "
-              f"cells = finding codes each judge raised{vhdr}){RESET}")
+              f"cells = final findings each judge{note}){RESET}")
         print(f"    {DIM}judges: "
               + "  ".join(f"{n}={j}" for j, n in nums.items()) + RESET)
         print(f"    {DIM}codes: "
               + " ".join(f"{v}={k}" for k, v in code.items()) + RESET)
-        if verify:
-            print(f"    {DIM}verdict colour: {GREEN}confirmed{RESET}{DIM} · "
-                  f"{CYAN}refined{RESET}{DIM} · {RED}dropped{RESET}")
         lblw = 36
         head = "".join(f"{n:<{colw}}" for n in nums.values())
         print(f"    {DIM}{'conversation':<{lblw}}{head}{RESET}")
@@ -2214,9 +2212,9 @@ def show_audit(collect_fn, period_name: str | None = None,
             print(f"    {DIM}{lbl:<{lblw}}{RESET}{cells}")
         tail = []
         if len(rows_c) > limit:
-            tail.append(f"+{len(rows_c) - limit} more with findings")
+            tail.append(f"+{len(rows_c) - limit} more conversations")
         if clean:
-            tail.append(f"{clean} clean across all judges")
+            tail.append(f"{clean} with no finding kept")
         if tail:
             print(f"    {DIM}… {' · '.join(tail)}{RESET}")
 
