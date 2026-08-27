@@ -406,6 +406,14 @@ that raised it** — a small model verifies its own over-flags, and a Claude/Cod
 finding is re-checked by Claude/Codex — so a weak verifier never drops a strong
 judge's legitimate finding. Findings that survive show the verifier's reason.
 
+The verifier distinguishes a **proactive** self-correction (the assistant caught
+its own error on its own initiative — not a defect) from a claim it retracted
+**only after the user pushed back** ("es-tu sûr ?", "c'est faux"): the latter
+means the original confident/factual claim *was* a defect (overconfidence /
+unsupported_claim), so it is kept, not excused by the later apology. (A strong
+judge applies this reliably; a ~4B model often cannot — one more reason it's
+triage only.)
+
 `contradiction` is where small judges misfire most (they call a phased timeline
 or a restatement "contradictory"), so it gets a sharper check: the verifier must
 **extract the two supposedly-incompatible statements verbatim**. Forcing it to
