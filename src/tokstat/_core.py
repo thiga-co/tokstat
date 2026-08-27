@@ -2153,39 +2153,72 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"\n  {DIM}Off-machine judge usage: " + "  ·  ".join(cost_lines)
               + RESET)
 
-    # ── Recap matrix: per finding (a "question"), each judge's pass-1 verdict
-    # (✓ = flagged) and the finding's FINAL post-verify verdict. ───────────────
+    # ── Recap matrix: one row per CONVERSATION, one column per judge; each
+    # cell holds the finding CODE(s) that judge produced for that conversation,
+    # coloured by the finding's final post-verify verdict. ─────────────────────
     if all_records:
         judges = list(live)
         nums = {j: n for n, j in enumerate(judges, 1)}
-        colw = max(2, max((len(str(n)) for n in nums.values()), default=1) + 1)
-        vmap = {"confirmed": (GREEN, "CONFIRMED"), "refined": (CYAN, "AFFINÉ"),
-                "refuted": (RED, "DROPPED"), "dropped_unlocatable": (RED, "DROPPED"),
-                "kept_no_verifier": (DIM, "KEPT"), "kept_verifier_error": (DIM, "KEPT"),
-                "not_run": (DIM, "—")}
-        vhdr = " · verdict = final (post --verify)" if verify else ""
-        print(f"\n  {BOLD}Recap matrix{RESET} {DIM}(finding × judge · ✓ = flagged "
-              f"in pass 1{vhdr}){RESET}")
+        code = {"hallucination": "HAL", "unsupported_claim": "UNS",
+                "overconfidence": "OVR", "contradiction": "CTR",
+                "memory_fabrication": "MEM", "sycophancy": "SYC",
+                "gaslighting": "GAS", "blame_shifting": "BLM",
+                "intent_misalignment": "INT", "constraint_violation": "CST",
+                "tool_misuse": "TLM", "manipulative_behavior": "MAN"}
+        vcol = {"confirmed": GREEN, "refined": CYAN,
+                "refuted": RED, "dropped_unlocatable": RED}
+        # (session, judge) -> list of (code, verdict)
+        cellmap: dict = {}
+        for r in all_records:
+            c3 = code.get(r["best"].metric, r["best"].metric[:3].upper())
+            for j in r["voters"]:
+                cellmap.setdefault((r["best"].session_id, j), []).append(
+                    (c3, r.get("pass2")))
+        rows_c = [c for c in to_judge
+                  if any((c.session_id, j) in cellmap for j in judges)]
+        rows_c.sort(key=lambda c: -sum(len(cellmap.get((c.session_id, j), []))
+                                       for j in judges))
+        clean = len(to_judge) - len(rows_c)
+
+        def _cell(items, w):
+            if not items:
+                return f"{DIM}·{RESET}" + " " * (w - 1)
+            shown, extra = items[:3], max(0, len(items) - 3)
+            plain = ",".join(c for c, _ in shown) + (f"+{extra}" if extra else "")
+            col = ",".join((vcol[v] + c + RESET) if v in vcol else c
+                           for c, v in shown) + (f"{DIM}+{extra}{RESET}"
+                                                 if extra else "")
+            return col + " " * max(0, w - len(plain))
+
+        colw = 13   # fits ~3 three-letter codes
+        vhdr = " · colour = final verdict" if verify else ""
+        print(f"\n  {BOLD}Recap matrix{RESET} {DIM}(one row per conversation · "
+              f"cells = finding codes each judge raised{vhdr}){RESET}")
         print(f"    {DIM}judges: "
               + "  ".join(f"{n}={j}" for j, n in nums.items()) + RESET)
-        header = "".join(f"{n:<{colw}}" for n in nums.values())
-        print(f"    {DIM}{'#':<3}{'metric':<20}{'where':<20}{header}verdict{RESET}")
-        rows = sorted(all_records,
-                      key=lambda r: (-len(r["voters"]), -r["best"].severity))
-        for k, r in enumerate(rows[:limit], 1):
-            f = r["best"]
-            proj = normalize_project(f.project) if f.project else "?"
-            proj = (proj.rstrip("/").split("/")[-1] or "?")[:14]
-            where = (f"{proj} t{r.get('turn')}" if r.get("turn_ok")
-                     else f"{proj} t?")[:19]
-            cells = "".join(("✓" if j in r["voters"] else "·").ljust(colw)
+        print(f"    {DIM}codes: "
+              + " ".join(f"{v}={k}" for k, v in code.items()) + RESET)
+        if verify:
+            print(f"    {DIM}verdict colour: {GREEN}confirmed{RESET}{DIM} · "
+                  f"{CYAN}refined{RESET}{DIM} · {RED}dropped{RESET}")
+        lblw = 36
+        head = "".join(f"{n:<{colw}}" for n in nums.values())
+        print(f"    {DIM}{'conversation':<{lblw}}{head}{RESET}")
+        for c in rows_c[:limit]:
+            proj = normalize_project(c.project) if c.project else "?"
+            proj = (proj.rstrip("/").split("/")[-1] or "?")
+            day = c.ts.date().isoformat() if c.ts else "?"
+            lbl = f"{day} {c.tool[:6]} {proj}"[:lblw - 1]   # date first, never truncated
+            cells = "".join(_cell(cellmap.get((c.session_id, j), []), colw)
                             for j in judges)
-            col, lab = vmap.get(r.get("pass2", "not_run"), (DIM, "—"))
-            print(f"    {DIM}{k:<3}{RESET}{f.metric[:19]:<20}{DIM}{where:<20}"
-                  f"{RESET}{cells}{col}{lab}{RESET}")
-        if len(rows) > limit:
-            print(f"    {DIM}… +{len(rows) - limit} more findings "
-                  f"(top {limit} by agreement shown){RESET}")
+            print(f"    {DIM}{lbl:<{lblw}}{RESET}{cells}")
+        tail = []
+        if len(rows_c) > limit:
+            tail.append(f"+{len(rows_c) - limit} more with findings")
+        if clean:
+            tail.append(f"{clean} clean across all judges")
+        if tail:
+            print(f"    {DIM}… {' · '.join(tail)}{RESET}")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
     local = kinds == {"ollama"}
