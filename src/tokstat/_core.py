@@ -1735,7 +1735,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                ollama_judge: bool = False,
                claude_judge: bool = False, claude_model: str | None = None,
                codex_judge: bool = False, codex_model: str | None = None,
-               export: str | None = None):
+               trace: str | None = None):
     """Audit conversations across all tools for behavioural/quality issues.
 
     The judge is chosen explicitly — at least one of these must be passed, or
@@ -1937,9 +1937,10 @@ def show_audit(collect_fn, period_name: str | None = None,
               f"(not a clean result).{RESET}\n")
         return
 
-    all_records = list(agg.values())   # full set (incl. verify-dropped) for export
+    all_records = list(agg.values())   # full set (incl. verify-dropped) for trace
     for r in all_records:
-        r["verified"] = None           # None = not verified / kept-on-error
+        r["verified"] = None           # None = kept (verify off / error / no verifier)
+        r["pass2"] = "not_run"         # pass-2 outcome for the trace
     records = all_records
 
     # ── Adversarial verify pass (opt-in): re-check each finding with a narrow,
@@ -1977,70 +1978,88 @@ def show_audit(collect_fn, period_name: str | None = None,
             # transcript) — drop it rather than let the verifier guess.
             if f.metric == "contradiction" and not r.get("turn_ok"):
                 r["verified"] = False
+                r["pass2"] = "dropped_unlocatable"
                 dropped += 1
                 continue
             chat = _verifier_for(r.get("best_kind", "ollama"),
                                  r.get("best_model"))
             if chat is None:            # unknown engine → keep (don't hide)
+                r["pass2"] = "kept_no_verifier"
                 kept_n += 1
                 continue
             v = _audit.verify_finding(
                 chat, f.metric, f.evidence, r.get("excerpt", ""),
                 r.get("ask", ""), r.get("reaction", ""))
             if v is None:               # verifier errored → keep (don't hide)
+                r["pass2"] = "kept_verifier_error"
                 kept_n += 1
             elif v[0]:                  # confirmed real
                 r["verify_reason"] = v[1]
                 r["verified"] = True
+                r["pass2"] = "confirmed"
                 kept_n += 1
             else:
                 r["verified"] = False
+                r["pass2"] = "refuted"
+                r["verify_reason"] = v[1]
                 dropped += 1
         # Displayed/kept set excludes only the explicitly-refuted findings.
         records = [r for r in all_records if r.get("verified") is not False]
         print(f"\r{' ':<72}\r{DIM}  Verify: kept {len(records)}, dropped "
               f"{dropped} unconfirmed.{RESET}")
 
-    # ── Per-finding vote export (opt-in --export): one row per finding, one
-    # column per judge (1/0), for offline analysis. Includes verify-dropped
-    # findings (verified=no) so detection vs verify can be studied per model.
-    if export:
-        import csv as _csv
-        judge_cols = list(live)   # judges that actually ran, in run order
-        vmap = {True: "yes", False: "no", None: ""}
-        rows = sorted(all_records, key=lambda r: (-len(r["voters"]),
-                                                  -r["best"].severity))
+    # ── Per-finding trace (opt-in --trace <file.jsonl>): for EACH finding, the
+    # pass-1 judgment (who raised it, metric, evidence, rationale) and the
+    # pass-2 judgment (the --verify verdict). One JSON object per line so the
+    # two stages can be inspected/diffed offline.
+    if trace:
+        import json as _json
 
-        def _flat(s, n=500):
+        def _flat(s, n=600):
             return " ".join(str(s or "").split())[:n]
 
+        rows = sorted(all_records, key=lambda r: (-len(r["voters"]),
+                                                  -r["best"].severity))
+        pass2_ran = verify and bool(all_records)
         try:
-            with open(export, "w", newline="", encoding="utf-8") as fh:
-                w = _csv.writer(fh)
-                w.writerow(["metric", "severity", "n_votes", "verified",
-                            "tool", "project", "date", "turn", "turn_ok",
-                            *judge_cols, "evidence", "rationale",
-                            "user_ask", "user_reaction", "verify_reason"])
+            with open(trace, "w", encoding="utf-8") as fh:
                 for r in rows:
                     f = r["best"]
-                    when = f.ts.strftime("%Y-%m-%d") if f.ts else ""
-                    proj = normalize_project(f.project) if f.project else ""
-                    w.writerow([
-                        f.metric, f.severity, len(r["voters"]),
-                        vmap.get(r.get("verified"), ""),
-                        f.tool, proj, when,
-                        r.get("turn") if r.get("turn_ok") else "",
-                        "yes" if r.get("turn_ok") else "no",
-                        *[1 if j in r["voters"] else 0 for j in judge_cols],
-                        _flat(f.evidence), _flat(f.rationale),
-                        _flat(r.get("ask")), _flat(r.get("reaction")),
-                        _flat(r.get("verify_reason")),
-                    ])
-            print(f"\n  {GREEN}✓ Exported {len(rows)} findings × {len(judge_cols)} "
-                  f"judges to {BOLD}{export}{RESET}{GREEN} (one row/finding, "
-                  f"1/0 per judge).{RESET}")
+                    rec = {
+                        "metric": f.metric,
+                        "tool": f.tool,
+                        "project": normalize_project(f.project) if f.project else "",
+                        "date": f.ts.strftime("%Y-%m-%d") if f.ts else "",
+                        "turn": r.get("turn") if r.get("turn_ok") else None,
+                        "turn_locatable": bool(r.get("turn_ok")),
+                        "evidence": _flat(f.evidence),
+                        "user_ask": _flat(r.get("ask")),
+                        "user_reaction": _flat(r.get("reaction")),
+                        # a/ FIRST PASS — detection
+                        "pass1_detection": {
+                            "judges": sorted(r["voters"]),
+                            "n_votes": len(r["voters"]),
+                            "severity": f.severity,
+                            "rationale": _flat(f.rationale),
+                        },
+                        # b/ SECOND PASS — verification (--verify)
+                        "pass2_verification": {
+                            "ran": pass2_ran,
+                            "verifier": (r.get("best_model")
+                                         or r.get("best_kind")),
+                            "outcome": r.get("pass2", "not_run"),
+                            "kept": r.get("verified") is not False,
+                            "reason": _flat(r.get("verify_reason")),
+                        },
+                    }
+                    fh.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+            kept_n = sum(1 for r in all_records if r.get("verified") is not False)
+            print(f"\n  {GREEN}✓ Wrote trace of {len(rows)} findings to "
+                  f"{BOLD}{trace}{RESET}{GREEN} — pass-1 detection + pass-2 "
+                  f"verify per line ({kept_n} kept, {len(rows) - kept_n} "
+                  f"refuted).{RESET}")
         except OSError as e:
-            print(f"\n  {RED}⚠ Could not write export to {export}: {e}{RESET}")
+            print(f"\n  {RED}⚠ Could not write trace to {trace}: {e}{RESET}")
 
     err_note = ""
     if any(verrors.values()):

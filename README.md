@@ -356,16 +356,16 @@ tokstat --audit --codex-judge                        # judge via Codex  (off-mac
 tokstat --audit --ollama-judge --claude-judge --codex-judge   # 3-way voting panel
 tokstat --audit --ollama-judge --model a,b,c         # multi-model local panel
 tokstat --audit --ollama-judge --judge-max 20        # cap conversations judged
-tokstat --audit --ollama-judge --model a,b,c --export votes.csv   # per-finding vote matrix
+tokstat --audit --ollama-judge --model a,b,c --verify --trace run.jsonl   # per-finding trace
 ```
 
-**Vote export** (`--export <file.csv>`). Writes one row per finding with **one
-column per judge** (`1`/`0` = did that judge flag it), plus `metric`, `severity`,
-`n_votes`, `verified` (survived `--verify`? — verify-dropped findings are kept in
-the file as `verified=no`, so detection vs verification can be studied per model),
-`turn`, `evidence`, `rationale`, the user's request and next reaction, and the
-verifier's reason. Ideal for offline analysis — pivot by judge to compare models,
-or filter on agreement.
+**Trace** (`--trace <file.jsonl>`). Writes one JSON object per finding recording
+**both passes**: `pass1_detection` (which judges raised it, the vote count,
+severity and rationale) and `pass2_verification` (whether `--verify` ran, the
+verifier, the `outcome` — `confirmed` / `refuted` / `dropped_unlocatable` /
+`kept_*` — whether it was `kept`, and the verifier's `reason`). Refuted findings
+stay in the file, so you can diff detection vs verification per finding and per
+model offline. (Distinct from `--export`, which dumps raw exchanges to JSON.)
 
 | metric | |
 |---|---|
