@@ -394,7 +394,9 @@ def cli():
                    claude_judge="--claude-judge" in args,
                    claude_model=_arg_value(args, "--claude-model"),
                    codex_judge="--codex-judge" in args,
-                   codex_model=_arg_value(args, "--codex-model"))
+                   codex_model=_arg_value(args, "--codex-model"),
+                   export=(_arg_value(args, "--export") or "tokstat-audit.csv"
+                           if "--export" in args else None))
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

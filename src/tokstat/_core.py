@@ -1734,7 +1734,8 @@ def show_audit(collect_fn, period_name: str | None = None,
                verify: bool = False,
                ollama_judge: bool = False,
                claude_judge: bool = False, claude_model: str | None = None,
-               codex_judge: bool = False, codex_model: str | None = None):
+               codex_judge: bool = False, codex_model: str | None = None,
+               export: str | None = None):
     """Audit conversations across all tools for behavioural/quality issues.
 
     The judge is chosen explicitly — at least one of these must be passed, or
@@ -1936,7 +1937,10 @@ def show_audit(collect_fn, period_name: str | None = None,
               f"(not a clean result).{RESET}\n")
         return
 
-    records = list(agg.values())
+    all_records = list(agg.values())   # full set (incl. verify-dropped) for export
+    for r in all_records:
+        r["verified"] = None           # None = not verified / kept-on-error
+    records = all_records
 
     # ── Adversarial verify pass (opt-in): re-check each finding with a narrow,
     # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
@@ -1954,44 +1958,89 @@ def show_audit(collect_fn, period_name: str | None = None,
                 _vcache[k] = _audit.make_verifier(kind, model)
             return _vcache[k]
 
-        total = len(records)
-        engines = sorted({r.get("best_kind") for r in records})
+        total = len(all_records)
+        engines = sorted({r.get("best_kind") for r in all_records})
         offm = "" if engines == ["ollama"] else " · some off-machine (API)"
         print(f"{DIM}  Verifying {total} findings — each re-checked by the judge "
               f"that flagged it{offm}…{RESET}", flush=True)
-        kept = []
+        kept_n = 0
         dropped = 0
-        for i, r in enumerate(records, 1):
+        for i, r in enumerate(all_records, 1):
             f = r["best"]
             # Live [k/N] progress on one rewritten line (padded so shrinking
             # text doesn't leave stray characters behind).
             line = (f"    [{i}/{total}] {f.metric} · "
-                    f"kept {len(kept)} · dropped {dropped}")
+                    f"kept {kept_n} · dropped {dropped}")
             print(f"\r{DIM}{line:<68}{RESET}", end="", flush=True)
             # A contradiction whose quote matches no real turn can't be
             # confirmed (both conflicting statements must exist in the
             # transcript) — drop it rather than let the verifier guess.
             if f.metric == "contradiction" and not r.get("turn_ok"):
+                r["verified"] = False
                 dropped += 1
                 continue
             chat = _verifier_for(r.get("best_kind", "ollama"),
                                  r.get("best_model"))
             if chat is None:            # unknown engine → keep (don't hide)
-                kept.append(r)
+                kept_n += 1
                 continue
             v = _audit.verify_finding(
                 chat, f.metric, f.evidence, r.get("excerpt", ""),
                 r.get("ask", ""), r.get("reaction", ""))
             if v is None:               # verifier errored → keep (don't hide)
-                kept.append(r)
+                kept_n += 1
             elif v[0]:                  # confirmed real
                 r["verify_reason"] = v[1]
-                kept.append(r)
+                r["verified"] = True
+                kept_n += 1
             else:
+                r["verified"] = False
                 dropped += 1
-        records = kept
+        # Displayed/kept set excludes only the explicitly-refuted findings.
+        records = [r for r in all_records if r.get("verified") is not False]
         print(f"\r{' ':<72}\r{DIM}  Verify: kept {len(records)}, dropped "
               f"{dropped} unconfirmed.{RESET}")
+
+    # ── Per-finding vote export (opt-in --export): one row per finding, one
+    # column per judge (1/0), for offline analysis. Includes verify-dropped
+    # findings (verified=no) so detection vs verify can be studied per model.
+    if export:
+        import csv as _csv
+        judge_cols = list(live)   # judges that actually ran, in run order
+        vmap = {True: "yes", False: "no", None: ""}
+        rows = sorted(all_records, key=lambda r: (-len(r["voters"]),
+                                                  -r["best"].severity))
+
+        def _flat(s, n=500):
+            return " ".join(str(s or "").split())[:n]
+
+        try:
+            with open(export, "w", newline="", encoding="utf-8") as fh:
+                w = _csv.writer(fh)
+                w.writerow(["metric", "severity", "n_votes", "verified",
+                            "tool", "project", "date", "turn", "turn_ok",
+                            *judge_cols, "evidence", "rationale",
+                            "user_ask", "user_reaction", "verify_reason"])
+                for r in rows:
+                    f = r["best"]
+                    when = f.ts.strftime("%Y-%m-%d") if f.ts else ""
+                    proj = normalize_project(f.project) if f.project else ""
+                    w.writerow([
+                        f.metric, f.severity, len(r["voters"]),
+                        vmap.get(r.get("verified"), ""),
+                        f.tool, proj, when,
+                        r.get("turn") if r.get("turn_ok") else "",
+                        "yes" if r.get("turn_ok") else "no",
+                        *[1 if j in r["voters"] else 0 for j in judge_cols],
+                        _flat(f.evidence), _flat(f.rationale),
+                        _flat(r.get("ask")), _flat(r.get("reaction")),
+                        _flat(r.get("verify_reason")),
+                    ])
+            print(f"\n  {GREEN}✓ Exported {len(rows)} findings × {len(judge_cols)} "
+                  f"judges to {BOLD}{export}{RESET}{GREEN} (one row/finding, "
+                  f"1/0 per judge).{RESET}")
+        except OSError as e:
+            print(f"\n  {RED}⚠ Could not write export to {export}: {e}{RESET}")
 
     err_note = ""
     if any(verrors.values()):

@@ -356,7 +356,16 @@ tokstat --audit --codex-judge                        # judge via Codex  (off-mac
 tokstat --audit --ollama-judge --claude-judge --codex-judge   # 3-way voting panel
 tokstat --audit --ollama-judge --model a,b,c         # multi-model local panel
 tokstat --audit --ollama-judge --judge-max 20        # cap conversations judged
+tokstat --audit --ollama-judge --model a,b,c --export votes.csv   # per-finding vote matrix
 ```
+
+**Vote export** (`--export <file.csv>`). Writes one row per finding with **one
+column per judge** (`1`/`0` = did that judge flag it), plus `metric`, `severity`,
+`n_votes`, `verified` (survived `--verify`? — verify-dropped findings are kept in
+the file as `verified=no`, so detection vs verification can be studied per model),
+`turn`, `evidence`, `rationale`, the user's request and next reaction, and the
+verifier's reason. Ideal for offline analysis — pivot by judge to compare models,
+or filter on agreement.
 
 | metric | |
 |---|---|
