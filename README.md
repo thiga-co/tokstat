@@ -368,6 +368,12 @@ tokstat --audit --ollama-judge --judge-max 20        # cap conversations judged
   `[5/12] contradiction (gemma4:e4b) → DROPPED: the two statements are about different subjects`.
   It ends with `Verify: N confirmed, M refined, K dropped (kept …)`.
 
+A **Recap matrix** closes the report: one row per finding (a "question"), one
+column per judge (`✓` = that model flagged it in pass 1, numbered in a legend),
+and a final `verdict` column (`CONFIRMED` / `AFFINÉ` / `DROPPED` after
+`--verify`) — so you can see at a glance which models agreed on what and how it
+was adjudicated.
+
 | metric | |
 |---|---|
 | `hallucination` | fait inventé |

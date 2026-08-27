@@ -2153,6 +2153,40 @@ def show_audit(collect_fn, period_name: str | None = None,
         print(f"\n  {DIM}Off-machine judge usage: " + "  ·  ".join(cost_lines)
               + RESET)
 
+    # ── Recap matrix: per finding (a "question"), each judge's pass-1 verdict
+    # (✓ = flagged) and the finding's FINAL post-verify verdict. ───────────────
+    if all_records:
+        judges = list(live)
+        nums = {j: n for n, j in enumerate(judges, 1)}
+        colw = max(2, max((len(str(n)) for n in nums.values()), default=1) + 1)
+        vmap = {"confirmed": (GREEN, "CONFIRMED"), "refined": (CYAN, "AFFINÉ"),
+                "refuted": (RED, "DROPPED"), "dropped_unlocatable": (RED, "DROPPED"),
+                "kept_no_verifier": (DIM, "KEPT"), "kept_verifier_error": (DIM, "KEPT"),
+                "not_run": (DIM, "—")}
+        vhdr = " · verdict = final (post --verify)" if verify else ""
+        print(f"\n  {BOLD}Recap matrix{RESET} {DIM}(finding × judge · ✓ = flagged "
+              f"in pass 1{vhdr}){RESET}")
+        print(f"    {DIM}judges: "
+              + "  ".join(f"{n}={j}" for j, n in nums.items()) + RESET)
+        header = "".join(f"{n:<{colw}}" for n in nums.values())
+        print(f"    {DIM}{'#':<3}{'metric':<20}{'where':<20}{header}verdict{RESET}")
+        rows = sorted(all_records,
+                      key=lambda r: (-len(r["voters"]), -r["best"].severity))
+        for k, r in enumerate(rows[:limit], 1):
+            f = r["best"]
+            proj = normalize_project(f.project) if f.project else "?"
+            proj = (proj.rstrip("/").split("/")[-1] or "?")[:14]
+            where = (f"{proj} t{r.get('turn')}" if r.get("turn_ok")
+                     else f"{proj} t?")[:19]
+            cells = "".join(("✓" if j in r["voters"] else "·").ljust(colw)
+                            for j in judges)
+            col, lab = vmap.get(r.get("pass2", "not_run"), (DIM, "—"))
+            print(f"    {DIM}{k:<3}{RESET}{f.metric[:19]:<20}{DIM}{where:<20}"
+                  f"{RESET}{cells}{col}{lab}{RESET}")
+        if len(rows) > limit:
+            print(f"    {DIM}… +{len(rows) - limit} more findings "
+                  f"(top {limit} by agreement shown){RESET}")
+
     # ── Honesty caveat ──────────────────────────────────────────────────────
     local = kinds == {"ollama"}
     src = ("local LLM judge(s)" if local
