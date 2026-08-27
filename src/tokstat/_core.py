@@ -1863,6 +1863,7 @@ def show_audit(collect_fn, period_name: str | None = None,
     # model warm in VRAM between consecutive calls; for the CLI judges it just
     # runs them in turn.
     agg: dict = {}
+    raw_n = 0                          # total findings across judges (pre-dedup)
     verrors: dict = {v["label"]: 0 for v in voters}
     # Per-judge stats: Ollama timing (p_tok/…) OR CLI cost/tokens (cost/in/…).
     vstats: dict = {v["label"]: {"p_tok": 0, "p_ns": 0, "o_tok": 0, "o_ns": 0,
@@ -1908,6 +1909,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                 s["out"] += stats.get("out_tok", 0)
                 s["tokens"] += stats.get("tokens", 0)
             inwin = [f for f in res if _in_window(f)]
+            raw_n += len(inwin)
             if inwin:
                 mc: dict = {}
                 for f in inwin:
@@ -1953,6 +1955,12 @@ def show_audit(collect_fn, period_name: str | None = None,
         r["verified"] = None           # None = kept (verify off / error / no verifier)
         r["pass2"] = "not_run"         # pass-2 outcome for the trace
     records = all_records
+    # Explain the pre-verify count: many judges flag the SAME (metric, turn), so
+    # raw per-judge findings collapse into fewer unique issues (each verified once).
+    if raw_n != len(all_records):
+        print(f"{DIM}  {raw_n} raw findings across {len(live)} judges → "
+              f"{BOLD}{len(all_records)}{RESET}{DIM} unique (same conversation + "
+              f"metric + turn merged; votes kept).{RESET}")
 
     # ── Adversarial verify pass (opt-in): re-check each finding with a narrow,
     # skeptical prompt and drop the ones it can't confirm. Kills the "clarifi-
