@@ -1987,6 +1987,24 @@ def show_audit(collect_fn, period_name: str | None = None,
             print(f"    {DIM}[{i}/{total}]{RESET} {metric}{who} → "
                   f"{col}{label}{RESET} {tail}")
 
+        def _finding_code(r):
+            # Re-show the KEPT finding's identity ("code") so confirmed/refined
+            # findings are readable inline in the trace.
+            f = r["best"]
+            sev = _AUDIT_SEV_COLOR[f.severity]
+            lbl = _AUDIT_SEV_LABEL[f.severity]
+            when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
+            proj = normalize_project(f.project) if f.project else "?"
+            tcol = TOOL_COLORS.get(f.tool, "")
+            turn = (f"turn {r.get('turn')}" if r.get("turn_ok")
+                    else "turn ? (unlocatable)")
+            print(f"          {sev}●{RESET} {sev}{lbl:<4}{RESET} "
+                  f"{BOLD}{f.metric}{RESET} {DIM}· {tcol}{f.tool}{RESET}{DIM} · "
+                  f"{when} · {proj} · {turn}{RESET}")
+            if f.evidence:
+                ev = " ".join(str(f.evidence).split())[:160]
+                print(f'          {DIM}"{ev}"{RESET}')
+
         for i, r in enumerate(all_records, 1):
             f = r["best"]
             vmodel = r.get("best_model") or r.get("best_kind")
@@ -2028,12 +2046,14 @@ def show_audit(collect_fn, period_name: str | None = None,
                 kept_n += 1
                 refined_n += 1
                 _vline(i, f.metric, vmodel, "AFFINÉ", reason)
+                _finding_code(r)
             else:                       # confirmed
                 r["verified"] = True
                 r["pass2"] = "confirmed"
                 kept_n += 1
                 confirmed_n += 1
                 _vline(i, f.metric, vmodel, "CONFIRMED", reason)
+                _finding_code(r)
         # Displayed/kept set excludes only the explicitly-refuted findings.
         records = [r for r in all_records if r.get("verified") is not False]
         print(f"{DIM}  Verify: {GREEN}{confirmed_n} confirmed{RESET}{DIM}, "
