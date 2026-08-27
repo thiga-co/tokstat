@@ -1734,8 +1734,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                verify: bool = False,
                ollama_judge: bool = False,
                claude_judge: bool = False, claude_model: str | None = None,
-               codex_judge: bool = False, codex_model: str | None = None,
-               trace: str | None = None):
+               codex_judge: bool = False, codex_model: str | None = None):
     """Audit conversations across all tools for behavioural/quality issues.
 
     The judge is chosen explicitly — at least one of these must be passed, or
@@ -1882,13 +1881,16 @@ def show_audit(collect_fn, period_name: str | None = None,
             proj = "/".join(proj.rstrip("/").split("/")[-2:]) or proj
             day = c.ts.date().isoformat() if c.ts else "?"
             tcol = TOOL_COLORS.get(c.tool, "")
+            # Pass-1 trace: print the [k/N] line, then append the result of
+            # judging THIS conversation (findings raised, or "clean" / failure).
             print(f"{DIM}    [{k}/{judged_n}] {tcol}{c.tool}{RESET}{DIM} · "
-                  f"{proj} · {day} · {len(c.turns)} turns{RESET}", flush=True)
+                  f"{proj} · {day} · {len(c.turns)} turns{RESET}",
+                  end="", flush=True)
             try:
                 res, stats = v["fn"](c)
             except _audit.JudgeError as e:
                 verrors[label] += 1
-                print(f"      {YELLOW}⚠ {label} failed: {e}{RESET}")
+                print(f"{DIM} → {RESET}{YELLOW}⚠ failed: {e}{RESET}")
                 # A judge that fails on its very first call can't run at all —
                 # skip the rest of its wave instead of repeating the error.
                 if k == 1:
@@ -1905,9 +1907,18 @@ def show_audit(collect_fn, period_name: str | None = None,
                 s["in"] += stats.get("in_tok", 0)
                 s["out"] += stats.get("out_tok", 0)
                 s["tokens"] += stats.get("tokens", 0)
-            for f in res:
-                if not _in_window(f):
-                    continue
+            inwin = [f for f in res if _in_window(f)]
+            if inwin:
+                mc: dict = {}
+                for f in inwin:
+                    mc[f.metric] = mc.get(f.metric, 0) + 1
+                summ = ", ".join(f"{m}×{n}" if n > 1 else m
+                                 for m, n in mc.items())
+                print(f"{DIM} → {RESET}{BYELLOW}{len(inwin)} finding"
+                      f"{'s' if len(inwin) != 1 else ''}{RESET}{DIM}: {summ}{RESET}")
+            else:
+                print(f"{DIM} → {GREEN}clean{RESET}")
+            for f in inwin:
                 excerpt, ask, reaction, turn_ok, ridx = _audit_finding_context(
                     c, f.turn_index, f.evidence)
                 # Key on the RESOLVED turn so panel votes aggregate even when
@@ -1964,15 +1975,21 @@ def show_audit(collect_fn, period_name: str | None = None,
         offm = "" if engines == ["ollama"] else " · some off-machine (API)"
         print(f"{DIM}  Verifying {total} findings — each re-checked by the judge "
               f"that flagged it{offm}…{RESET}", flush=True)
-        kept_n = 0
-        dropped = 0
+        kept_n = confirmed_n = refined_n = dropped = 0
+        # One trace line per verification: LABEL + the verifier's result.
+        _lbl = {"CONFIRMED": GREEN, "AFFINÉ": CYAN, "DROPPED": RED,
+                "KEPT": DIM}
+
+        def _vline(i, metric, model, label, reason):
+            col = _lbl.get(label, DIM)
+            who = f" {DIM}({model}){RESET}" if model else ""
+            tail = f"{DIM}: {reason}{RESET}" if reason else ""
+            print(f"    {DIM}[{i}/{total}]{RESET} {metric}{who} → "
+                  f"{col}{label}{RESET} {tail}")
+
         for i, r in enumerate(all_records, 1):
             f = r["best"]
-            # Live [k/N] progress on one rewritten line (padded so shrinking
-            # text doesn't leave stray characters behind).
-            line = (f"    [{i}/{total}] {f.metric} · "
-                    f"kept {kept_n} · dropped {dropped}")
-            print(f"\r{DIM}{line:<68}{RESET}", end="", flush=True)
+            vmodel = r.get("best_model") or r.get("best_kind")
             # A contradiction whose quote matches no real turn can't be
             # confirmed (both conflicting statements must exist in the
             # transcript) — drop it rather than let the verifier guess.
@@ -1980,12 +1997,15 @@ def show_audit(collect_fn, period_name: str | None = None,
                 r["verified"] = False
                 r["pass2"] = "dropped_unlocatable"
                 dropped += 1
+                _vline(i, f.metric, vmodel, "DROPPED",
+                       "quote not found in any assistant turn")
                 continue
             chat = _verifier_for(r.get("best_kind", "ollama"),
                                  r.get("best_model"))
             if chat is None:            # unknown engine → keep (don't hide)
                 r["pass2"] = "kept_no_verifier"
                 kept_n += 1
+                _vline(i, f.metric, vmodel, "KEPT", "no verifier for this engine")
                 continue
             v = _audit.verify_finding(
                 chat, f.metric, f.evidence, r.get("excerpt", ""),
@@ -1993,73 +2013,32 @@ def show_audit(collect_fn, period_name: str | None = None,
             if v is None:               # verifier errored → keep (don't hide)
                 r["pass2"] = "kept_verifier_error"
                 kept_n += 1
-            elif v[0]:                  # confirmed real
-                r["verify_reason"] = v[1]
+                _vline(i, f.metric, vmodel, "KEPT", "verifier error")
+                continue
+            verdict, reason = v
+            r["verify_reason"] = reason
+            if verdict == "dropped":
+                r["verified"] = False
+                r["pass2"] = "refuted"
+                dropped += 1
+                _vline(i, f.metric, vmodel, "DROPPED", reason)
+            elif verdict == "refined":
+                r["verified"] = True
+                r["pass2"] = "refined"
+                kept_n += 1
+                refined_n += 1
+                _vline(i, f.metric, vmodel, "AFFINÉ", reason)
+            else:                       # confirmed
                 r["verified"] = True
                 r["pass2"] = "confirmed"
                 kept_n += 1
-            else:
-                r["verified"] = False
-                r["pass2"] = "refuted"
-                r["verify_reason"] = v[1]
-                dropped += 1
+                confirmed_n += 1
+                _vline(i, f.metric, vmodel, "CONFIRMED", reason)
         # Displayed/kept set excludes only the explicitly-refuted findings.
         records = [r for r in all_records if r.get("verified") is not False]
-        print(f"\r{' ':<72}\r{DIM}  Verify: kept {len(records)}, dropped "
-              f"{dropped} unconfirmed.{RESET}")
-
-    # ── Per-finding trace (opt-in --trace <file.jsonl>): for EACH finding, the
-    # pass-1 judgment (who raised it, metric, evidence, rationale) and the
-    # pass-2 judgment (the --verify verdict). One JSON object per line so the
-    # two stages can be inspected/diffed offline.
-    if trace:
-        import json as _json
-
-        def _flat(s, n=600):
-            return " ".join(str(s or "").split())[:n]
-
-        rows = sorted(all_records, key=lambda r: (-len(r["voters"]),
-                                                  -r["best"].severity))
-        pass2_ran = verify and bool(all_records)
-        try:
-            with open(trace, "w", encoding="utf-8") as fh:
-                for r in rows:
-                    f = r["best"]
-                    rec = {
-                        "metric": f.metric,
-                        "tool": f.tool,
-                        "project": normalize_project(f.project) if f.project else "",
-                        "date": f.ts.strftime("%Y-%m-%d") if f.ts else "",
-                        "turn": r.get("turn") if r.get("turn_ok") else None,
-                        "turn_locatable": bool(r.get("turn_ok")),
-                        "evidence": _flat(f.evidence),
-                        "user_ask": _flat(r.get("ask")),
-                        "user_reaction": _flat(r.get("reaction")),
-                        # a/ FIRST PASS — detection
-                        "pass1_detection": {
-                            "judges": sorted(r["voters"]),
-                            "n_votes": len(r["voters"]),
-                            "severity": f.severity,
-                            "rationale": _flat(f.rationale),
-                        },
-                        # b/ SECOND PASS — verification (--verify)
-                        "pass2_verification": {
-                            "ran": pass2_ran,
-                            "verifier": (r.get("best_model")
-                                         or r.get("best_kind")),
-                            "outcome": r.get("pass2", "not_run"),
-                            "kept": r.get("verified") is not False,
-                            "reason": _flat(r.get("verify_reason")),
-                        },
-                    }
-                    fh.write(_json.dumps(rec, ensure_ascii=False) + "\n")
-            kept_n = sum(1 for r in all_records if r.get("verified") is not False)
-            print(f"\n  {GREEN}✓ Wrote trace of {len(rows)} findings to "
-                  f"{BOLD}{trace}{RESET}{GREEN} — pass-1 detection + pass-2 "
-                  f"verify per line ({kept_n} kept, {len(rows) - kept_n} "
-                  f"refuted).{RESET}")
-        except OSError as e:
-            print(f"\n  {RED}⚠ Could not write trace to {trace}: {e}{RESET}")
+        print(f"{DIM}  Verify: {GREEN}{confirmed_n} confirmed{RESET}{DIM}, "
+              f"{CYAN}{refined_n} refined{RESET}{DIM}, {RED}{dropped} dropped"
+              f"{RESET}{DIM} (kept {len(records)}/{total}).{RESET}")
 
     err_note = ""
     if any(verrors.values()):

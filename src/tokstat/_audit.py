@@ -702,12 +702,19 @@ _VERIFY_SYSTEM = (
     "does not excuse it.\n"
     "For 'contradiction' specifically, real=true ONLY if the two statements are "
     "LOGICALLY INCOMPATIBLE (both cannot be true at once).\n"
-    "Return JSON {\"real\": <bool>, \"reason\": \"<one sentence>\"}."
+    "When real=true, also set accurate: true if the finding's metric and wording "
+    "are exactly right, or false if the defect is genuine but MISLABELLED or "
+    "OVERSTATED — then use reason to give the corrected, refined description.\n"
+    "Return JSON {\"real\": <bool>, \"accurate\": <bool>, \"reason\": "
+    "\"<one sentence: the confirmation, the refinement, or why it's not a "
+    "defect>\"}."
 )
 
 _VERIFY_FORMAT = {
     "type": "object",
-    "properties": {"real": {"type": "boolean"}, "reason": {"type": "string"}},
+    "properties": {"real": {"type": "boolean"},
+                   "accurate": {"type": "boolean"},
+                   "reason": {"type": "string"}},
     "required": ["real"],
 }
 
@@ -867,8 +874,10 @@ def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask,
                    user_reaction=""):
     """Adversarial second pass: re-check ONE finding with a narrow, skeptical
     prompt via `chat` (any judge backend — see make_verifier). Returns
-    (real: bool, reason: str), or None if the check couldn't run (caller should
-    then KEEP the finding rather than silently drop it).
+    (verdict, reason) where verdict is "confirmed" (real & accurate as stated),
+    "refined" (real defect but mislabelled/overstated — reason has the corrected
+    description) or "dropped" (not a defect); or None if the check couldn't run
+    (caller should then KEEP the finding rather than silently drop it).
 
     user_reaction is the user's NEXT turn after the flagged one; it lets the
     verifier see a pushback ("es-tu sûr ?") that only came AFTER a confident
@@ -886,7 +895,8 @@ def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask,
         # The statement_a/b fields force the judge to try to name both sides
         # (a chain-of-thought effect that flips the verdict to false on phased
         # plans / restatements); the decision itself rests on `incompatible`.
-        return bool(parsed.get("incompatible")), str(parsed.get("reason", ""))[:200]
+        verdict = "confirmed" if parsed.get("incompatible") else "dropped"
+        return verdict, str(parsed.get("reason", ""))[:200]
 
     reaction_line = ("User's NEXT turn (their reaction to this): "
                      + str(user_reaction)[:300] + "\n") if user_reaction else ""
@@ -899,7 +909,12 @@ def verify_finding(chat, metric, evidence, assistant_excerpt, user_ask,
     parsed = chat(_VERIFY_SYSTEM, user, _VERIFY_FORMAT)
     if parsed is None:
         return None
-    return bool(parsed.get("real")), str(parsed.get("reason", ""))[:200]
+    reason = str(parsed.get("reason", ""))[:200]
+    if not bool(parsed.get("real")):
+        return "dropped", reason
+    if parsed.get("accurate", True) is False:   # real defect, but reframed
+        return "refined", reason
+    return "confirmed", reason
 
 
 def verify_finding_ollama(metric, evidence, assistant_excerpt, user_ask,

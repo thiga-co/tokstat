@@ -414,7 +414,7 @@ _KNOWN_FLAGS = {
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
     "--verify", "--ollama-judge", "--claude-judge", "--claude-model",
-    "--codex-judge", "--codex-model", "--trace",
+    "--codex-judge", "--codex-model",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
@@ -633,9 +633,7 @@ def cli():
                    claude_judge="--claude-judge" in args,
                    claude_model=_arg_value(args, "--claude-model"),
                    codex_judge="--codex-judge" in args,
-                   codex_model=_arg_value(args, "--codex-model"),
-                   trace=(_arg_value(args, "--trace") or "tokstat-audit-trace.jsonl"
-                          if "--trace" in args else None))
+                   codex_model=_arg_value(args, "--codex-model"))
     elif "--plan" in args:
         show_plan(collect, period, tool)
     elif "--export" in args:

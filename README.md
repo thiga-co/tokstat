@@ -356,16 +356,17 @@ tokstat --audit --codex-judge                        # judge via Codex  (off-mac
 tokstat --audit --ollama-judge --claude-judge --codex-judge   # 3-way voting panel
 tokstat --audit --ollama-judge --model a,b,c         # multi-model local panel
 tokstat --audit --ollama-judge --judge-max 20        # cap conversations judged
-tokstat --audit --ollama-judge --model a,b,c --verify --trace run.jsonl   # per-finding trace
 ```
 
-**Trace** (`--trace <file.jsonl>`). Writes one JSON object per finding recording
-**both passes**: `pass1_detection` (which judges raised it, the vote count,
-severity and rationale) and `pass2_verification` (whether `--verify` ran, the
-verifier, the `outcome` — `confirmed` / `refuted` / `dropped_unlocatable` /
-`kept_*` — whether it was `kept`, and the verifier's `reason`). Refuted findings
-stay in the file, so you can diff detection vs verification per finding and per
-model offline. (Distinct from `--export`, which dumps raw exchanges to JSON.)
+**Live trace (stdout).** Both passes are traced as they run:
+
+- **Pass 1 (detection)** — each conversation prints its result inline:
+  `[3/50] Claude Code · PRO/fdj · 2026-07-22 · 8 turns → 2 findings: contradiction, unsupported_claim` (or `→ clean`).
+- **Pass 2 (`--verify`)** — one line per finding with the verdict and the
+  verifier's reason: `→ CONFIRMED`, `→ DROPPED`, or `→ AFFINÉ` (real defect but
+  the verifier corrected its metric/wording), e.g.
+  `[5/12] contradiction (gemma4:e4b) → DROPPED: the two statements are about different subjects`.
+  It ends with `Verify: N confirmed, M refined, K dropped (kept …)`.
 
 | metric | |
 |---|---|
