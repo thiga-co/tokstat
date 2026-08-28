@@ -368,13 +368,14 @@ tokstat --audit --ollama-judge --judge-max 20        # cap conversations judged
   `[5/12] contradiction (gemma4:e4b) → DROPPED: the two statements are about different subjects`.
   It ends with `Verify: N confirmed, M refined, K dropped (kept …)`.
 
-A **Recap matrix** closes the report: **one row per conversation**, one column
-per judge (numbered in a legend), and each cell holds the **final** finding
-**codes** that judge kept for that conversation (short 3-letter metric codes,
-e.g. `CTR`, `UNS`, `OVR`). Only findings that survived `--verify` are shown — the
-final status, nothing else. A `·` means that judge kept nothing; conversations
-with no surviving finding are summarised as a count. Lets you compare, per
-conversation, what every model concluded.
+A **Recap matrix** closes the report: **one row per conversation** (all of them,
+no truncation), one column **per judge in `--model` order** (then Claude, Codex),
+numbered in a legend. Each cell holds the **final** finding **codes** that judge
+kept for that conversation (short 3-letter metric codes, e.g. `CTR`, `UNS`,
+`OVR`); only findings that survived `--verify` are shown — the final status,
+nothing else. A `·` means that judge kept nothing. Rows are ordered findings-first
+(fully-clean conversations last), and a summary line gives the totals. Lets you
+compare, per conversation, what every model concluded.
 
 | metric | |
 |---|---|

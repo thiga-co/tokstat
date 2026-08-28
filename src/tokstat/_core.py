@@ -2165,7 +2165,9 @@ def show_audit(collect_fn, period_name: str | None = None,
     # cell holds the finding CODE(s) that judge produced for that conversation,
     # coloured by the finding's final post-verify verdict. ─────────────────────
     if all_records:
-        judges = list(live)
+        # Columns follow the --model order exactly (then Claude, then Codex) —
+        # every requested judge is a column, even one that found nothing.
+        judges = [v["label"] for v in voters]
         nums = {j: n for n, j in enumerate(judges, 1)}
         code = {"hallucination": "HAL", "unsupported_claim": "UNS",
                 "overconfidence": "OVR", "contradiction": "CTR",
@@ -2184,11 +2186,13 @@ def show_audit(collect_fn, period_name: str | None = None,
             c3 = code.get(r["best"].metric, r["best"].metric[:3].upper())
             for j in r["voters"]:
                 cellmap.setdefault((r["best"].session_id, j), []).append(c3)
-        rows_c = [c for c in to_judge
-                  if any((c.session_id, j) in cellmap for j in judges)]
-        rows_c.sort(key=lambda c: -sum(len(cellmap.get((c.session_id, j), []))
-                                       for j in judges))
-        clean = len(to_judge) - len(rows_c)
+        # COMPLETE matrix: every judged conversation is a row (findings first,
+        # fully-clean ones at the bottom) — no truncation.
+        rows_c = sorted(to_judge,
+                        key=lambda c: -sum(len(cellmap.get((c.session_id, j), []))
+                                           for j in judges))
+        with_findings = sum(1 for c in rows_c
+                            if any((c.session_id, j) in cellmap for j in judges))
 
         def _cell(items, w):
             if not items:
@@ -2210,7 +2214,7 @@ def show_audit(collect_fn, period_name: str | None = None,
         lblw = 36
         head = "".join(f"{n:<{colw}}" for n in nums.values())
         print(f"    {DIM}{'conversation':<{lblw}}{head}{RESET}")
-        for c in rows_c[:limit]:
+        for c in rows_c:
             proj = normalize_project(c.project) if c.project else "?"
             proj = (proj.rstrip("/").split("/")[-1] or "?")
             day = c.ts.date().isoformat() if c.ts else "?"
@@ -2218,13 +2222,9 @@ def show_audit(collect_fn, period_name: str | None = None,
             cells = "".join(_cell(cellmap.get((c.session_id, j), []), colw)
                             for j in judges)
             print(f"    {DIM}{lbl:<{lblw}}{RESET}{cells}")
-        tail = []
-        if len(rows_c) > limit:
-            tail.append(f"+{len(rows_c) - limit} more conversations")
-        if clean:
-            tail.append(f"{clean} with no finding kept")
-        if tail:
-            print(f"    {DIM}… {' · '.join(tail)}{RESET}")
+        print(f"    {DIM}{len(rows_c)} conversations · {with_findings} with ≥1 "
+              f"kept finding · {len(rows_c) - with_findings} clean across all "
+              f"judges{RESET}")
 
     # ── Honesty caveat ──────────────────────────────────────────────────────
     local = kinds == {"ollama"}
