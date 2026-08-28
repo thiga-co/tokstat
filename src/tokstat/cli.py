@@ -401,7 +401,7 @@ _TOOL_ALIASES = {
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
-    "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus",
+    "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log",
     "--export", "--period", "--since", "--tool",
 }
 
@@ -525,7 +525,9 @@ def cli():
                    claude_model=_arg_value(args, "--claude-model"),
                    codex_judge="--codex-judge" in args,
                    codex_model=_arg_value(args, "--codex-model"),
-                   frontier_consensus="--frontier-consensus" in args)
+                   frontier_consensus=("--frontier-consensus" in args
+                                       or "--consensus-log" in args),
+                   consensus_log="--consensus-log" in args)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:

@@ -1735,7 +1735,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                ollama_judge: bool = False,
                claude_judge: bool = False, claude_model: str | None = None,
                codex_judge: bool = False, codex_model: str | None = None,
-               frontier_consensus: bool = False):
+               frontier_consensus: bool = False, consensus_log: bool = False):
     """Audit conversations across all tools for behavioural/quality issues.
 
     The judge is chosen explicitly — at least one of these must be passed, or
@@ -2089,6 +2089,11 @@ def show_audit(collect_fn, period_name: str | None = None,
             names = " + ".join(sorted(flabels))
             print(f"\n  {BOLD}Frontier consensus{RESET} {DIM}({names} debate "
                   f"{len(cand)} candidate findings — 2 rounds)…{RESET}", flush=True)
+            def _vtag(val):
+                if val is None:
+                    return f"{YELLOW}—{RESET}"
+                return f"{GREEN}REAL{RESET}" if val[0] else f"{RED}not a defect{RESET}"
+
             fc_keep = []
             for i, r in enumerate(cand, 1):
                 f = r["best"]
@@ -2111,16 +2116,37 @@ def show_audit(collect_fn, period_name: str | None = None,
                         others)
                 votes = [vv for vv in r2.values() if vv is not None]
                 yes = sum(1 for vv in votes if vv[0])
+                r["fc_r1"] = r1
                 r["fc_r2"] = r2
                 agreed = bool(votes) and yes > len(votes) / 2
                 r["fc"] = agreed
                 tag = (f"{GREEN}CONSENSUS ✓{RESET}" if agreed
                        else f"{DIM}no consensus{RESET}")
-                vote_str = ", ".join(
-                    f"{lbl.split()[0]}={'✓' if (vv and vv[0]) else '✗'}"
-                    for lbl, vv in r2.items())
-                print(f"    {DIM}[{i}/{len(cand)}] {f.metric}{RESET} → {tag} "
-                      f"{DIM}({vote_str}){RESET}")
+                if consensus_log:
+                    # Full deliberation transcript for this finding.
+                    when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
+                    proj = normalize_project(f.project) if f.project else "?"
+                    turn = (f"turn {r.get('turn')}" if r.get("turn_ok")
+                            else "turn ? (unlocatable)")
+                    print(f"\n    {BOLD}[{i}/{len(cand)}] {f.metric}{RESET}"
+                          f"{DIM} · {f.tool} · {when} · {proj} · {turn}{RESET}")
+                    if f.evidence:
+                        print(f'        {DIM}"{" ".join(str(f.evidence).split())[:200]}"{RESET}')
+                    print(f"        {DIM}round 1 (blind):{RESET}")
+                    for lbl, val in r1.items():
+                        why = (" — " + val[1]) if (val and val[1]) else ""
+                        print(f"          {lbl}: {_vtag(val)}{DIM}{why}{RESET}")
+                    print(f"        {DIM}round 2 (after seeing peers):{RESET}")
+                    for lbl, val in r2.items():
+                        why = (" — " + val[1]) if (val and val[1]) else ""
+                        print(f"          {lbl}: {_vtag(val)}{DIM}{why}{RESET}")
+                    print(f"        → {tag} {DIM}({yes}/{len(votes)} real){RESET}")
+                else:
+                    vote_str = ", ".join(
+                        f"{lbl.split()[0]}={'✓' if (vv and vv[0]) else '✗'}"
+                        for lbl, vv in r2.items())
+                    print(f"    {DIM}[{i}/{len(cand)}] {f.metric}{RESET} → {tag} "
+                          f"{DIM}({vote_str}){RESET}")
                 if agreed:
                     fc_keep.append(r)
             print(f"  {DIM}Frontier consensus: {GREEN}{len(fc_keep)}{RESET}{DIM} "

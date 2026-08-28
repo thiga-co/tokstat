@@ -467,6 +467,12 @@ judge — its own column in the recap matrix and a deliberation log per finding
 tool produces: agreement between strong, independent judges *after* they've
 argued it out. Needs ≥2 frontier judges (otherwise skipped).
 
+Add `--consensus-log` to print the **full deliberation** instead of the one-line
+summary: for each candidate finding, the header + evidence, then round 1 (each
+frontier's blind verdict and reason) and round 2 (each one's verdict and reason
+after seeing the peers), then the outcome. Useful to watch judges actually change
+their minds. `--consensus-log` implies `--frontier-consensus`.
+
 **Voting panel.** Select several judges (any mix of `--ollama-judge` models and
 the CLI judges) and each conversation is judged by every one; findings are
 **aggregated by vote** — a finding flagged by more judges ranks higher and shows
