@@ -2087,12 +2087,36 @@ def show_audit(collect_fn, period_name: str | None = None,
             chats = {v["label"]: _audit.make_verifier(v["kind"], v.get("model"))
                      for v in frontier}
             names = " + ".join(sorted(flabels))
+            # 1 blind round + up to MAX_DEBATE debate rounds. Extra rounds fire
+            # only while the panel keeps *fully flipping* (everyone swaps vs the
+            # previous round) — a sign they're just deferring to each other, not
+            # converging. Once a round stabilises (someone holds), we stop.
+            MAX_DEBATE = 3
             print(f"\n  {BOLD}Frontier consensus{RESET} {DIM}({names} debate "
-                  f"{len(cand)} candidate findings — 2 rounds)…{RESET}", flush=True)
+                  f"{len(cand)} candidate findings — up to {1 + MAX_DEBATE} "
+                  f"rounds)…{RESET}", flush=True)
+
             def _vtag(val):
                 if val is None:
                     return f"{YELLOW}—{RESET}"
                 return f"{GREEN}REAL{RESET}" if val[0] else f"{RED}not a defect{RESET}"
+
+            def _all_flipped(prev, cur):
+                # True iff every model with a verdict in BOTH rounds changed its
+                # real/not-real call. Needs ≥2 comparable verdicts to count as
+                # an oscillation (a lone flip isn't a swap).
+                comparable = [lbl for lbl in cur
+                              if prev.get(lbl) is not None and cur.get(lbl) is not None]
+                if len(comparable) < 2:
+                    return False
+                return all(prev[lbl][0] != cur[lbl][0] for lbl in comparable)
+
+            def _round_label(idx):
+                if idx == 0:
+                    return "round 1 (blind)"
+                if idx == 1:
+                    return "round 2 (after seeing peers)"
+                return f"round {idx + 1} (re-debate — panel kept flipping)"
 
             fc_keep = []
             for i, r in enumerate(cand, 1):
@@ -2105,23 +2129,37 @@ def show_audit(collect_fn, period_name: str | None = None,
                                                 f.evidence, exc, ask, rea)
                     r1[v["label"]] = None if res is None else (res[0] != "dropped",
                                                                res[1])
-                peers = [(lbl, (val[0] if val else None), (val[1] if val else ""))
-                         for lbl, val in r1.items()]
-                # Round 2 — each revises after seeing the peers.
-                r2 = {}
-                for v in frontier:
-                    others = [p for p in peers if p[0] != v["label"]]
-                    r2[v["label"]] = _audit.frontier_consensus_vote(
-                        chats[v["label"]], f.metric, f.evidence, exc, ask, rea,
-                        others)
-                votes = [vv for vv in r2.values() if vv is not None]
+                rounds = [r1]
+                # Debate rounds — each revises after seeing the peers' last stand.
+                while len(rounds) < 1 + MAX_DEBATE:
+                    prev = rounds[-1]
+                    peers = [(lbl, (val[0] if val else None), (val[1] if val else ""))
+                             for lbl, val in prev.items()]
+                    rN = {}
+                    for v in frontier:
+                        others = [p for p in peers if p[0] != v["label"]]
+                        rN[v["label"]] = _audit.frontier_consensus_vote(
+                            chats[v["label"]], f.metric, f.evidence, exc, ask, rea,
+                            others)
+                    rounds.append(rN)
+                    # Stop as soon as the panel stops fully swapping.
+                    if not _all_flipped(prev, rN):
+                        break
+                final = rounds[-1]
+                votes = [vv for vv in final.values() if vv is not None]
                 yes = sum(1 for vv in votes if vv[0])
-                r["fc_r1"] = r1
-                r["fc_r2"] = r2
-                agreed = bool(votes) and yes > len(votes) / 2
+                unstable = (len(rounds) >= 1 + MAX_DEBATE
+                            and _all_flipped(rounds[-2], rounds[-1]))
+                r["fc_rounds"] = rounds
+                agreed = bool(votes) and yes > len(votes) / 2 and not unstable
                 r["fc"] = agreed
-                tag = (f"{GREEN}CONSENSUS ✓{RESET}" if agreed
-                       else f"{DIM}no consensus{RESET}")
+                r["fc_unstable"] = unstable
+                if unstable:
+                    tag = f"{YELLOW}unstable — no consensus{RESET}"
+                elif agreed:
+                    tag = f"{GREEN}CONSENSUS ✓{RESET}"
+                else:
+                    tag = f"{DIM}no consensus{RESET}"
                 if consensus_log:
                     # Full deliberation transcript for this finding.
                     when = f.ts.strftime("%Y-%m-%d") if f.ts else "?"
@@ -2132,21 +2170,20 @@ def show_audit(collect_fn, period_name: str | None = None,
                           f"{DIM} · {f.tool} · {when} · {proj} · {turn}{RESET}")
                     if f.evidence:
                         print(f'        {DIM}"{" ".join(str(f.evidence).split())[:200]}"{RESET}')
-                    print(f"        {DIM}round 1 (blind):{RESET}")
-                    for lbl, val in r1.items():
-                        why = (" — " + val[1]) if (val and val[1]) else ""
-                        print(f"          {lbl}: {_vtag(val)}{DIM}{why}{RESET}")
-                    print(f"        {DIM}round 2 (after seeing peers):{RESET}")
-                    for lbl, val in r2.items():
-                        why = (" — " + val[1]) if (val and val[1]) else ""
-                        print(f"          {lbl}: {_vtag(val)}{DIM}{why}{RESET}")
-                    print(f"        → {tag} {DIM}({yes}/{len(votes)} real){RESET}")
+                    for idx, rnd in enumerate(rounds):
+                        print(f"        {DIM}{_round_label(idx)}:{RESET}")
+                        for lbl, val in rnd.items():
+                            why = (" — " + val[1]) if (val and val[1]) else ""
+                            print(f"          {lbl}: {_vtag(val)}{DIM}{why}{RESET}")
+                    print(f"        → {tag} {DIM}({yes}/{len(votes)} real, "
+                          f"{len(rounds)} rounds){RESET}")
                 else:
                     vote_str = ", ".join(
                         f"{lbl.split()[0]}={'✓' if (vv and vv[0]) else '✗'}"
-                        for lbl, vv in r2.items())
+                        for lbl, vv in final.items())
+                    rnote = f", {len(rounds)} rounds" if len(rounds) > 2 else ""
                     print(f"    {DIM}[{i}/{len(cand)}] {f.metric}{RESET} → {tag} "
-                          f"{DIM}({vote_str}){RESET}")
+                          f"{DIM}({vote_str}{rnote}){RESET}")
                 if agreed:
                     fc_keep.append(r)
             print(f"  {DIM}Frontier consensus: {GREEN}{len(fc_keep)}{RESET}{DIM} "

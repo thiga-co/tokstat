@@ -460,8 +460,12 @@ judges are active (currently `--claude-judge` and `--codex-judge`; more can be
 added), they **deliberate** to agree on which findings are real. For every
 finding at least one frontier judge raised: **round 1** each frontier judge rules
 on it blind; **round 2** each one revises after seeing the peers' verdicts and
-reasons; the finding is kept in the consensus if a **majority** of the frontier
-panel still calls it real. The result is a synthetic **`frontier-consensus`**
+reasons. If the whole panel *fully flips* in a round (everyone swaps their call —
+a sign they're deferring to each other rather than converging), it runs **another
+debate round**, and keeps going until a round stabilises (someone holds their
+ground) or a cap of 4 rounds is hit. A finding still swapping at the cap is marked
+**unstable** and is *not* kept. Otherwise the finding is kept in the consensus if
+a **majority** of the frontier panel calls it real in the final round. The result is a synthetic **`frontier-consensus`**
 judge — its own column in the recap matrix and a deliberation log per finding
 (`Claude=✓, Codex=✓ → CONSENSUS ✓`). This is the highest-confidence verdict the
 tool produces: agreement between strong, independent judges *after* they've
@@ -469,9 +473,10 @@ argued it out. Needs ≥2 frontier judges (otherwise skipped).
 
 Add `--consensus-log` to print the **full deliberation** instead of the one-line
 summary: for each candidate finding, the header + evidence, then round 1 (each
-frontier's blind verdict and reason) and round 2 (each one's verdict and reason
-after seeing the peers), then the outcome. Useful to watch judges actually change
-their minds. `--consensus-log` implies `--frontier-consensus`.
+frontier's blind verdict and reason) and every debate round (each one's verdict
+and reason after seeing the peers), then the outcome. Useful to watch judges
+actually change their minds — and to see when the panel keeps flipping.
+`--consensus-log` implies `--frontier-consensus`.
 
 **Voting panel.** Select several judges (any mix of `--ollama-judge` models and
 the CLI judges) and each conversation is judged by every one; findings are
