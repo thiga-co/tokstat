@@ -416,7 +416,7 @@ _KNOWN_FLAGS = {
     "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
     "--verify", "--ollama-judge", "--claude-judge", "--claude-model",
-    "--codex-judge", "--codex-model",
+    "--codex-judge", "--codex-model", "--frontier-consensus",
     "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
@@ -635,7 +635,8 @@ def cli():
                    claude_judge="--claude-judge" in args,
                    claude_model=_arg_value(args, "--claude-model"),
                    codex_judge="--codex-judge" in args,
-                   codex_model=_arg_value(args, "--codex-model"))
+                   codex_model=_arg_value(args, "--codex-model"),
+                   frontier_consensus="--frontier-consensus" in args)
     elif "--plan" in args:
         show_plan(collect, period, tool)
     elif "--export" in args:

@@ -1734,7 +1734,8 @@ def show_audit(collect_fn, period_name: str | None = None,
                verify: bool = False,
                ollama_judge: bool = False,
                claude_judge: bool = False, claude_model: str | None = None,
-               codex_judge: bool = False, codex_model: str | None = None):
+               codex_judge: bool = False, codex_model: str | None = None,
+               frontier_consensus: bool = False):
     """Audit conversations across all tools for behavioural/quality issues.
 
     The judge is chosen explicitly — at least one of these must be passed, or
@@ -1811,7 +1812,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                       f"(pass one with --model).{RESET}")
     if claude_judge:
         if _audit.claude_cli_available():
-            voters.append({"label": "Claude", "kind": "claude",
+            voters.append({"label": "Claude", "kind": "claude", "frontier": True,
                            "model": claude_model,
                            "fn": (lambda c: _audit.judge_conversation_claude(
                                c, claude_model))})
@@ -1820,7 +1821,7 @@ def show_audit(collect_fn, period_name: str | None = None,
                   f"skipped.{RESET}")
     if codex_judge:
         if _audit.codex_cli_available():
-            voters.append({"label": "Codex", "kind": "codex",
+            voters.append({"label": "Codex", "kind": "codex", "frontier": True,
                            "model": codex_model,
                            "fn": (lambda c: _audit.judge_conversation_codex(
                                c, codex_model))})
@@ -2068,6 +2069,64 @@ def show_audit(collect_fn, period_name: str | None = None,
               f"{CYAN}{refined_n} refined{RESET}{DIM}, {RED}{dropped} dropped"
               f"{RESET}{DIM} (kept {len(records)}/{total}).{RESET}")
 
+    # ── Frontier consensus: the frontier judges (Claude/Codex/…) debate the
+    # findings and agree, by majority, which are real. Opt-in --frontier-consensus,
+    # needs ≥2 frontier judges. Produces a synthetic "frontier-consensus" judge.
+    fc_label = None
+    if frontier_consensus:
+        frontier = [v for v in voters
+                    if v.get("frontier") and v["label"] in live]
+        if len(frontier) < 2:
+            print(f"\n  {YELLOW}⚠ --frontier-consensus needs ≥2 frontier judges "
+                  f"(e.g. --claude-judge --codex-judge) — skipped.{RESET}")
+        else:
+            fc_label = "frontier-consensus"
+            flabels = {v["label"] for v in frontier}
+            # Candidates = anything at least one frontier judge flagged.
+            cand = [r for r in all_records if r["voters"] & flabels]
+            chats = {v["label"]: _audit.make_verifier(v["kind"], v.get("model"))
+                     for v in frontier}
+            names = " + ".join(sorted(flabels))
+            print(f"\n  {BOLD}Frontier consensus{RESET} {DIM}({names} debate "
+                  f"{len(cand)} candidate findings — 2 rounds)…{RESET}", flush=True)
+            fc_keep = []
+            for i, r in enumerate(cand, 1):
+                f = r["best"]
+                exc, ask, rea = r.get("excerpt", ""), r.get("ask", ""), r.get("reaction", "")
+                # Round 1 — each frontier judges blind.
+                r1 = {}
+                for v in frontier:
+                    res = _audit.verify_finding(chats[v["label"]], f.metric,
+                                                f.evidence, exc, ask, rea)
+                    r1[v["label"]] = None if res is None else (res[0] != "dropped",
+                                                               res[1])
+                peers = [(lbl, (val[0] if val else None), (val[1] if val else ""))
+                         for lbl, val in r1.items()]
+                # Round 2 — each revises after seeing the peers.
+                r2 = {}
+                for v in frontier:
+                    others = [p for p in peers if p[0] != v["label"]]
+                    r2[v["label"]] = _audit.frontier_consensus_vote(
+                        chats[v["label"]], f.metric, f.evidence, exc, ask, rea,
+                        others)
+                votes = [vv for vv in r2.values() if vv is not None]
+                yes = sum(1 for vv in votes if vv[0])
+                r["fc_r2"] = r2
+                agreed = bool(votes) and yes > len(votes) / 2
+                r["fc"] = agreed
+                tag = (f"{GREEN}CONSENSUS ✓{RESET}" if agreed
+                       else f"{DIM}no consensus{RESET}")
+                vote_str = ", ".join(
+                    f"{lbl.split()[0]}={'✓' if (vv and vv[0]) else '✗'}"
+                    for lbl, vv in r2.items())
+                print(f"    {DIM}[{i}/{len(cand)}] {f.metric}{RESET} → {tag} "
+                      f"{DIM}({vote_str}){RESET}")
+                if agreed:
+                    fc_keep.append(r)
+            print(f"  {DIM}Frontier consensus: {GREEN}{len(fc_keep)}{RESET}{DIM} "
+                  f"findings agreed real by majority of {len(frontier)} frontier "
+                  f"judges (of {len(cand)} candidates).{RESET}")
+
     err_note = ""
     if any(verrors.values()):
         err_note = ("  ·  " + YELLOW + "; ".join(
@@ -2166,8 +2225,11 @@ def show_audit(collect_fn, period_name: str | None = None,
     # coloured by the finding's final post-verify verdict. ─────────────────────
     if all_records:
         # Columns follow the --model order exactly (then Claude, then Codex) —
-        # every requested judge is a column, even one that found nothing.
+        # every requested judge is a column, even one that found nothing. The
+        # frontier-consensus verdict, when computed, is an extra final column.
         judges = [v["label"] for v in voters]
+        if fc_label:
+            judges = judges + [fc_label]
         nums = {j: n for n, j in enumerate(judges, 1)}
         code = {"hallucination": "HAL", "unsupported_claim": "UNS",
                 "overconfidence": "OVR", "contradiction": "CTR",
@@ -2181,11 +2243,13 @@ def show_audit(collect_fn, period_name: str | None = None,
         # (session, judge) -> list of surviving codes
         cellmap: dict = {}
         for r in all_records:
-            if r.get("pass2") in _dropped:
-                continue
             c3 = code.get(r["best"].metric, r["best"].metric[:3].upper())
-            for j in r["voters"]:
-                cellmap.setdefault((r["best"].session_id, j), []).append(c3)
+            if r.get("pass2") not in _dropped:
+                for j in r["voters"]:
+                    cellmap.setdefault((r["best"].session_id, j), []).append(c3)
+            # Frontier-consensus column: only findings the frontier panel agreed on.
+            if fc_label and r.get("fc"):
+                cellmap.setdefault((r["best"].session_id, fc_label), []).append(c3)
         # COMPLETE matrix: every judged conversation is a row (findings first,
         # fully-clean ones at the bottom) — no truncation.
         rows_c = sorted(to_judge,

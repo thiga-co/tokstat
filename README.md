@@ -455,6 +455,18 @@ vote alongside it.
 > conversation and is reported at the end; Codex under a ChatGPT plan has no
 > per-call cost. Pair with `--judge-max`.
 
+**Frontier consensus** (`--frontier-consensus`). When two or more **frontier**
+judges are active (currently `--claude-judge` and `--codex-judge`; more can be
+added), they **deliberate** to agree on which findings are real. For every
+finding at least one frontier judge raised: **round 1** each frontier judge rules
+on it blind; **round 2** each one revises after seeing the peers' verdicts and
+reasons; the finding is kept in the consensus if a **majority** of the frontier
+panel still calls it real. The result is a synthetic **`frontier-consensus`**
+judge — its own column in the recap matrix and a deliberation log per finding
+(`Claude=✓, Codex=✓ → CONSENSUS ✓`). This is the highest-confidence verdict the
+tool produces: agreement between strong, independent judges *after* they've
+argued it out. Needs ≥2 frontier judges (otherwise skipped).
+
 **Voting panel.** Select several judges (any mix of `--ollama-judge` models and
 the CLI judges) and each conversation is judged by every one; findings are
 **aggregated by vote** — a finding flagged by more judges ranks higher and shows
