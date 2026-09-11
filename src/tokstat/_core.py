@@ -2860,6 +2860,62 @@ def show_impact(collect_fn, period_name: str | None = None,
         span = " → ".join(_model_measurable_span(model))
         print(f"    {model:<28} {_metric(pm)}   {DIM}{span}{RESET}")
 
+    # ─── By workspace (heaviest projects) ─────────────────────────────────
+    # Group by normalized project (the repo/dir the work ran in), summing the
+    # same prefill-inclusive energy/CO₂. Distinct sessions per workspace are
+    # counted so a heavy repo with many conversations stands out.
+    wks: dict[str, dict] = defaultdict(lambda: {
+        "models": defaultdict(lambda: [0, 0, 0]), "tokens": 0,
+        "sessions": set(), "first": None, "last": None, "n": 0})
+    for e in all_exchanges:
+        proj = normalize_project(e.get("project")) if e.get("project") else "unknown"
+        tok = e.get("tokens") or {}
+        w = wks[proj]
+        m = w["models"][e.get("model") or "?"]
+        m[0] += tok.get("output", 0) or 0
+        m[1] += (tok.get("input", 0) or 0) + (tok.get("cache_write", 0) or 0)
+        m[2] += tok.get("cache_read", 0) or 0
+        w["tokens"] += (tok.get("input", 0) + tok.get("output", 0)
+                        + tok.get("cache_read", 0) + tok.get("cache_write", 0))
+        if e.get("session_id"):
+            w["sessions"].add(e["session_id"])
+        d = e["ts"].astimezone()
+        if w["first"] is None or d < w["first"]: w["first"] = d
+        if w["last"] is None or d > w["last"]:  w["last"] = d
+        w["n"] += 1
+
+    wrows = []
+    for proj, w in wks.items():
+        we_lo = we_hi = wg_lo = wg_hi = 0.0
+        for model, (out, prefill, cread) in w["models"].items():
+            imp = impact_for(model, out, prefill, cread, pue=pue, mix_gwp=mix_gwp)
+            if not imp:
+                continue
+            we_lo += imp["energy"][0]; we_hi += imp["energy"][1]
+            wg_lo += imp["gwp"][0];    wg_hi += imp["gwp"][1]
+        gm = (wg_lo + wg_hi) / 2
+        if gm <= 0:
+            continue
+        wrows.append({"proj": proj, "e": (we_lo + we_hi) / 2, "g": gm,
+                      "tokens": w["tokens"], "sessions": len(w["sessions"]),
+                      "first": w["first"], "last": w["last"], "n": w["n"]})
+    wrows.sort(key=lambda r: -r["g"])
+    wshown = wrows[:15]
+    if wshown:
+        print(f"\n  {DIM}By workspace (heaviest projects):{RESET}")
+        for r in wshown:
+            when = r["first"].strftime("%Y-%m-%d")
+            if r["last"].date() != r["first"].date():
+                when += "→" + r["last"].strftime("%m-%d")
+            name = r["proj"] if len(r["proj"]) <= 24 else "…" + r["proj"][-23:]
+            sess = f"{r['sessions']} sess" if r["sessions"] else f"{r['n']} ex"
+            print(f"    {name:<24} {r['e']:>6.2f} kWh · {r['g']:>6.2f} kg CO₂e"
+                  f"   {DIM}{fmt_tokens(r['tokens']):>6} tok · {sess} · {when}{RESET}")
+        if len(wrows) > len(wshown):
+            rest_g = sum(r["g"] for r in wrows[len(wshown):])
+            print(f"    {DIM}… +{len(wrows) - len(wshown)} more workspaces "
+                  f"(~{rest_g:.2f} kg CO₂e){RESET}")
+
     # ─── By session (heaviest conversations) ──────────────────────────────
     # A "session" is one source transcript, tagged as session_id at collection.
     # Same energy/CO₂ method as the headline (prefill included), grouped per
