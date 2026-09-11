@@ -7,6 +7,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 ## Changelog
 
 - **unreleased** — `--audit` *(experimental)*: conversation-quality audit across all tools, scoring 12 behavioural metrics with an LLM-as-judge. You pick the judge explicitly (at least one, else it errors): **`--ollama-judge`** (LOCAL, nothing leaves the machine; `--model` picks it), **`--claude-judge`** and **`--codex-judge`** (via that CLI, off-machine, opt-in + warned). Each is an autonomous judge; combine them for a **voting panel** (findings aggregated by vote, tally shown). Judge sees the assistant's own prose + real tool-output snippets; a skeptical **`--verify`** second pass (each finding re-checked by the same judge that raised it) cuts false positives (with a dedicated contradiction check that makes the model name both incompatible statements); each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model strength.
+- **1.10.0** — `--impact` gains a **By session** breakdown: alongside the per-date Trend table, the heaviest conversations are now listed individually (energy, CO₂e, tokens, exchange count, date span, project — top 15 + a `… +N more` remainder). Exchanges are tagged with their source transcript as `session_id` across every tool (Claude Code, Codex, Cursor, Kiro, Gemini, opencode, web exports), so the split works everywhere.
 - **1.9.0** — Overview now shows, per tool, the **data span** and the **"since" date** of its records in the selected period (next to the record count), so history depth is visible at a glance. Added **data-retention alerts**: when a tool purges old local data on a rolling window (e.g. Claude Code's `cleanupPeriodDays`, default 30), a warning appears at the top of both `tokstat` and the per-tool commands so the numbers and "since" dates aren't mistaken for full lifetime usage. Tools that keep everything (e.g. Codex session rollouts) produce no alert.
 - **1.8.2** — `--impact` correctness fixes: (1) honor EcoLogits' `active_parameters` field for MoE models given as a scalar total + separate active count (e.g. `command-a-plus`: 218B total / 25B active — was counted as 218B active); (2) constrain model matching to exact + version-boundary base names, so a generic name no longer resolves to an arbitrary specific variant (`claude-sonnet-4` → `claude-sonnet-4-5`, `gemini-2.5` → `gemini-2.5-flash-image`); (3) base the "matched / not in DB" accounting on computed energy, so a known model with only prefill/cache tokens (no output) is no longer reported as unmatched; (4) actually read `prefill_factor` / `cache_read_factor` from `impact.json` (previously documented but ignored).
 - **1.8.1** — `--impact`: add a prefill/context energy term. EcoLogits' formula bills energy from output tokens only (decode phase), which badly undercounts cache-heavy agentic use where output is ~0.4% of token traffic. Input + cache writes are now counted at a reduced prefill rate and cache reads at a small memory-movement rate (physics-grounded fractions of a decode token, widening the ± band). Typically lifts the headline ~2–4×. The frugality verdict stays decode-only so the mascot still grades model choice, not context volume.
@@ -242,7 +243,17 @@ tokstat --impact --tool claude --period all
     gpt-5.5 [xhigh]  12.9 kWh · 5.39 kg CO₂e   2026-01-21 → 2026-06-15
     claude-opus-4-7   7.3 kWh · 3.05 kg CO₂e   2026-04-14 → 2026-06-19
     ...
+  By session (heaviest conversations):
+    e25ea4e5  17.47 kWh ·  7.30 kg CO₂e   483.7M tok · 167 ex · 2026-08-25→09-11 · Code/tokstat
+    476311e5   0.43 kWh ·  0.18 kg CO₂e     2.3M tok ·   6 ex · 2026-08-25→09-07 · Code/PRO/fdj
+    ...
 ```
+
+Two complementary breakdowns of the same total: a **Trend** table summarizing
+impact **per date** (day / week / month, auto-granularity), and a **By session**
+table summarizing it **per conversation** — the heaviest sessions first, each with
+its energy, CO₂e, tokens, exchange count, date span and project (top 15, with a
+`… +N more` remainder). A session is one source transcript.
 
 The headline kWh/CO₂, Trend `energy`/`CO₂e` and the per-tool/per-model rows
 **include the prefill/context term** (below); the Trend `Wh/1k` and the verdict's

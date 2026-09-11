@@ -190,6 +190,7 @@ def _extract_exchanges_opencode() -> list[dict]:
                     exchanges.append(current)
                 summary = (m.get("summary") or {}).get("title", "") or ""
                 current = {
+                    "session_id":      ses_dir.name,
                     "user_text":       summary.strip(),
                     "assistant_texts": [],
                     "tool_errors":     [],

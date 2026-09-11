@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 import json
 import sys
@@ -341,7 +341,10 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
             if not proj_dir.is_dir():
                 continue
             for jsonl_file in proj_dir.rglob("*.jsonl"):
-                _add("Claude Code", _extract_exchanges(str(jsonl_file)))
+                exs = _extract_exchanges(str(jsonl_file))
+                for ex in exs:                       # session = source transcript
+                    ex["session_id"] = jsonl_file.stem
+                _add("Claude Code", exs)
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
     return all_exchanges, tool_counts

@@ -283,6 +283,7 @@ def _extract_exchanges_cursor() -> list[dict]:
                 if current is not None:
                     exchanges.append(current)
                 current = {
+                    "session_id":      composer_id,
                     "tool":            "Cursor",
                     "project":         project,
                     "ts":              ts,

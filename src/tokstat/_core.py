@@ -2860,6 +2860,82 @@ def show_impact(collect_fn, period_name: str | None = None,
         span = " → ".join(_model_measurable_span(model))
         print(f"    {model:<28} {_metric(pm)}   {DIM}{span}{RESET}")
 
+    # ─── By session (heaviest conversations) ──────────────────────────────
+    # A "session" is one source transcript, tagged as session_id at collection.
+    # Same energy/CO₂ method as the headline (prefill included), grouped per
+    # conversation instead of per day — the companion to the Trend table.
+    sess: dict[str, dict] = defaultdict(lambda: {
+        "models": defaultdict(lambda: [0, 0, 0]), "tokens": 0,
+        "tool": "?", "project": None, "first": None, "last": None, "n": 0})
+    have_sid = False
+    for e in all_exchanges:
+        sid = e.get("session_id")
+        if not sid:
+            continue
+        have_sid = True
+        tok = e.get("tokens") or {}
+        s = sess[sid]
+        m = s["models"][e.get("model") or "?"]
+        m[0] += tok.get("output", 0) or 0
+        m[1] += (tok.get("input", 0) or 0) + (tok.get("cache_write", 0) or 0)
+        m[2] += tok.get("cache_read", 0) or 0
+        s["tokens"] += (tok.get("input", 0) + tok.get("output", 0)
+                        + tok.get("cache_read", 0) + tok.get("cache_write", 0))
+        s["tool"] = e.get("tool", s["tool"])
+        if not s["project"] and e.get("project"):
+            s["project"] = e.get("project")
+        d = e["ts"].astimezone()
+        if s["first"] is None or d < s["first"]: s["first"] = d
+        if s["last"] is None or d > s["last"]:  s["last"] = d
+        s["n"] += 1
+
+    if have_sid:
+        rows = []
+        for sid, s in sess.items():
+            se_lo = se_hi = sg_lo = sg_hi = 0.0
+            for model, (out, prefill, cread) in s["models"].items():
+                imp = impact_for(model, out, prefill, cread, pue=pue, mix_gwp=mix_gwp)
+                if not imp:
+                    continue
+                se_lo += imp["energy"][0]; se_hi += imp["energy"][1]
+                sg_lo += imp["gwp"][0];    sg_hi += imp["gwp"][1]
+            gm = (sg_lo + sg_hi) / 2
+            if gm <= 0:
+                continue
+            rows.append({"sid": sid, "e": (se_lo + se_hi) / 2, "g": gm,
+                         "tokens": s["tokens"], "tool": s["tool"],
+                         "project": s["project"], "first": s["first"],
+                         "last": s["last"], "n": s["n"]})
+        def _short_sid(sid):
+            # A recognizable 8-char handle. Claude/Cursor session ids ARE UUIDs;
+            # Codex rollouts embed one after an ISO timestamp — pull the UUID's
+            # leading block so the handle is distinguishing, not "rollout-".
+            s = str(sid)
+            m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}", s, re.IGNORECASE)
+            if m:
+                return m.group(0)[:8]
+            s = s.rsplit("-", 1)[-1] if "-" in s else s
+            return s[-8:] if len(s) > 8 else s
+
+        rows.sort(key=lambda r: -r["g"])
+        shown = rows[:15]
+        if shown:
+            print(f"\n  {DIM}By session (heaviest conversations):{RESET}")
+            for r in shown:
+                when = r["first"].strftime("%Y-%m-%d")
+                if r["last"].date() != r["first"].date():
+                    when += "→" + r["last"].strftime("%m-%d")
+                proj = normalize_project(r["project"]) if r["project"] else "?"
+                color = TOOL_COLORS.get(r["tool"], "")
+                sid_short = f"{_short_sid(r['sid']):<8}"
+                print(f"    {color}{sid_short}{RESET} {r['e']:>6.2f} kWh · "
+                      f"{r['g']:>6.2f} kg CO₂e   {DIM}{fmt_tokens(r['tokens']):>6} tok · "
+                      f"{r['n']:>3} ex · {when} · {proj}{RESET}")
+            if len(rows) > len(shown):
+                rest_g = sum(r["g"] for r in rows[len(shown):])
+                print(f"    {DIM}… +{len(rows) - len(shown)} more sessions "
+                      f"(~{rest_g:.2f} kg CO₂e){RESET}")
+
     if covered_out < total_out:
         miss = (total_out - covered_out) / total_out * 100
         print(f"\n  {DIM}⚠ {miss:.0f}% of output tokens are from models not in the "

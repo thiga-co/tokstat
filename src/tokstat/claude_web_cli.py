@@ -186,12 +186,14 @@ def _extract_exchanges_claude_web() -> list[dict]:
     for conv in convs:
         account = conv.get("_account") or "default"
         project = _project_label(account)
+        sid = conv.get("uuid") or conv.get("id") or account
         current = None
         for m in _conv_messages(conv):
             if m["sender"] == "human":
                 if current:
                     exchanges.append(current)
                 current = {
+                    "session_id":      sid,
                     "user_text":       m["text"][:500],
                     "assistant_texts": [],
                     "tool_errors":     [],

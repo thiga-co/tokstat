@@ -211,6 +211,7 @@ def _extract_exchanges_gemini() -> list[dict]:
                     if current:
                         exchanges.append(current)
                     current = {
+                        "session_id":      session_file.stem,
                         "user_text":       content,
                         "assistant_texts": [],
                         "tool_errors":     [],

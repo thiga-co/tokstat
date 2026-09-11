@@ -135,6 +135,7 @@ def _extract_exchanges_kiro() -> list[dict]:
                     if current:
                         exchanges.append(current)
                     current = {
+                        "session_id":      sid,
                         "user_text":       text[:500],
                         "assistant_texts": [],
                         "tool_errors":     [],

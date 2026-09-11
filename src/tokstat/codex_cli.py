@@ -380,7 +380,10 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
     codex_base = Path.home() / ".codex" / "sessions"
     if codex_base.exists():
         for jsonl_file in codex_base.rglob("rollout-*.jsonl"):
-            _add("Codex", _extract_exchanges_codex(str(jsonl_file)))
+            exs = _extract_exchanges_codex(str(jsonl_file))
+            for ex in exs:                           # session = source rollout
+                ex["session_id"] = jsonl_file.stem
+            _add("Codex", exs)
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
     return all_exchanges, tool_counts
