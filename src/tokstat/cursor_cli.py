@@ -456,7 +456,7 @@ def show_help():
   cursor-token-usage --activity                 Activity calendar (GitHub-style, by day)
   cursor-token-usage --total                    Compact totals (tokens + cost + data span)
   cursor-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
-  cursor-token-usage --by-session               Overview + per-session table (top 20 by cost)
+  cursor-token-usage --by-session               Overview + per-session table (all sessions)
   cursor-token-usage --plan                     Cost breakdown + optimization tips
   cursor-token-usage --export   [file.json]     Export all exchanges to JSON
   cursor-token-usage --help     [-h]            This help

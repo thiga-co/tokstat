@@ -267,7 +267,7 @@ def show_help():
   kiro-token-usage --activity                 Activity calendar (GitHub-style, by day)
   kiro-token-usage --total                    Compact totals (tokens + cost + data span)
   kiro-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
-  kiro-token-usage --by-session               Overview + per-session table (top 20 by cost)
+  kiro-token-usage --by-session               Overview + per-session table (all sessions)
   kiro-token-usage --plan                     Cost breakdown + optimization tips
   kiro-token-usage --export   [file.json]     Export all exchanges to JSON
   kiro-token-usage --help     [-h]            This help

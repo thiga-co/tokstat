@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.12.0"
+__version__ = "1.12.1"
 
 import json
 import sys
@@ -452,7 +452,7 @@ def show_help():
                                                 metrics via local Ollama
                                                 (--model, --judge-max supported)
   claude-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
-  claude-token-usage --by-session               Overview + per-session table (top 20 by cost)
+  claude-token-usage --by-session               Overview + per-session table (all sessions)
   claude-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   claude-token-usage --export   [file.json]     Export all exchanges to JSON
   claude-token-usage --help     [-h]            This help

@@ -341,7 +341,7 @@ def show_help():
   claude-web-token-usage --activity               Activity calendar (by day)
   claude-web-token-usage  --total                  Compact totals (tokens + cost)
   claude-web-token-usage  --impact                 Energy & CO₂ estimate
-  claude-web-token-usage  --by-session             Overview + per-session table (top 20 by cost)
+  claude-web-token-usage  --by-session             Overview + per-session table (all sessions)
   claude-web-token-usage --plan                   Cost breakdown + tips
   claude-web-token-usage --export   [file]        Export exchanges to JSON
   claude-web-token-usage --import <zip|json|dir>  Load the official export

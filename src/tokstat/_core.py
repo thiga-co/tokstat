@@ -446,7 +446,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                          period_label: str, tool_filter: str | None = None,
                          all_exchanges: list[dict] | None = None,
                          changed_keys: set | None = None,
-                         by_session: bool = False, session_limit: int = 20):
+                         by_session: bool = False, session_limit: int = 0):
     """Print period, project, model, and speed tables from a list of records.
 
     If `all_exchanges` is provided, three extra activity columns are added to
@@ -695,7 +695,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                 b["api_calls"]   += ex.get("num_turns", 0) or 0
 
             ranked = sorted(sess_b.items(), key=lambda kv: kv[1]["cost"], reverse=True)
-            shown = ranked[:session_limit]
+            # session_limit <= 0 → show ALL sessions (no truncation).
+            shown = ranked if session_limit <= 0 else ranked[:session_limit]
             if show_activity:
                 s_headers = ["Session", "Tool", "Project", "Prompts", "Turns",
                              "Input", "Output", "Cost"]
@@ -724,10 +725,12 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                 pad = [""] * (len(s_headers) - 2)
                 s_rows.append([f"{DIM}{note}{RESET}", *pad, f"{DIM}{fmt_cost(rest_cost)}{RESET}"])
 
+            scope_note = (f"all {len(ranked)}" if len(shown) == len(ranked)
+                          else f"top {len(shown)} of {len(ranked)}")
             sw = calc_table_width(s_headers, s_rows)
             print(f"\n{'─' * sw}")
-            print(f"{BOLD} CONSUMPTION BY SESSION{RESET}{DIM}  (top {len(shown)} "
-                  f"of {len(ranked)}, by cost){RESET}")
+            print(f"{BOLD} CONSUMPTION BY SESSION{RESET}{DIM}  ({scope_note}, "
+                  f"by cost){RESET}")
             print(f"{'─' * sw}")
             print_table(s_headers, s_rows, s_aligns)
 

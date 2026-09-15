@@ -339,7 +339,7 @@ def show_help():
   opencode-token-usage --activity                 Activity calendar (GitHub-style, by day)
   opencode-token-usage --total                    Compact totals (tokens + cost + data span)
   opencode-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
-  opencode-token-usage --by-session               Overview + per-session table (top 20 by cost)
+  opencode-token-usage --by-session               Overview + per-session table (all sessions)
   opencode-token-usage --plan                     Cost breakdown + optimization tips
   opencode-token-usage --export   [file.json]     Export all exchanges to JSON
   opencode-token-usage --help     [-h]            This help

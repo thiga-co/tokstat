@@ -504,7 +504,7 @@ def show_help():
 
 {BOLD}MODES{RESET}
   tokstat                                  Aggregated overview (period, project, model)
-  tokstat --by-session                     Overview + a per-session table (top 20 by cost)
+  tokstat --by-session                     Overview + a per-session table (all sessions)
   tokstat --prompts  [-p]                  Per-exchange detail across all tools
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)

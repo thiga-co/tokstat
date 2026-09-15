@@ -364,7 +364,7 @@ def show_help():
   chatgpt-web-token-usage --activity               Activity calendar (by day)
   chatgpt-web-token-usage --total                  Compact totals (tokens + cost)
   chatgpt-web-token-usage --impact                 Energy & CO₂ estimate
-  chatgpt-web-token-usage --by-session             Overview + per-session table (top 20 by cost)
+  chatgpt-web-token-usage --by-session             Overview + per-session table (all sessions)
   chatgpt-web-token-usage --plan                   Cost breakdown + tips
   chatgpt-web-token-usage --export   [file]        Export exchanges to JSON
   chatgpt-web-token-usage --import <zip|json|dir>  Load the official export

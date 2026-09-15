@@ -478,7 +478,7 @@ def show_help():
   codex-token-usage --activity                 Activity calendar (GitHub-style, by day)
   codex-token-usage --total                    Compact totals (tokens + cost + data span)
   codex-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
-  codex-token-usage --by-session               Overview + per-session table (top 20 by cost)
+  codex-token-usage --by-session               Overview + per-session table (all sessions)
   codex-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   codex-token-usage --export   [file.json]     Export all exchanges to JSON
   codex-token-usage --help     [-h]            This help
