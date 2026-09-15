@@ -328,6 +328,18 @@ def _strip_ansi(text: str) -> str:
     return re.sub(r'\033\[[0-9;]*m', '', text)
 
 
+def short_session_id(sid) -> str:
+    """A recognizable 8-char handle for a session id. Claude/Cursor ids ARE
+    UUIDs; Codex rollouts embed one after an ISO timestamp — pull the UUID's
+    leading block so the handle is distinguishing, not "rollout-"."""
+    s = str(sid)
+    m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}", s, re.IGNORECASE)
+    if m:
+        return m.group(0)[:8]
+    s = s.rsplit("-", 1)[-1] if "-" in s else s
+    return s[-8:] if len(s) > 8 else s
+
+
 def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
     widths = [len(h) for h in headers]
     for row in rows:
@@ -433,7 +445,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                          cutoff: datetime, cutoff_end: datetime | None,
                          period_label: str, tool_filter: str | None = None,
                          all_exchanges: list[dict] | None = None,
-                         changed_keys: set | None = None):
+                         changed_keys: set | None = None,
+                         by_session: bool = False, session_limit: int = 20):
     """Print period, project, model, and speed tables from a list of records.
 
     If `all_exchanges` is provided, three extra activity columns are added to
@@ -651,6 +664,72 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     print(f"{BOLD} CONSUMPTION BY PROJECT{RESET}")
     print(f"{'─' * w}")
     print_table(headers, rows, aligns)
+
+    # ─── 2b. Consumption by session (opt-in --by-session) ──────────────
+    # A session is one source transcript (session_id). Built from exchanges,
+    # since token records carry no session id. Capped to the heaviest N.
+    if by_session:
+        if not exchanges:
+            print(f"\n  {DIM}--by-session: no per-session data for this "
+                  f"selection.{RESET}")
+        else:
+            sess_b: dict[str, dict] = {}
+            sess_meta: dict[str, dict] = {}
+            for ex in exchanges:
+                sid = ex.get("session_id")
+                if not sid:
+                    continue
+                b = sess_b.get(sid)
+                if b is None:
+                    b = sess_b[sid] = empty_bucket()
+                    sess_meta[sid] = {"tool": ex.get("tool", "?"),
+                                      "project": ex.get("project") or "unknown"}
+                tok = ex.get("tokens") or {}
+                b["input"]       += tok.get("input", 0) or 0
+                b["output"]      += tok.get("output", 0) or 0
+                b["cache_read"]  += tok.get("cache_read", 0) or 0
+                b["cache_write"] += tok.get("cache_write", 0) or 0
+                b["cost"]        += compute_cost(tok, ex.get("model") or "")
+                b["prompts"]     += 1
+                b["turns"]       += ex.get("num_turns", 0) or 0
+                b["api_calls"]   += ex.get("num_turns", 0) or 0
+
+            ranked = sorted(sess_b.items(), key=lambda kv: kv[1]["cost"], reverse=True)
+            shown = ranked[:session_limit]
+            if show_activity:
+                s_headers = ["Session", "Tool", "Project", "Prompts", "Turns",
+                             "Input", "Output", "Cost"]
+                s_aligns  = ["<", "<", "<", ">", ">", ">", ">", ">"]
+            else:
+                s_headers = ["Session", "Tool", "Project",
+                             "Input", "Output", "Cost"]
+                s_aligns  = ["<", "<", "<", ">", ">", ">"]
+            s_rows = []
+            for sid, b in shown:
+                meta = sess_meta[sid]
+                color = TOOL_COLORS.get(meta["tool"], "")
+                proj = shorten_path(normalize_project(meta["project"]), 30)
+                no_tok = (b["input"] == 0 and b["output"] == 0
+                          and b["cache_read"] == 0 and b["cache_write"] == 0)
+                cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
+                cells = [f"{BOLD}{short_session_id(sid)}{RESET}",
+                         f"{color}{meta['tool']}{RESET}", proj]
+                if show_activity:
+                    cells += [str(b["prompts"]), str(b["turns"])]
+                cells += [fmt_tokens(b["input"]), fmt_tokens(b["output"]), cost_cell]
+                s_rows.append(cells)
+            if len(ranked) > len(shown):
+                rest_cost = sum(b["cost"] for _, b in ranked[len(shown):])
+                note = f"… +{len(ranked) - len(shown)} more sessions"
+                pad = [""] * (len(s_headers) - 2)
+                s_rows.append([f"{DIM}{note}{RESET}", *pad, f"{DIM}{fmt_cost(rest_cost)}{RESET}"])
+
+            sw = calc_table_width(s_headers, s_rows)
+            print(f"\n{'─' * sw}")
+            print(f"{BOLD} CONSUMPTION BY SESSION{RESET}{DIM}  (top {len(shown)} "
+                  f"of {len(ranked)}, by cost){RESET}")
+            print(f"{'─' * sw}")
+            print_table(s_headers, s_rows, s_aligns)
 
     # ─── 3. Model breakdown ────────────────────────────────────────────
     model_data = defaultdict(lambda: {"input": 0, "output": 0, "cost": 0.0, "tool": "",

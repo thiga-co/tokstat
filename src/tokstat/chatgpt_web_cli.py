@@ -268,7 +268,8 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def main(period_name: str | None = None, tool_filter: str | None = None):
+def main(period_name: str | None = None, tool_filter: str | None = None,
+         by_session: bool = False):
     print(f"\n{BOLD} Token Usage — {TOOL_NAME} (web export){RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
@@ -304,7 +305,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     show_overview_tables(records, [], cutoff, cutoff_end, period_label,
-                         tool_filter, all_exchanges=exchanges)
+                         tool_filter, all_exchanges=exchanges,
+                         by_session=by_session)
     print(f"  {DIM}⚠ Token counts are estimated from text length "
           f"(chatgpt.com export does not include usage).{RESET}\n")
 
@@ -315,7 +317,7 @@ _TOOL_ALIASES = {"chatgpt": TOOL_NAME, "chatgpt.com": TOOL_NAME, "chatgpt-web": 
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--export", "--period", "--since", "--tool",
     "--import", "--account", "--list-accounts", "--clean-cache",
     "--clear-imports",
 }
@@ -362,6 +364,7 @@ def show_help():
   chatgpt-web-token-usage --activity               Activity calendar (by day)
   chatgpt-web-token-usage --total                  Compact totals (tokens + cost)
   chatgpt-web-token-usage --impact                 Energy & CO₂ estimate
+  chatgpt-web-token-usage --by-session             Overview + per-session table (top 20 by cost)
   chatgpt-web-token-usage --plan                   Cost breakdown + tips
   chatgpt-web-token-usage --export   [file]        Export exchanges to JSON
   chatgpt-web-token-usage --import <zip|json|dir>  Load the official export
@@ -464,7 +467,7 @@ def cli():
             out = args[idx + 1]
         export_conversations(_collect_all_exchanges, out, period, tool)
     else:
-        main(period, tool)
+        main(period, tool, by_session="--by-session" in args)
 
     print_update_notice(__version__)
 

@@ -364,7 +364,8 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 # ─── Main (aggregated overview) ──────────────────────────────────────────────
 
-def main(period_name: str | None = None, tool_filter: str | None = None):
+def main(period_name: str | None = None, tool_filter: str | None = None,
+         by_session: bool = False):
     print(f"\n{BOLD} Token Usage — Cursor{RESET}")
     print(f"{DIM}  Note: tokens [exact] where Cursor recorded them; recent sessions [no tokens]{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
@@ -400,7 +401,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     show_overview_tables(records, [], cutoff, cutoff_end, period_label,
-                         tool_filter, all_exchanges=exchanges)
+                         tool_filter, all_exchanges=exchanges,
+                         by_session=by_session)
     print(f"  {DIM}⚠ [exact] = real token counts recorded by Cursor. [no tokens] = "
           f"recent sessions (billing tracked server-side, not stored locally) — "
           f"counted as activity only; tokens/cost left blank (—).{RESET}\n")
@@ -414,7 +416,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--audit", "--judge", "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--audit", "--judge", "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -454,6 +456,7 @@ def show_help():
   cursor-token-usage --activity                 Activity calendar (GitHub-style, by day)
   cursor-token-usage --total                    Compact totals (tokens + cost + data span)
   cursor-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
+  cursor-token-usage --by-session               Overview + per-session table (top 20 by cost)
   cursor-token-usage --plan                     Cost breakdown + optimization tips
   cursor-token-usage --export   [file.json]     Export all exchanges to JSON
   cursor-token-usage --help     [-h]            This help
@@ -525,7 +528,7 @@ def cli():
             out = args[idx + 1]
         export_conversations(_collect_all_exchanges, out, period, tool)
     else:
-        main(period, tool)
+        main(period, tool, by_session="--by-session" in args)
 
     print_update_notice(__version__)
 

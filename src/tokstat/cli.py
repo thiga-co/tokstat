@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.11.0"
+__version__ = "1.12.0"
 
 import json
 import sys
@@ -352,7 +352,8 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 
 # ─── Main (aggregated overview) ──────────────────────────────────────────────
 
-def main(period_name: str | None = None, tool_filter: str | None = None):
+def main(period_name: str | None = None, tool_filter: str | None = None,
+         by_session: bool = False):
     print(f"\n{BOLD} Token Usage — Claude Code{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
@@ -392,7 +393,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None):
 
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
-                         tool_filter, all_exchanges=exchanges)
+                         tool_filter, all_exchanges=exchanges,
+                         by_session=by_session)
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -403,7 +405,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--audit", "--judge",
     "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log",
     "--export", "--period", "--since", "--tool",
 }
@@ -450,6 +452,7 @@ def show_help():
                                                 metrics via local Ollama
                                                 (--model, --judge-max supported)
   claude-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
+  claude-token-usage --by-session               Overview + per-session table (top 20 by cost)
   claude-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   claude-token-usage --export   [file.json]     Export all exchanges to JSON
   claude-token-usage --help     [-h]            This help
@@ -540,7 +543,7 @@ def cli():
             out = args[idx + 1]
         export_conversations(_collect_all_exchanges, out, period, tool)
     else:
-        main(period, tool)
+        main(period, tool, by_session="--by-session" in args)
 
     print_update_notice(__version__)
 

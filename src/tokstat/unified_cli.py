@@ -301,7 +301,8 @@ def _span_label(timestamps: list) -> str:
 
 def _render_overview(period_name: str | None, tool_filter: str | None,
                      header_suffix: str = "",
-                     prev_state: dict | None = None) -> tuple[bool, dict | None]:
+                     prev_state: dict | None = None,
+                     by_session: bool = False) -> tuple[bool, dict | None]:
     """Scan all sources and print the overview tables.
 
     Returns (ok, current_state). `current_state` is the snapshot of the
@@ -352,19 +353,22 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
         return True, state
 
     show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
-                         tool_filter, all_exchanges=exchanges, changed_keys=changed_keys)
+                         tool_filter, all_exchanges=exchanges, changed_keys=changed_keys,
+                         by_session=by_session)
     return True, state
 
 
-def main(period_name: str | None = None, tool_filter: str | None = None):
+def main(period_name: str | None = None, tool_filter: str | None = None,
+         by_session: bool = False):
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
         print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
-    _render_overview(period_name, tool_filter)
+    _render_overview(period_name, tool_filter, by_session=by_session)
 
 
-def watch(period_name: str | None, tool_filter: str | None, interval: float):
+def watch(period_name: str | None, tool_filter: str | None, interval: float,
+          by_session: bool = False):
     """Refresh the overview every `interval` seconds until Ctrl+C.
 
     Uses cursor-home + erase-to-end-of-screen instead of full clear so the
@@ -390,7 +394,8 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
             with redirect_stdout(buf):
                 ok, state = _render_overview(period_name, tool_filter,
                                              header_suffix=suffix,
-                                             prev_state=prev_state)
+                                             prev_state=prev_state,
+                                             by_session=by_session)
             output = buf.getvalue()
 
             sys.stdout.write("\033[H")  # cursor home, no clear
@@ -413,7 +418,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float):
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--audit", "--judge",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
     "--verify", "--ollama-judge", "--claude-judge", "--claude-model",
     "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log",
@@ -499,6 +504,7 @@ def show_help():
 
 {BOLD}MODES{RESET}
   tokstat                                  Aggregated overview (period, project, model)
+  tokstat --by-session                     Overview + a per-session table (top 20 by cost)
   tokstat --prompts  [-p]                  Per-exchange detail across all tools
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
@@ -604,12 +610,14 @@ def cli():
             end = midnight if cutoff_end is None else min(cutoff_end, midnight)
             return _c(cutoff, tool_filter, end)
 
+    by_session = "--by-session" in args
+
     watch_interval = _parse_watch_interval(args)
     if watch_interval is not None:
         if any(f in args for f in ("--prompts", "-p", "--anomalies", "--plan", "--export")):
             print(f"\n  {RED}--watch only applies to the default overview mode.{RESET}\n")
             sys.exit(1)
-        watch(period, tool, watch_interval)
+        watch(period, tool, watch_interval, by_session=by_session)
         return
 
     if "--prompts" in args or "-p" in args:
@@ -648,7 +656,7 @@ def cli():
             out = args[idx + 1]
         export_conversations(collect, out, period, tool)
     else:
-        main(period, tool)
+        main(period, tool, by_session=by_session)
 
     print_update_notice(__version__)
 
