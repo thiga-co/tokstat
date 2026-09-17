@@ -3112,12 +3112,17 @@ def export_conversations(collect_fn, output_path: str,
         print(f"  {color}●{RESET} {tool_name:<12} {count:>5} exchanges")
 
     all_exchanges.sort(key=lambda e: e["ts"] or datetime.min.replace(tzinfo=timezone.utc))
+    _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
 
     export = []
     for ex in all_exchanges:
+        cwd = ex.get("project")
         entry = {
             "tool":      ex.get("tool", "?"),
             "model":     ex.get("model"),
+            "session":   ex.get("session_id"),
+            "cwd":       cwd,
+            "worktree":  normalize_project(cwd) if cwd else None,
             "timestamp": ex["ts"].isoformat() if ex["ts"] else None,
             "user":      ex["user_text"],
             "assistant": ex["assistant_texts"],

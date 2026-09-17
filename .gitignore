@@ -16,3 +16,6 @@ conversations.json
 # never commit them.
 *.dump
 tokstat-dump.json
+node_modules/
+package.json
+package-lock.json
