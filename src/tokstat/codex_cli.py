@@ -240,6 +240,9 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
     current_model = None
     current_effort = ""
     current_cwd = None
+    last_ctx = 0                       # most recent context size (token_count)
+    awaiting_post: list[dict] = []     # compaction events waiting for post_tokens
+    pending_compactions: list[dict] = []
 
     def _label(model, effort):
         """Same display name scan_codex uses, so token rows and prompt/turn
@@ -259,6 +262,19 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
         except (ValueError, AttributeError):
             ts = None
+
+        # Context-compaction event. Codex's record has no pre/post token
+        # counts, so derive them: pre = last context size seen, post = the
+        # context size at the next token_count. No trigger/duration exposed.
+        if rec_type == "compacted":
+            ev = {"trigger": None, "pre_tokens": last_ctx or None,
+                  "post_tokens": None, "duration_ms": None, "timestamp": ts_str}
+            if current is not None:
+                current["compactions"].append(ev)
+            else:
+                pending_compactions.append(ev)
+            awaiting_post.append(ev)
+            continue
 
         if rec_type == "session_meta":
             # cwd is established once per session here; turn_context may or
@@ -300,7 +316,9 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 "project": current_cwd, "ts": ts,
                 "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                 "cost": 0.0,
+                "context_peak": 0, "compactions": pending_compactions,
             }
+            pending_compactions = []
 
         elif rec_type == "response_item" and payload.get("role") == "assistant" and current:
             current["num_turns"] += 1
@@ -345,6 +363,19 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                     {"input": inp, "output": out, "cache_read": cached, "cache_write": 0},
                     current_model or "",
                 )
+                # Context size at this call = full input sent (incl. cached).
+                # Codex logs a zero-usage token_count right after a compaction
+                # (a reset artifact); ignore those so peak/pre/post stay real.
+                ctx = last.get("input_tokens", 0) or 0
+                if ctx > 0:
+                    if ctx > current["context_peak"]:
+                        current["context_peak"] = ctx
+                    last_ctx = ctx
+                    # post_tokens = first real context size after a compaction.
+                    if awaiting_post:
+                        for ev in awaiting_post:
+                            ev["post_tokens"] = ctx
+                        awaiting_post = []
 
     if current:
         exchanges.append(current)

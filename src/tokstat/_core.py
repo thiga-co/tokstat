@@ -965,10 +965,11 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
             if comps:
                 parts = []
                 for c in comps:
-                    trig = (c.get("trigger") or "?")[:4]
+                    trig = c.get("trigger")
+                    lead = f"⇩{trig} " if trig else "⇩ "
                     pre = fmt_tokens(c.get("pre_tokens") or 0)
                     post = fmt_tokens(c.get("post_tokens") or 0)
-                    parts.append(f"⇩{trig} {pre}→{post}")
+                    parts.append(f"{lead}{pre}→{post}")
                 comp_cell = f"{BYELLOW}" + "; ".join(parts) + f"{RESET}"
             else:
                 comp_cell = DIM + "-" + RESET
