@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.13.0"
+__version__ = "1.14.0"
 
 import json
 import sys
@@ -201,6 +201,7 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
 
     exchanges = []
     current = None
+    pending_compactions: list[dict] = []
 
     for rec in lines:
         rec_type = rec.get("type")
@@ -208,6 +209,24 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
         if not isinstance(msg, dict):
             msg = {}
         content = msg.get("content", "")
+
+        # Context-compaction boundary (Claude Code auto-compact or /compact).
+        if rec_type == "system" and rec.get("subtype") == "compact_boundary":
+            cm = rec.get("compactMetadata") or {}
+            ev = {
+                "trigger":     cm.get("trigger"),          # "auto" | "manual"
+                "pre_tokens":  cm.get("preTokens"),        # context size before
+                "post_tokens": cm.get("postTokens"),       # context size after
+                "duration_ms": cm.get("durationMs"),
+                "timestamp":   rec.get("timestamp"),
+            }
+            # Attribute to the exchange whose context overflowed (the open one);
+            # if none is open yet, hold it for the next exchange.
+            if current is not None:
+                current["compactions"].append(ev)
+            else:
+                pending_compactions.append(ev)
+            continue
 
         if rec_type == "user":
             is_tool_result = (isinstance(content, list) and
@@ -236,7 +255,9 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     "project": rec.get("cwd"), "ts": ts,
                     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                     "cost": 0.0,
+                    "context_peak": 0, "compactions": pending_compactions,
                 }
+                pending_compactions = []
             elif current and isinstance(content, list):
                 for c in content:
                     if not (isinstance(c, dict) and c.get("type") == "tool_result"):
@@ -261,6 +282,14 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                 current["model"] = msg.get("model")
             usage = msg.get("usage")
             if usage:
+                # Context size at this API call = everything fed in as context
+                # (fresh input + cache read + cache write). Track the peak over
+                # the exchange — how full the window got during this turn.
+                ctx = (usage.get("input_tokens", 0)
+                       + usage.get("cache_read_input_tokens", 0)
+                       + usage.get("cache_creation_input_tokens", 0))
+                if ctx > current.get("context_peak", 0):
+                    current["context_peak"] = ctx
                 msg_id = msg.get("id", "")
                 prev_id = current.get("_prev_msg_id")
                 if msg_id and msg_id == prev_id:

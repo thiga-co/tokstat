@@ -928,9 +928,11 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
               f"{BOLD}{fmt_cost(total_cost)}{RESET}")
 
         headers = ["#", "Time", "Input text", "Model", "Turns",
-                   "Input", "Output", "Cache R", "Cache W", "Tools", "Cost"]
+                   "Input", "Output", "Cache R", "Cache W", "Context",
+                   "Tools", "Cost", "Compaction"]
         aligns  = [">", "<",    "<",          "<",     ">",
-                   ">",     ">",      ">",       ">",       "<",     ">"]
+                   ">",     ">",      ">",       ">",       ">",
+                   "<",     ">",    "<"]
         rows = []
 
         for i, ex in enumerate(sorted(exchanges,
@@ -957,12 +959,25 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
                 tools_str = DIM + "-" + RESET
 
             tok = ex.get("tokens", {})
+            ctx = ex.get("context_peak", 0)
+            ctx_cell = fmt_tokens(ctx) if ctx else DIM + "-" + RESET
+            comps = ex.get("compactions") or []
+            if comps:
+                parts = []
+                for c in comps:
+                    trig = (c.get("trigger") or "?")[:4]
+                    pre = fmt_tokens(c.get("pre_tokens") or 0)
+                    post = fmt_tokens(c.get("post_tokens") or 0)
+                    parts.append(f"⇩{trig} {pre}→{post}")
+                comp_cell = f"{BYELLOW}" + "; ".join(parts) + f"{RESET}"
+            else:
+                comp_cell = DIM + "-" + RESET
             rows.append([
                 str(i), ts_str, user_text, DIM + model_short + RESET,
                 str(ex.get("num_turns", 0)),
                 fmt_tokens(tok.get("input", 0)), fmt_tokens(tok.get("output", 0)),
                 fmt_tokens(tok.get("cache_read", 0)), fmt_tokens(tok.get("cache_write", 0)),
-                tools_str, fmt_cost(ex.get("cost", 0)),
+                ctx_cell, tools_str, fmt_cost(ex.get("cost", 0)), comp_cell,
             ])
 
         print_table(headers, rows, aligns)
@@ -3128,6 +3143,10 @@ def export_conversations(collect_fn, output_path: str,
             "assistant": ex["assistant_texts"],
             "turns":     ex.get("num_turns", 0),
         }
+        if ex.get("context_peak"):
+            entry["context_tokens"] = ex["context_peak"]
+        if ex.get("compactions"):
+            entry["compactions"] = ex["compactions"]
         if ex.get("tools_used"):
             entry["tools_used"] = dict(ex["tools_used"])
         if ex.get("tool_errors"):
