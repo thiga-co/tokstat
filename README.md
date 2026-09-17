@@ -7,6 +7,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 ## Changelog
 
 - **unreleased** — `--audit` *(experimental)*: conversation-quality audit across all tools, scoring 12 behavioural metrics with an LLM-as-judge. You pick the judge explicitly (at least one, else it errors): **`--ollama-judge`** (LOCAL, nothing leaves the machine; `--model` picks it), **`--claude-judge`** and **`--codex-judge`** (via that CLI, off-machine, opt-in + warned). Each is an autonomous judge; combine them for a **voting panel** (findings aggregated by vote, tally shown). Judge sees the assistant's own prose + real tool-output snippets; a skeptical **`--verify`** second pass (each finding re-checked by the same judge that raised it) cuts false positives (with a dedicated contradiction check that makes the model name both incompatible statements); each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model strength.
+- **1.16.0** — Exchange **duration** (Claude Code + Codex): `--export` entries carry **`duration_s`** (wall-clock seconds from the prompt to the exchange's last activity) and `--prompts` gains a **Dur** column (`4s` · `3m` · `1h12m`). Note it's wall-clock, so an exchange left idle mid-way counts the gap.
 - **1.15.0** — Context/compaction tracking now covers **Codex** too: `context_tokens` (peak from `token_count`) and `compactions` (each `compacted` event, with `pre_tokens` → `post_tokens` derived from the surrounding token counts). Codex doesn't record a `trigger` or duration, so those stay `null` and the `--prompts` marker reads `⇩ 187K→36K` (no trigger) vs Claude Code's `⇩auto 1.0M→10K`.
 - **1.14.0** — Context tracking (Claude Code): `--export` entries now carry **`context_tokens`** (peak context size the exchange reached — input + cache read + cache write) and **`compactions`** (each auto-compact / `/compact` event with `trigger`, `pre_tokens` → `post_tokens`, duration and timestamp). `--prompts` gains matching **Context** and **Compaction** columns (e.g. `⇩auto 1.0M→10.4K`). Other tools don't expose compaction, so the fields stay empty there.
 - **1.13.0** — `--export` entries now include **`session`** (the source transcript id / session name), **`cwd`** (the working directory the session ran in) and **`worktree`** (the git main worktree `cwd` resolves to), so exports carry the full provenance of each exchange.
@@ -589,6 +590,7 @@ claude-token-usage --export out.json --period "7 days"
   "user": "the user prompt text",
   "assistant": ["response 1", "response 2"],
   "turns": 25,
+  "duration_s": 182.4,
   "context_tokens": 999900,
   "compactions": [
     {"trigger": "auto", "pre_tokens": 1000000, "post_tokens": 10400,

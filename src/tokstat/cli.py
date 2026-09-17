@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 
 import json
 import sys
@@ -210,6 +210,13 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
             msg = {}
         content = msg.get("content", "")
 
+        _ts_str = rec.get("timestamp")
+        try:
+            rec_ts = (datetime.fromisoformat(_ts_str.replace("Z", "+00:00"))
+                      if _ts_str else None)
+        except (ValueError, AttributeError):
+            rec_ts = None
+
         # Context-compaction boundary (Claude Code auto-compact or /compact).
         if rec_type == "system" and rec.get("subtype") == "compact_boundary":
             cm = rec.get("compactMetadata") or {}
@@ -243,22 +250,20 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                         if isinstance(c, dict) and c.get("type") == "text":
                             text = c.get("text", "").strip()
                             break
-                ts_str = rec.get("timestamp")
-                try:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else None
-                except (ValueError, AttributeError):
-                    ts = None
+                ts = rec_ts
                 current = {
                     "user_text": text, "assistant_texts": [], "tool_errors": [],
                     "tool_outputs": [],
                     "tools_used": defaultdict(int), "num_turns": 0, "model": None,
-                    "project": rec.get("cwd"), "ts": ts,
+                    "project": rec.get("cwd"), "ts": ts, "last_ts": ts,
                     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                     "cost": 0.0,
                     "context_peak": 0, "compactions": pending_compactions,
                 }
                 pending_compactions = []
             elif current and isinstance(content, list):
+                if rec_ts:
+                    current["last_ts"] = rec_ts       # tool_result — mid-exchange
                 for c in content:
                     if not (isinstance(c, dict) and c.get("type") == "tool_result"):
                         continue
@@ -278,6 +283,8 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                             else body[:700] + " … " + body[-300:])
 
         elif rec_type == "assistant" and current is not None:
+            if rec_ts:
+                current["last_ts"] = rec_ts
             if not current["model"]:
                 current["model"] = msg.get("model")
             usage = msg.get("usage")
@@ -334,6 +341,9 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
         ex.pop("_prev_msg_id", None)
         ex.pop("_prev_tokens", None)
         ex.pop("_prev_cost", None)
+        start, end = ex.get("ts"), ex.pop("last_ts", None)
+        if start and end:
+            ex["duration_s"] = max((end - start).total_seconds(), 0.0)
     return exchanges
 
 

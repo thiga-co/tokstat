@@ -324,6 +324,20 @@ def fmt_cost(c: float) -> str:
     return "$0.00"
 
 
+def fmt_duration(seconds) -> str:
+    """Compact wall-clock duration: 42s · 3m · 1h12m."""
+    if not seconds or seconds < 0:
+        return "-"
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m" if s < 10 else f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
 def _strip_ansi(text: str) -> str:
     return re.sub(r'\033\[[0-9;]*m', '', text)
 
@@ -927,10 +941,10 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
               f"{CYAN}{len(exchanges)} exchanges{RESET}  {total_turns} turns  "
               f"{BOLD}{fmt_cost(total_cost)}{RESET}")
 
-        headers = ["#", "Time", "Input text", "Model", "Turns",
+        headers = ["#", "Time", "Dur", "Input text", "Model", "Turns",
                    "Input", "Output", "Cache R", "Cache W", "Context",
                    "Tools", "Cost", "Compaction"]
-        aligns  = [">", "<",    "<",          "<",     ">",
+        aligns  = [">", "<",    ">",   "<",          "<",     ">",
                    ">",     ">",      ">",       ">",       ">",
                    "<",     ">",    "<"]
         rows = []
@@ -973,8 +987,10 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
                 comp_cell = f"{BYELLOW}" + "; ".join(parts) + f"{RESET}"
             else:
                 comp_cell = DIM + "-" + RESET
+            dur = ex.get("duration_s")
+            dur_cell = fmt_duration(dur) if dur is not None else DIM + "-" + RESET
             rows.append([
-                str(i), ts_str, user_text, DIM + model_short + RESET,
+                str(i), ts_str, dur_cell, user_text, DIM + model_short + RESET,
                 str(ex.get("num_turns", 0)),
                 fmt_tokens(tok.get("input", 0)), fmt_tokens(tok.get("output", 0)),
                 fmt_tokens(tok.get("cache_read", 0)), fmt_tokens(tok.get("cache_write", 0)),
@@ -3144,6 +3160,8 @@ def export_conversations(collect_fn, output_path: str,
             "assistant": ex["assistant_texts"],
             "turns":     ex.get("num_turns", 0),
         }
+        if ex.get("duration_s") is not None:
+            entry["duration_s"] = round(ex["duration_s"], 1)
         if ex.get("context_peak"):
             entry["context_tokens"] = ex["context_peak"]
         if ex.get("compactions"):
