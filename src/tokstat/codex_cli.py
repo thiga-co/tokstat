@@ -13,6 +13,7 @@ from __future__ import annotations
 from tokstat.cli import __version__
 
 import json
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from tokstat._core import (
     resolve_period,
     normalize_project, _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact, show_audit,
+    show_activity, show_total, show_impact, show_audit, show_tool_use, tool_target,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
 )
@@ -220,6 +221,23 @@ def _is_synthetic_user_text(text: str) -> bool:
     return any(t.startswith(p) for p in _CODEX_SYNTHETIC_PREFIXES)
 
 
+_CODEX_CMD_RE = re.compile(r'"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_CODEX_PATCH_RE = re.compile(r'\*\*\* (?:Add|Update|Delete) File:\s*([^\\\n"]+)')
+
+
+def _codex_input_target(s: str) -> str:
+    """Pull a readable target from a newer Codex tool `input` JS snippet:
+    the shell command, or the file a patch touches."""
+    m = _CODEX_CMD_RE.search(s)
+    if m:
+        cmd = m.group(1).replace('\\"', '"').replace("\\n", " ").replace("\\t", " ")
+        return " ".join(cmd.split())
+    m = _CODEX_PATCH_RE.search(s)
+    if m:
+        return "patch " + m.group(1).strip()
+    return " ".join(s.split())[:100]
+
+
 def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
     """Parse a Codex rollout JSONL transcript into exchanges."""
     try:
@@ -317,8 +335,33 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                 "cost": 0.0,
                 "context_peak": 0, "compactions": pending_compactions,
+                "tool_calls": [],
             }
             pending_compactions = []
+
+        elif (rec_type == "response_item"
+              and payload.get("type") in ("function_call", "custom_tool_call",
+                                          "local_shell_call")
+              and current):
+            if ts:
+                current["last_ts"] = ts
+            name = payload.get("name") or payload.get("type")
+            target = ""
+            raw = payload.get("arguments")
+            if isinstance(raw, str):
+                try:
+                    target = tool_target(name, json.loads(raw))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif isinstance(raw, dict):
+                target = tool_target(name, raw)
+            # Newer Codex wraps the call in a JS snippet under `input`, e.g.
+            # tools.exec_command({"cmd":"…"}) or an apply_patch heredoc.
+            if not target and isinstance(payload.get("input"), str):
+                target = _codex_input_target(payload["input"])
+            current["tool_calls"].append({
+                "ts": ts, "name": name, "target": target, "error": False,
+            })
 
         elif rec_type == "response_item" and payload.get("role") == "assistant" and current:
             if ts:
@@ -483,7 +526,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--audit", "--judge", "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--audit", "--judge", "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -518,6 +561,7 @@ def show_help():
   codex-token-usage --total                    Compact totals (tokens + cost + data span)
   codex-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
   codex-token-usage --by-session               Overview + per-session table (all sessions)
+  codex-token-usage --tool-use                 Timeline of tool calls (file/command + time)
   codex-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   codex-token-usage --export   [file.json]     Export all exchanges to JSON
   codex-token-usage --help     [-h]            This help
@@ -582,6 +626,8 @@ def cli():
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+    elif "--tool-use" in args:
+        show_tool_use(_collect_all_exchanges, period, tool)
     elif "--audit" in args:
         jmax_raw = _arg_value(args, "--judge-max")
         try:

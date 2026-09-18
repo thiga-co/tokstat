@@ -1001,7 +1001,86 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
         print()
 
 
-# ─── Shared display: anomalies ────────────────────────────────────────────
+# ─── Shared display: tool-use timeline ─────────────────────────────────────
+
+def tool_target(name: str, inp: dict) -> str:
+    """One-line target for a tool call: the file it touched, the command it
+    ran, the pattern it searched — whatever best identifies what it did."""
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("file_path", "path", "notebook_path", "filename",
+                "cmd", "command", "pattern", "query", "url",
+                "subagent_type", "description", "prompt"):
+        v = inp.get(key)
+        if v:
+            return " ".join(str(v).split())      # collapse whitespace/newlines
+    return ""
+
+
+def show_tool_use(collect_fn, period_name: str | None = None,
+                  tool_filter: str | None = None):
+    """Chronological timeline of every tool call — which tool, what it
+    targeted, and when — grouped by conversation. Claude Code & Codex."""
+    print(f"\n{BOLD} Tool-use Timeline{RESET}")
+    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+
+    try:
+        cutoff, cutoff_end, period_label = resolve_period(period_name)
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}\n")
+        return
+    print(f"  Period: {BOLD}{period_label}{RESET}\n")
+
+    all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_exchanges = [e for e in all_exchanges if e.get("tool_calls")]
+    if not all_exchanges:
+        print(f"  {YELLOW}No tool calls found "
+              f"(only Claude Code and Codex record them).{RESET}\n")
+        return
+
+    _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
+
+    grouped: dict[tuple, list] = {}
+    for ex in all_exchanges:
+        grouped.setdefault((ex.get("tool", "?"), ex.get("project", "unknown")), []).append(ex)
+
+    def _calls(exs):
+        return sum(len(e.get("tool_calls") or []) for e in exs)
+
+    total_calls = 0
+    tool_counter: dict[str, int] = defaultdict(int)
+    for (tool, project), exs in sorted(grouped.items(), key=lambda kv: -_calls(kv[1])):
+        color = TOOL_COLORS.get(tool, "")
+        proj = shorten_path(normalize_project(project), 50)
+        print(f"  {color}{BOLD}{tool}{RESET} {DIM}{proj}{RESET}  "
+              f"{CYAN}{_calls(exs)} calls{RESET}")
+        for ex in sorted(exs, key=lambda e: e.get("ts") or datetime.min.replace(tzinfo=timezone.utc)):
+            calls = ex.get("tool_calls") or []
+            if not calls:
+                continue
+            when = ex["ts"].strftime("%m-%d %H:%M") if ex.get("ts") else "?"
+            utext = " ".join((ex.get("user_text") or "").split())
+            if len(utext) > 60:
+                utext = utext[:57] + "..."
+            if not utext:
+                utext = DIM + "(no text)" + RESET
+            print(f"    {DIM}{when}{RESET} {BOLD}›{RESET} {utext}")
+            for c in calls:
+                total_calls += 1
+                tool_counter[c.get("name", "?")] += 1
+                cts = c.get("ts")
+                tstr = cts.strftime("%H:%M:%S") if cts else "  --:--"
+                mark = f"{RED}✗{RESET}" if c.get("error") else " "
+                name = (c.get("name") or "?")[:12]
+                target = c.get("target") or ""
+                if len(target) > 76:
+                    target = target[:73] + "..."
+                print(f"       {DIM}{tstr}{RESET} {mark} {name:<12} {DIM}{target}{RESET}")
+        print()
+
+    top = ", ".join(f"{n}:{c}" for n, c in
+                    sorted(tool_counter.items(), key=lambda x: -x[1])[:8])
+    print(f"  {DIM}{total_calls} tool calls · {top}{RESET}\n")
 
 def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
     """Detect technical anomalies."""

@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.16.0"
+__version__ = "1.17.0"
 
 import json
 import sys
@@ -27,7 +27,7 @@ from tokstat._core import (
     normalize_project, _warm_worktree_cache,
     fmt_tokens, fmt_cost, calc_table_width, print_table, shorten_path,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact, show_audit,
+    show_activity, show_total, show_impact, show_audit, show_tool_use, tool_target,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
 )
@@ -259,6 +259,7 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                     "cost": 0.0,
                     "context_peak": 0, "compactions": pending_compactions,
+                    "tool_calls": [],
                 }
                 pending_compactions = []
             elif current and isinstance(content, list):
@@ -274,6 +275,11 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     body = str(body).strip()
                     if c.get("is_error"):
                         current["tool_errors"].append(body[:200])
+                        tuid = c.get("tool_use_id")
+                        for call in current["tool_calls"]:
+                            if call.get("id") == tuid:
+                                call["error"] = True
+                                break
                     elif body:
                         # Capture the tool's OUTPUT so the judge can verify
                         # claims. Head+tail keeps both ends (e.g. a git log's
@@ -333,7 +339,13 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                             if t:
                                 current["assistant_texts"].append(t)
                         elif c.get("type") == "tool_use":
-                            current["tools_used"][c.get("name", "unknown")] += 1
+                            name = c.get("name", "unknown")
+                            current["tools_used"][name] += 1
+                            current["tool_calls"].append({
+                                "ts": rec_ts, "name": name,
+                                "target": tool_target(name, c.get("input") or {}),
+                                "id": c.get("id"), "error": False,
+                            })
 
     if current:
         exchanges.append(current)
@@ -444,7 +456,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--audit", "--judge",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--audit", "--judge",
     "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log",
     "--export", "--period", "--since", "--tool",
 }
@@ -492,6 +504,7 @@ def show_help():
                                                 (--model, --judge-max supported)
   claude-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
   claude-token-usage --by-session               Overview + per-session table (all sessions)
+  claude-token-usage --tool-use                 Timeline of tool calls (file/command + time)
   claude-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   claude-token-usage --export   [file.json]     Export all exchanges to JSON
   claude-token-usage --help     [-h]            This help
@@ -556,6 +569,8 @@ def cli():
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+    elif "--tool-use" in args:
+        show_tool_use(_collect_all_exchanges, period, tool)
     elif "--audit" in args:
         jmax_raw = _arg_value(args, "--judge-max")   # default: no cap
         try:

@@ -58,7 +58,7 @@ from tokstat._core import (
     resolve_period,
     _warm_worktree_cache,
     show_overview_tables, show_prompts, show_anomalies, show_plan,
-    show_activity, show_total, show_impact, show_audit, show_bench,
+    show_activity, show_total, show_impact, show_audit, show_bench, show_tool_use,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
     compute_overview_state,
@@ -418,7 +418,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float,
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--audit", "--judge",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
     "--verify", "--ollama-judge", "--claude-judge", "--claude-model",
     "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log",
@@ -509,6 +509,7 @@ def show_help():
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
   tokstat --total                          Compact totals (tokens + cost + data span)
+  tokstat --tool-use                       Timeline of tool calls (file/command + time)
   tokstat --audit                          Conversation quality audit — 12
                                            behavioural metrics. Pick a judge
                                            (at least one, else it errors):
@@ -630,6 +631,8 @@ def cli():
         show_total(collect, period, tool)
     elif "--impact" in args:
         show_impact(collect, period, tool, _parse_region(args))
+    elif "--tool-use" in args:
+        show_tool_use(collect, period, tool)
     elif "--audit" in args:
         jmax_raw = _arg_value(args, "--judge-max")   # default: no cap
         try:
