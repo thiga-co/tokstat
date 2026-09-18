@@ -1046,7 +1046,7 @@ def show_tool_use(collect_fn, period_name: str | None = None,
                   f"'{session_filter}'.{RESET}\n")
         else:
             print(f"  {YELLOW}No tool calls found "
-                  f"(only Claude Code and Codex record them).{RESET}\n")
+                  f"(only Claude Code, Codex and OpenCode record them).{RESET}\n")
         return
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))

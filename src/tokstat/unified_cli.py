@@ -362,7 +362,7 @@ def show_help():
   Cursor       Cursor globalStorage/state.vscdb             exact / no data
   Kiro         Kiro .../workspace-sessions/                 activity only
   Gemini CLI   ~/.gemini/tmp/                               exact tokens
-  opencode     ~/.local/share/opencode/storage/             exact tokens
+  opencode     ~/.local/share/opencode/ (opencode.db)       exact tokens
   Claude.ai    --import of official export (claude-web-token-usage)
   ChatGPT      --import of official export (chatgpt-web-token-usage)
 
