@@ -733,7 +733,10 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
             for sid, b in shown:
                 meta = sess_meta[sid]
                 color = TOOL_COLORS.get(meta["tool"], "")
-                proj = shorten_path(normalize_project(meta["project"]), 30)
+                # Per-session view shows the ACTUAL working directory the
+                # session ran in — not normalize_project()'s git-repo-root
+                # collapse, which would merge distinct sub-projects of one repo.
+                proj = shorten_path(meta["project"], 30)
                 no_tok = (b["input"] == 0 and b["output"] == 0
                           and b["cache_read"] == 0 and b["cache_write"] == 0)
                 cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
@@ -3198,7 +3201,8 @@ def show_impact(collect_fn, period_name: str | None = None,
                 when = r["first"].strftime("%Y-%m-%d")
                 if r["last"].date() != r["first"].date():
                     when += "→" + r["last"].strftime("%m-%d")
-                proj = normalize_project(r["project"]) if r["project"] else "?"
+                # Actual working directory, not the git-repo-root collapse.
+                proj = shorten_path(r["project"], 40) if r["project"] else "?"
                 color = TOOL_COLORS.get(r["tool"], "")
                 sid_short = f"{_short_sid(r['sid']):<8}"
                 print(f"    {color}{sid_short}{RESET} {r['e']:>6.2f} kWh · "
