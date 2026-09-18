@@ -2,10 +2,11 @@
 
 CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each tool scans local data, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints color-coded terminal tables.
 
-> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Gemini CLI and opencode read exact token counts; Cursor reads exact counts where they're recorded locally and flags the rest as `⚠ no data`; Kiro exposes no token counts at all (activity only); the web exports are estimated from text length. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
+> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Antigravity, Gemini CLI and opencode read exact token counts; Cursor reads exact counts where they're recorded locally and flags the rest as `⚠ no data`; Kiro exposes no token counts at all (activity only); the web exports are estimated from text length. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
 
 ## Changelog
 
+- **1.19.0** — Added **Antigravity** (`antigravity-token-usage` / `agy-token-usage`): scans `~/.gemini/antigravity-cli/` SQLite databases and logs for exact prompt, output, and cached token metrics, tool call timeline, and models.
 - **1.18.1** — Fix: the **per-session tables** (`--by-session` and `--impact`'s By-session) now show each session's **actual working directory** instead of `normalize_project()`'s git-repo-root collapse — so distinct sub-projects of one repo (e.g. `…/M5/m5agent`, `…/M5/m5agent-arduino`) no longer merge into a single row. The per-project / per-workspace aggregations still collapse by repo, as intended. A bare `~` means the session ran from your home directory.
 - **1.18.0** — `--tool-use` gains a **`--session <id>`** filter (Claude Code + Codex): scope the timeline to a single conversation by its session id — the full id or the short handle prefix that `--by-session` / the timeline show (e.g. `--session 019f6a75`). Each timeline line now also tags its `[session]`.
 - **1.17.0** — New **`--tool-use`** mode (Claude Code + Codex): a chronological **timeline of every tool call** — which tool, what it targeted (the file for Read/Edit/Write, the shell command for Bash/exec, the pattern/query for search), and when — grouped by conversation, with failed calls marked `✗`. Answers "which files and tools were touched, and in what order".
@@ -42,6 +43,7 @@ Requires Python 3.7+. No dependencies. MIT (one MPL-2.0 file — see [License](#
 | `tokstat` | **all of the below** | combined | all of the below | ✓ | stable |
 | `claude-token-usage` | Claude Code | `~/.claude/projects/` | ✓ exact | ✓ | stable |
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | stable |
+| `antigravity-token-usage` / `agy-token-usage` | Antigravity | `~/.gemini/antigravity-cli/` | ✓ exact | ✓ | stable |
 | `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | n.a. | n.a. | stable |
 | `kiro-token-usage` | Kiro | `Kiro/.../workspace-sessions/` | n.a. | n.a. | stable |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
