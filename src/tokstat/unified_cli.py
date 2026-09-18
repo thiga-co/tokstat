@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 tokstat — Unified view of token consumption across all supported AI coding
-assistants (Claude Code, Codex, Cursor, Kiro, Gemini CLI).
+assistants (Claude Code, Codex, Cursor, Kiro, Gemini CLI, Antigravity).
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -49,6 +49,10 @@ from tokstat.chatgpt_web_cli import (
     scan_chatgpt_web,
     _collect_all_exchanges as _collect_chatgpt_web,
 )
+from tokstat.antigravity_cli import (
+    scan_antigravity, scan_speed_antigravity,
+    _collect_all_exchanges as _collect_antigravity,
+)
 
 from tokstat._core import (
     BOLD, DIM, RESET, YELLOW, RED,
@@ -66,18 +70,19 @@ from tokstat._core import (
 
 # Map each known tool name → (scanner, speed_scanner_or_None, collector, data_label)
 _TOOLS = [
-    ("Claude Code", scan_claude_code, scan_speed_claude_code, _collect_claude, "~/.claude/"),
-    ("Codex",       scan_codex,       scan_speed_codex,       _collect_codex,  "~/.codex/"),
-    ("Cursor",      scan_cursor,      None,                   _collect_cursor,
+    ("Claude Code",  scan_claude_code,   scan_speed_claude_code, _collect_claude,      "~/.claude/"),
+    ("Codex",        scan_codex,         scan_speed_codex,       _collect_codex,       "~/.codex/"),
+    ("Cursor",       scan_cursor,        None,                   _collect_cursor,
      "~/Library/.../Cursor/"),
-    ("Kiro",        scan_kiro,        None,                   _collect_kiro,
+    ("Kiro",         scan_kiro,          None,                   _collect_kiro,
      "~/Library/Application Support/Kiro/"),
-    ("Gemini CLI",  scan_gemini,      scan_speed_gemini,      _collect_gemini, "~/.gemini/"),
-    ("opencode",    scan_opencode,    scan_speed_opencode,    _collect_opencode,
+    ("Gemini CLI",   scan_gemini,        scan_speed_gemini,      _collect_gemini,      "~/.gemini/"),
+    ("Antigravity",  scan_antigravity,   scan_speed_antigravity, _collect_antigravity, "~/.gemini/antigravity-cli/"),
+    ("opencode",     scan_opencode,      scan_speed_opencode,    _collect_opencode,
      "~/.local/share/opencode/"),
-    ("Claude.ai",   scan_claude_web,  None,                   _collect_claude_web,
+    ("Claude.ai",    scan_claude_web,    None,                   _collect_claude_web,
      "claude.ai (web)"),
-    ("ChatGPT",     scan_chatgpt_web, None,                   _collect_chatgpt_web,
+    ("ChatGPT",      scan_chatgpt_web,   None,                   _collect_chatgpt_web,
      "chatgpt.com (web)"),
 ]
 
@@ -87,6 +92,7 @@ _TOOL_ALIASES = {
     "cursor": "Cursor",
     "kiro":   "Kiro",
     "gemini": "Gemini CLI",  "gemini-cli":  "Gemini CLI",
+    "antigravity": "Antigravity", "agy": "Antigravity",
     "opencode": "opencode",  "open-code":   "opencode",
     "claude.ai": "Claude.ai", "claude-web": "Claude.ai", "claudeai": "Claude.ai",
     "chatgpt":   "ChatGPT",   "chatgpt.com": "ChatGPT",  "chatgpt-web": "ChatGPT",
@@ -353,8 +359,8 @@ def show_help():
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days",
                        "30 days", "1 month", "2 months", "3 months",
                        "6 months", year   (partial match works; default: today)
-  --tool   <name>      claude, codex, cursor, kiro, gemini, opencode,
-                       claude.ai, chatgpt (default: all)
+  --tool   <name>      claude, codex, cursor, kiro, gemini, antigravity,
+                       opencode, claude.ai, chatgpt (default: all)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/                          exact tokens
@@ -362,14 +368,16 @@ def show_help():
   Cursor       Cursor globalStorage/state.vscdb             exact / no data
   Kiro         Kiro .../workspace-sessions/                 activity only
   Gemini CLI   ~/.gemini/tmp/                               exact tokens
+  Antigravity  ~/.gemini/antigravity-cli/                   exact tokens
   opencode     ~/.local/share/opencode/storage/             exact tokens
   Claude.ai    --import of official export (claude-web-token-usage)
   ChatGPT      --import of official export (chatgpt-web-token-usage)
 
 {BOLD}SEE ALSO{RESET}
   claude-token-usage, codex-token-usage, cursor-token-usage,
-  kiro-token-usage, gemini-token-usage, opencode-token-usage,
-  claude-web-token-usage, chatgpt-web-token-usage — single-tool variants.
+  kiro-token-usage, gemini-token-usage, antigravity-token-usage,
+  opencode-token-usage, claude-web-token-usage,
+  chatgpt-web-token-usage — single-tool variants.
 """)
 
 
