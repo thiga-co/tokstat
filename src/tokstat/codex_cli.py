@@ -526,7 +526,7 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--audit", "--judge", "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--session", "--audit", "--judge", "--model", "--judge-max", "--verify", "--ollama-judge", "--claude-judge", "--claude-model", "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -627,7 +627,8 @@ def cli():
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
     elif "--tool-use" in args:
-        show_tool_use(_collect_all_exchanges, period, tool)
+        show_tool_use(_collect_all_exchanges, period, tool,
+                      session_filter=_arg_value(args, "--session"))
     elif "--audit" in args:
         jmax_raw = _arg_value(args, "--judge-max")
         try:

@@ -418,7 +418,7 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float,
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--audit", "--judge",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--session", "--audit", "--judge",
     "--model", "--judge-max", "--dump", "--load", "--bench", "--exclude-today",
     "--verify", "--ollama-judge", "--claude-judge", "--claude-model",
     "--codex-judge", "--codex-model", "--frontier-consensus", "--consensus-log",
@@ -632,7 +632,8 @@ def cli():
     elif "--impact" in args:
         show_impact(collect, period, tool, _parse_region(args))
     elif "--tool-use" in args:
-        show_tool_use(collect, period, tool)
+        show_tool_use(collect, period, tool,
+                      session_filter=_arg_value(args, "--session"))
     elif "--audit" in args:
         jmax_raw = _arg_value(args, "--judge-max")   # default: no cap
         try:

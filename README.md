@@ -7,6 +7,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 ## Changelog
 
 - **unreleased** — `--audit` *(experimental)*: conversation-quality audit across all tools, scoring 12 behavioural metrics with an LLM-as-judge. You pick the judge explicitly (at least one, else it errors): **`--ollama-judge`** (LOCAL, nothing leaves the machine; `--model` picks it), **`--claude-judge`** and **`--codex-judge`** (via that CLI, off-machine, opt-in + warned). Each is an autonomous judge; combine them for a **voting panel** (findings aggregated by vote, tally shown). Judge sees the assistant's own prose + real tool-output snippets; a skeptical **`--verify`** second pass (each finding re-checked by the same judge that raised it) cuts false positives (with a dedicated contradiction check that makes the model name both incompatible statements); each finding shows the turn, quote, user request and real excerpt for one-glance verification. Plus a portable snapshot: `--dump` captures everything tokstat analyses (incl. tool outputs) and `--load` replays any mode offline; `--bench` measures judge model prefill/decode speed. Treat findings as leads, not verdicts — reliability scales with model strength.
+- **1.18.0** — `--tool-use` gains a **`--session <id>`** filter (Claude Code + Codex): scope the timeline to a single conversation by its session id — the full id or the short handle prefix that `--by-session` / the timeline show (e.g. `--session 019f6a75`). Each timeline line now also tags its `[session]`.
 - **1.17.0** — New **`--tool-use`** mode (Claude Code + Codex): a chronological **timeline of every tool call** — which tool, what it targeted (the file for Read/Edit/Write, the shell command for Bash/exec, the pattern/query for search), and when — grouped by conversation, with failed calls marked `✗`. Answers "which files and tools were touched, and in what order".
 - **1.16.0** — Exchange **duration** (Claude Code + Codex): `--export` entries carry **`duration_s`** (wall-clock seconds from the prompt to the exchange's last activity) and `--prompts` gains a **Dur** column (`4s` · `3m` · `1h12m`). Note it's wall-clock, so an exchange left idle mid-way counts the gap.
 - **1.15.0** — Context/compaction tracking now covers **Codex** too: `context_tokens` (peak from `token_count`) and `compactions` (each `compacted` event, with `pre_tokens` → `post_tokens` derived from the surrounding token counts). Codex doesn't record a `trigger` or duration, so those stay `null` and the `--prompts` marker reads `⇩ 187K→36K` (no trigger) vs Claude Code's `⇩auto 1.0M→10K`.
@@ -146,11 +147,13 @@ claude-token-usage -p --period "7 days"
 Chronological list of every tool call (Claude Code & Codex), grouped by
 conversation: the tool, what it targeted (file for Read/Edit/Write, command for
 Bash/exec, pattern/query for search) and the time it ran. Failed calls are
-marked `✗`. Filterable by `--period` / `--tool`.
+marked `✗`. Filterable by `--period` / `--tool`, and by **`--session <id>`** to
+scope to one conversation (full id or the short handle each line shows in `[…]`).
 
 ```sh
 claude-token-usage --tool-use --period "7 days"
 tokstat --tool-use --tool codex
+tokstat --tool-use --session 019f6a75
 ```
 
 ```

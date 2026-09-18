@@ -354,6 +354,16 @@ def short_session_id(sid) -> str:
     return s[-8:] if len(s) > 8 else s
 
 
+def session_matches(session_id, value: str) -> bool:
+    """Does a session id match a user-supplied filter? Accepts the full id, any
+    substring of it, or a prefix of the short handle (what --by-session shows)."""
+    if not session_id or not value:
+        return False
+    s = str(session_id).lower()
+    v = value.lower()
+    return v in s or short_session_id(session_id).lower().startswith(v)
+
+
 def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
     widths = [len(h) for h in headers]
     for row in rows:
@@ -1018,9 +1028,11 @@ def tool_target(name: str, inp: dict) -> str:
 
 
 def show_tool_use(collect_fn, period_name: str | None = None,
-                  tool_filter: str | None = None):
+                  tool_filter: str | None = None,
+                  session_filter: str | None = None):
     """Chronological timeline of every tool call — which tool, what it
-    targeted, and when — grouped by conversation. Claude Code & Codex."""
+    targeted, and when — grouped by conversation. Claude Code & Codex.
+    `session_filter` narrows to one session (full id or short-handle prefix)."""
     print(f"\n{BOLD} Tool-use Timeline{RESET}")
     print(f"{DIM}  Scanning exchanges...{RESET}\n")
 
@@ -1029,13 +1041,23 @@ def show_tool_use(collect_fn, period_name: str | None = None,
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
-    print(f"  Period: {BOLD}{period_label}{RESET}\n")
+    print(f"  Period: {BOLD}{period_label}{RESET}")
+    if session_filter:
+        print(f"  Session: {BOLD}{session_filter}{RESET}")
+    print()
 
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
     all_exchanges = [e for e in all_exchanges if e.get("tool_calls")]
+    if session_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if session_matches(e.get("session_id"), session_filter)]
     if not all_exchanges:
-        print(f"  {YELLOW}No tool calls found "
-              f"(only Claude Code and Codex record them).{RESET}\n")
+        if session_filter:
+            print(f"  {YELLOW}No tool calls found for session "
+                  f"'{session_filter}'.{RESET}\n")
+        else:
+            print(f"  {YELLOW}No tool calls found "
+                  f"(only Claude Code and Codex record them).{RESET}\n")
         return
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
@@ -1064,7 +1086,9 @@ def show_tool_use(collect_fn, period_name: str | None = None,
                 utext = utext[:57] + "..."
             if not utext:
                 utext = DIM + "(no text)" + RESET
-            print(f"    {DIM}{when}{RESET} {BOLD}›{RESET} {utext}")
+            sid = ex.get("session_id")
+            sid_tag = f" {DIM}[{short_session_id(sid)}]{RESET}" if sid else ""
+            print(f"    {DIM}{when}{RESET} {BOLD}›{RESET} {utext}{sid_tag}")
             for c in calls:
                 total_calls += 1
                 tool_counter[c.get("name", "?")] += 1
