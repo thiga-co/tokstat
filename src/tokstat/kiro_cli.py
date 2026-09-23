@@ -2,10 +2,14 @@
 """
 kiro-token-usage — Aggregate and display activity from Kiro.
 
-Data source: per-session JSON under
-  ~/Library/Application Support/Kiro/.../kiro.kiroagent/workspace-sessions/
-      <base64(project path)>/<sessionId>.json   (history)
-      <base64(project path)>/sessions.json       (dateCreated, project)
+Data sources:
+  • per-session JSON (older Kiro) under
+      ~/Library/.../kiro.kiroagent/workspace-sessions/
+        <base64(project path)>/<sessionId>.json   (history)
+        <base64(project path)>/sessions.json       (dateCreated, project)
+  • recent Kiro no longer writes that store — it keeps session references
+      (id + title) in each workspace's state.vscdb under
+      `kiro.kiroAgent → sessionPanels.entries`; read as activity-only.
 
 Kiro records no usable token counts (its tokens_generated log is always
 zero with no per-message data), so tokstat reports activity only —
@@ -155,6 +159,10 @@ def _extract_exchanges_kiro() -> list[dict]:
             if current:
                 exchanges.append(current)
 
+    # Recent Kiro no longer writes the JSON store; merge in state.vscdb sessions.
+    known_ids = {e["session_id"] for e in exchanges}
+    exchanges += _extract_vscdb_sessions(known_ids)
+
     return [e for e in exchanges if e.get("user_text") or e["num_turns"] > 0]
 
 
@@ -164,6 +172,83 @@ def _arg_value(args, flag, default=None):
         if i + 1 < len(args) and not args[i + 1].startswith("-"):
             return args[i + 1]
     return default
+def _vscdb_workspace_project(ws_dir: Path) -> str:
+    """Project path for a workspaceStorage dir, from its workspace.json folder URI."""
+    try:
+        d = json.loads((ws_dir / "workspace.json").read_text(errors="replace"))
+        folder = d.get("folder") or ""
+        if folder.startswith("file://"):
+            from urllib.parse import unquote
+            return unquote(folder[len("file://"):])
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return "unknown"
+
+
+def _extract_vscdb_sessions(known_ids: set) -> list[dict]:
+    """Recent Kiro versions stopped writing the workspace-sessions JSON store;
+    they keep only lightweight session references (id + title) in each
+    workspace's state.vscdb, under `kiro.kiroAgent` → `sessionPanels.entries`.
+
+    Surface those as **activity-only** exchanges — no turn detail, no tokens
+    (Kiro exposes no usable token counts). The message content lives in a
+    chromium leveldb we don't parse, so this is the honest maximum. Timestamp =
+    the state.vscdb mtime (best available signal of last activity)."""
+    ws_root = _KIRO_BASE.parent.parent / "workspaceStorage"
+    if not ws_root.exists():
+        return []
+
+    exchanges: list[dict] = []
+    seen: set[str] = set()
+    for ws_dir in ws_root.iterdir():
+        db = ws_dir / "state.vscdb"
+        if not db.is_file():
+            continue
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                row = con.execute(
+                    "SELECT value FROM ItemTable WHERE key='kiro.kiroAgent'").fetchone()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            continue
+        if not row:
+            continue
+        try:
+            entries = (json.loads(row[0]) or {}).get("sessionPanels.entries") or []
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not entries:
+            continue
+        try:
+            ts = datetime.fromtimestamp(db.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            ts = None
+        project = _vscdb_workspace_project(ws_dir)
+        for e in entries:
+            sid = e.get("id")
+            if not sid or sid in seen:
+                continue
+            bare = sid[len("sess_"):] if sid.startswith("sess_") else sid
+            if sid in known_ids or bare in known_ids:
+                continue          # already read (richer) from the JSON store
+            seen.add(sid)
+            exchanges.append({
+                "session_id":      sid,
+                "user_text":       (e.get("title") or "")[:500],
+                "assistant_texts": [],
+                "tool_errors":     [],
+                "tools_used":      defaultdict(int),
+                "num_turns":       1,      # existence only; real count unknown
+                "model":           "Kiro Agent [no tokens]",
+                "project":         project,
+                "ts":              ts,
+                "tokens":          {"input": 0, "output": 0,
+                                    "cache_read": 0, "cache_write": 0},
+                "cost":            0.0,
+            })
+    return exchanges
 
 
 def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
@@ -206,7 +291,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    if not (_KIRO_BASE / "workspace-sessions").exists():
+    _ws_storage = _KIRO_BASE.parent.parent / "workspaceStorage"
+    if not (_KIRO_BASE / "workspace-sessions").exists() and not _ws_storage.exists():
         print(f"  {DIM}Kiro not found at {_KIRO_BASE}{RESET}\n")
         return
 
