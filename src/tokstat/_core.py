@@ -177,18 +177,19 @@ def period_boundaries() -> dict:
     now = datetime.now(timezone.utc)
     today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return {
-        "Last hour":    (now - timedelta(hours=1),           None),
-        "Last 5 hours": (now - timedelta(hours=5),           None),
-        "Today":        (today_midnight,                     None),
-        "Yesterday":    (today_midnight - timedelta(days=1), today_midnight),
-        "Last 7 days":  (now - timedelta(days=7),            None),
-        "Last 30 days": (now - timedelta(days=30),           None),
-        "Last 1 month":  (now - timedelta(days=30),          None),
-        "Last 2 months": (now - timedelta(days=60),          None),
-        "Last 3 months": (now - timedelta(days=90),          None),
-        "Last 6 months": (now - timedelta(days=180),         None),
-        "Last year":    (now - timedelta(days=365),          None),
-        "Forever":      (datetime.min.replace(tzinfo=timezone.utc), None),
+        "Last hour":     (now - timedelta(hours=1),           None),
+        "Last 5 hours":  (now - timedelta(hours=5),           None),
+        "Last 24 hours": (now - timedelta(hours=24),          None),
+        "Today":         (today_midnight,                     None),
+        "Yesterday":     (today_midnight - timedelta(days=1), today_midnight),
+        "Last 7 days":   (now - timedelta(days=7),            None),
+        "Last 30 days":  (now - timedelta(days=30),           None),
+        "Last 1 month":  (now - timedelta(days=30),           None),
+        "Last 2 months": (now - timedelta(days=60),           None),
+        "Last 3 months": (now - timedelta(days=90),           None),
+        "Last 6 months": (now - timedelta(days=180),          None),
+        "Last year":     (now - timedelta(days=365),          None),
+        "Forever":       (datetime.min.replace(tzinfo=timezone.utc), None),
     }
 
 
@@ -199,6 +200,10 @@ def resolve_period(period_name: str | None, default: str = "today") -> tuple[dat
     name = period_name or default
     if name.lower() in ("all", "tout"):
         return datetime.min.replace(tzinfo=timezone.utc), None, "All time"
+    # Abbreviated 24h shortcuts (the generic "N unit" parser below needs the
+    # full unit word, so "24h" / "1d" wouldn't match there).
+    if name.lower() in ("24h", "24 h", "24hours", "24 hours", "24", "1 day", "1d"):
+        return boundaries["Last 24 hours"][0], boundaries["Last 24 hours"][1], "Last 24 hours"
     # Dynamic "N unit" (e.g. "5 days", "31 days", "12 hours", "2 weeks").
     import re as _re
     m = _re.fullmatch(r"\s*(\d+)\s*(hour|day|week|month|year)s?\s*",
