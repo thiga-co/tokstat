@@ -456,6 +456,15 @@ def _model_list(args):
 _DEFAULT_WATCH_INTERVAL = 5.0
 
 
+def _arg_value(args, flag, default=None):
+    """Value following `flag` on the command line, or default."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
+
+
 def _parse_watch_interval(args: list[str]) -> float | None:
     """Return refresh interval in seconds if --watch / -w is set, else None."""
     flag = None
@@ -548,7 +557,7 @@ def show_help():
   Cursor       Cursor globalStorage/state.vscdb             exact / no data
   Kiro         Kiro .../workspace-sessions/                 activity only
   Gemini CLI   ~/.gemini/tmp/                               exact tokens
-  opencode     ~/.local/share/opencode/storage/             exact tokens
+  opencode     ~/.local/share/opencode/ (opencode.db)       exact tokens
   Claude.ai    --import of official export (claude-web-token-usage)
   ChatGPT      --import of official export (chatgpt-web-token-usage)
 

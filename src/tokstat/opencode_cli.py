@@ -2,8 +2,13 @@
 """
 opencode-token-usage — Aggregate and display token consumption from opencode.
 
-Data source: ~/.local/share/opencode/storage/message/{session}/{msg}.json
-Each assistant message embeds `tokens` (input/output/cache) and `path.cwd`.
+Data sources (auto-detected):
+  • SQLite (OpenCode ≥ 0.6 / 2026): ~/.local/share/opencode/opencode.db
+      - `message` table: JSON blob per message (role, tokens, time, modelID…)
+      - `part` table:    JSON blob per part (text, tool calls…)
+      - `session`/`session_v2`: session metadata incl. `directory` (cwd)
+  • Legacy JSON: ~/.local/share/opencode/storage/message/{session}/{msg}.json
+    Each assistant message embeds `tokens` (input/output/cache) and `path.cwd`.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Olivier Bergeret
@@ -12,6 +17,7 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -27,14 +33,146 @@ from tokstat._core import (
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact, show_audit,
     export_conversations, _parse_period, _parse_region, print_update_notice,
-    print_retention_alerts,
+    print_retention_alerts, tool_target,
 )
 
 TOOL_COLORS["opencode"] = MAGENTA
 
 _BASE       = Path.home() / ".local" / "share" / "opencode"
+_DB         = _BASE / "opencode.db"
 _MSG_BASE   = _BASE / "storage" / "message"
 _SESS_BASE  = _BASE / "storage" / "session"
+
+
+# ─── SQLite backend (opencode.db) ─────────────────────────────────────────────
+
+def _db_connect() -> sqlite3.Connection:
+    """Open opencode.db read-only (WAL-safe: reads committed data only)."""
+    return sqlite3.connect(f"file:{_DB}?mode=ro", uri=True)
+
+
+def _db_session_cwd_map(con: sqlite3.Connection) -> dict[str, str]:
+    """{session_id: directory} from session/session_v2 tables."""
+    out: dict[str, str] = {}
+    for table in ("session", "session_v2"):
+        try:
+            rows = con.execute(f"SELECT id, directory FROM {table}")  # noqa: S608
+            for sid, directory in rows:
+                if sid and directory and sid not in out:
+                    out[sid] = directory
+        except sqlite3.Error:
+            continue
+    return out
+
+
+_DB_MSG_CACHE: dict = {}   # {mtime: parsed messages} — one entry, mtime-keyed
+
+
+def _load_db_messages() -> list[tuple[str, dict, str | None, list[dict]]]:
+    """Cached wrapper: parse opencode.db once per (path, mtime).
+
+    The DB is read by scan / scan_speed / exchange extraction in the same run;
+    keying on mtime avoids re-parsing it each time while staying correct under
+    ``--watch`` (a write bumps mtime and invalidates the cache)."""
+    try:
+        mtime = _DB.stat().st_mtime
+    except OSError:
+        return _load_db_messages_uncached()
+    hit = _DB_MSG_CACHE.get(mtime)
+    if hit is None:
+        _DB_MSG_CACHE.clear()
+        hit = _DB_MSG_CACHE[mtime] = _load_db_messages_uncached()
+    return hit
+
+
+def _load_db_messages_uncached() -> list[tuple[str, dict, str | None, list[dict]]]:
+    """[(session_id, msg, session_directory, parts)] ordered by time.
+
+    Supports both SQLite schemas:
+      • New (``session_message``): ``type`` column (user/assistant/…), user
+        text in ``data.text``, parts inlined in ``data.content``, model in
+        ``data.model.id``. Rows are normalized to the legacy shape.
+      • Legacy (``message`` + ``part``): blobs as in the old JSON storage.
+    """
+    con = _db_connect()
+    try:
+        cwd_map = _db_session_cwd_map(con)
+
+        has_new = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='session_message'").fetchone() is not None
+        if has_new:
+            rows = con.execute(
+                "SELECT type, session_id, data FROM session_message "
+                "ORDER BY time_created, seq").fetchall()
+            if rows:
+                out = []
+                for typ, sid, data in rows:
+                    if typ not in ("user", "assistant"):
+                        continue        # synthetic, model-switched, …
+                    try:
+                        m = json.loads(data)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    model = m.get("model")
+                    if isinstance(model, dict) and model.get("id"):
+                        m["modelID"] = model["id"]
+                    parts = []
+                    if typ == "user":
+                        if m.get("text"):
+                            parts.append({"type": "text", "text": m["text"]})
+                    else:
+                        for p in m.get("content") or []:
+                            if not isinstance(p, dict):
+                                continue
+                            if p.get("type") == "tool":
+                                st = p.get("state") or {}
+                                t  = p.get("time") or {}
+                                parts.append({
+                                    "type": "tool",
+                                    "tool": p.get("name") or "?",
+                                    "state": {
+                                        "status": st.get("status"),
+                                        "input":  st.get("input"),
+                                        "error":  st.get("error"),
+                                        "time":   {"start": t.get("created"),
+                                                   "end":   t.get("completed")
+                                                            or t.get("ran")},
+                                    },
+                                })
+                            else:
+                                parts.append(p)
+                    m["role"] = typ
+                    out.append((sid, m, cwd_map.get(sid), parts))
+                return out
+
+        # Legacy in-DB schema (message + part tables)
+        parts_by_msg: dict[str, list[dict]] = defaultdict(list)
+        try:
+            for mid, pdata in con.execute(
+                    "SELECT message_id, data FROM part ORDER BY time_created, id"):
+                try:
+                    parts_by_msg[mid].append(json.loads(pdata))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+        except sqlite3.Error:
+            pass
+        out = []
+        try:
+            msg_rows = con.execute(
+                "SELECT id, session_id, data FROM message "
+                "ORDER BY time_created, id").fetchall()
+        except sqlite3.Error:
+            msg_rows = []          # neither session_message nor message present
+        for mid, sid, data in msg_rows:
+            try:
+                msg = json.loads(data)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            out.append((sid, msg, cwd_map.get(sid), parts_by_msg.get(mid, [])))
+        return out
+    finally:
+        con.close()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -49,10 +187,18 @@ def _ms_to_dt(ms) -> datetime | None:
 
 
 def _load_session_cwd_map() -> dict[str, str]:
-    """Return {session_id: directory} from session/*.json metadata."""
-    out: dict[str, str] = {}
+    """Return {session_id: directory} from SQLite or legacy session/*.json."""
+    if _DB.exists():
+        con = _db_connect()
+        try:
+            out = _db_session_cwd_map(con)
+            if out:
+                return out
+        finally:
+            con.close()
     if not _SESS_BASE.exists():
-        return out
+        return {}
+    out: dict[str, str] = {}
     for f in _SESS_BASE.rglob("*.json"):
         try:
             d = json.loads(f.read_text(encoding="utf-8", errors="replace"))
@@ -67,6 +213,15 @@ def _load_session_cwd_map() -> dict[str, str]:
 
 def _iter_assistant_messages():
     """Yield (msg_dict, fallback_cwd) for every assistant message."""
+    if _DB.exists():
+        try:
+            messages = _load_db_messages()
+        except sqlite3.Error:
+            messages = []
+        for _sid, msg, directory, _parts in messages:
+            if msg.get("role") == "assistant":
+                yield msg, directory or "unknown"
+        return
     if not _MSG_BASE.exists():
         return
     session_cwd = _load_session_cwd_map()
@@ -156,6 +311,8 @@ def scan_speed_opencode() -> list[dict]:
 
 def _extract_exchanges_opencode() -> list[dict]:
     """Group user → assistant messages per session into exchanges."""
+    if _DB.exists():
+        return _extract_exchanges_db()
     if not _MSG_BASE.exists():
         return []
 
@@ -235,6 +392,100 @@ def _arg_value(args, flag, default=None):
     return default
 
 
+def _extract_exchanges_db() -> list[dict]:
+    """Exchange extraction from the SQLite backend (opencode.db).
+
+    User prompt text and tool calls live in the `part` table; token usage
+    and model info live in the `message` JSON blob."""
+    exchanges: list[dict] = []
+    current: dict | None = None
+    last_sid: str | None = None
+
+    for sid, m, directory, parts in _load_db_messages():
+        if sid != last_sid:
+            if current:
+                exchanges.append(current)
+            current = None
+            last_sid = sid
+        ts = _ms_to_dt((m.get("time") or {}).get("created"))
+        if ts is None:
+            continue
+        role = m.get("role")
+        cwd  = (m.get("path") or {}).get("cwd") or directory or "unknown"
+
+        if role == "user":
+            if current:
+                exchanges.append(current)
+            text = ""
+            for p in parts:
+                if p.get("type") == "text" and p.get("text"):
+                    text = str(p["text"]).strip()
+                    break
+            current = {
+                "session_id":      sid,
+                "user_text":       text,
+                "assistant_texts": [],
+                "tool_errors":     [],
+                "tools_used":      defaultdict(int),
+                "num_turns":       0,
+                "model":           (m.get("model") or {}).get("modelID", "")
+                                   if isinstance(m.get("model"), dict) else "",
+                "project":         cwd,
+                "ts":              ts,
+                "tokens":          {"input": 0, "output": 0,
+                                    "cache_read": 0, "cache_write": 0},
+                "cost":            0.0,
+                "tool_calls":      [],
+            }
+        elif role == "assistant" and current is not None:
+            current["num_turns"] += 1
+            model = m.get("modelID") or ""
+            if model:
+                current["model"] = model
+            tok = m.get("tokens") or {}
+            if isinstance(tok, dict):
+                cache = tok.get("cache") or {}
+                inp = int(tok.get("input", 0) or 0)
+                out = int(tok.get("output", 0) or 0) + int(tok.get("reasoning", 0) or 0)
+                cr  = int(cache.get("read", 0) or 0)
+                cw  = int(cache.get("write", 0) or 0)
+                current["tokens"]["input"]       += inp
+                current["tokens"]["output"]      += out
+                current["tokens"]["cache_read"]  += cr
+                current["tokens"]["cache_write"] += cw
+                current["cost"] += compute_cost(
+                    {"input": inp, "output": out,
+                     "cache_read": cr, "cache_write": cw},
+                    current["model"] or model,
+                )
+            for p in parts:
+                ptype = p.get("type")
+                if ptype == "text" and p.get("text"):
+                    t = str(p["text"]).strip()
+                    if t:
+                        current["assistant_texts"].append(t)
+                elif ptype == "tool":
+                    name  = p.get("tool") or "?"
+                    state = p.get("state") or {}
+                    target = tool_target(name, state.get("input") or {})
+                    if not target:
+                        target = str(state.get("title") or "")
+                    is_err = state.get("status") == "error"
+                    call_ts = _ms_to_dt((state.get("time") or {}).get("start")) or ts
+                    current["tool_calls"].append({
+                        "ts": call_ts, "name": name,
+                        "target": target, "error": is_err,
+                    })
+                    current["tools_used"][name] += 1
+                    if is_err:
+                        err = state.get("error")
+                        msg = err.get("message", "") if isinstance(err, dict) else str(err or "")
+                        current["tool_errors"].append(f"{name}: {msg}".strip())
+    if current:
+        exchanges.append(current)
+    return exchanges
+
+
 def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
                            cutoff_end: datetime | None = None) -> tuple[list[dict], dict[str, int]]:
     all_exchanges = []
@@ -274,7 +525,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    if not _MSG_BASE.exists():
+    if not _DB.exists() and not _MSG_BASE.exists():
         print(f"  {DIM}opencode not found at {_BASE}{RESET}\n")
         return
 
@@ -348,8 +599,9 @@ def show_help():
   --period <period>    all, today, yesterday, year, or any "N unit" (e.g. "5 days", "31 days", "2 weeks", "3 months"); default: today
 
 {BOLD}DATA SOURCE{RESET}
-  {MAGENTA}opencode{RESET}    {DIM}~/.local/share/opencode/storage/message/{{session}}/{{msg}}.json{RESET}
-              ✓ Tokens ✓ Speed ✓ Project (cwd)
+  {MAGENTA}opencode{RESET}    {DIM}~/.local/share/opencode/opencode.db (SQLite){RESET}
+              {DIM}or legacy storage/message/{{session}}/{{msg}}.json{RESET}
+              ✓ Tokens ✓ Speed ✓ Project (cwd) ✓ Tool calls
 """)
 
 
