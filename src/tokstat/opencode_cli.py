@@ -65,7 +65,27 @@ def _db_session_cwd_map(con: sqlite3.Connection) -> dict[str, str]:
     return out
 
 
+_DB_MSG_CACHE: dict = {}   # {mtime: parsed messages} — one entry, mtime-keyed
+
+
 def _load_db_messages() -> list[tuple[str, dict, str | None, list[dict]]]:
+    """Cached wrapper: parse opencode.db once per (path, mtime).
+
+    The DB is read by scan / scan_speed / exchange extraction in the same run;
+    keying on mtime avoids re-parsing it each time while staying correct under
+    ``--watch`` (a write bumps mtime and invalidates the cache)."""
+    try:
+        mtime = _DB.stat().st_mtime
+    except OSError:
+        return _load_db_messages_uncached()
+    hit = _DB_MSG_CACHE.get(mtime)
+    if hit is None:
+        _DB_MSG_CACHE.clear()
+        hit = _DB_MSG_CACHE[mtime] = _load_db_messages_uncached()
+    return hit
+
+
+def _load_db_messages_uncached() -> list[tuple[str, dict, str | None, list[dict]]]:
     """[(session_id, msg, session_directory, parts)] ordered by time.
 
     Supports both SQLite schemas:
@@ -138,8 +158,13 @@ def _load_db_messages() -> list[tuple[str, dict, str | None, list[dict]]]:
         except sqlite3.Error:
             pass
         out = []
-        for mid, sid, data in con.execute(
-                "SELECT id, session_id, data FROM message ORDER BY time_created, id"):
+        try:
+            msg_rows = con.execute(
+                "SELECT id, session_id, data FROM message "
+                "ORDER BY time_created, id").fetchall()
+        except sqlite3.Error:
+            msg_rows = []          # neither session_message nor message present
+        for mid, sid, data in msg_rows:
             try:
                 msg = json.loads(data)
             except (TypeError, json.JSONDecodeError):
