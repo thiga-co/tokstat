@@ -20,6 +20,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from tokstat.cli import __version__
 from tokstat._core import (
@@ -64,7 +65,7 @@ def _decode_varint(data: bytes, offset: int) -> tuple[int, int]:
     return res, offset
 
 
-def _parse_proto(data: bytes) -> list[tuple[int, int, any]]:
+def _parse_proto(data: bytes) -> list[tuple[int, int, Any]]:
     """Lightweight pure-Python protobuf parser returning (field_number, wire_type, value)."""
     offset = 0
     fields = []
@@ -228,6 +229,22 @@ def _extract_gen_models(cur: sqlite3.Cursor) -> tuple[dict[int, str], dict[int, 
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
 
+def _report_scan_health(total15: int, unparsed15: int, unpriced: set) -> None:
+    """Fail loudly, not silently. The token metrics are read from protobuf
+    blobs with no public schema, so a format change would otherwise just make
+    tokens vanish. Warn (on stderr, so tables stay clean) when a large share of
+    steps stop parsing, or when models resolve to names LiteLLM can't price."""
+    if total15 >= 20 and unparsed15 / total15 > 0.5:
+        print(f"  {YELLOW}⚠ Antigravity: {unparsed15}/{total15} steps had no "
+              f"recognizable token structure — the on-disk format may have "
+              f"changed; update tokstat or open an issue.{RESET}", file=sys.stderr)
+    if unpriced:
+        shown = ", ".join(sorted(unpriced)[:6])
+        more = f" (+{len(unpriced) - 6} more)" if len(unpriced) > 6 else ""
+        print(f"  {YELLOW}⚠ Antigravity: no LiteLLM price for {len(unpriced)} "
+              f"model(s) — cost shown as $0: {shown}{more}.{RESET}", file=sys.stderr)
+
+
 def scan_antigravity() -> list[dict]:
     """Scan Antigravity conversation SQLite databases for token usage."""
     if not _CONV_DIR.exists():
@@ -235,6 +252,9 @@ def scan_antigravity() -> list[dict]:
 
     summaries = _load_summaries_meta()
     records = []
+    total15 = 0                 # step_type=15 rows carrying metadata
+    unparsed15 = 0             # …where the token container (field 9) is absent
+    unpriced: set[str] = set()  # models with output tokens but no LiteLLM price
 
     for db_path in sorted(_CONV_DIR.glob("*.db")):
         cid = db_path.stem
@@ -252,6 +272,7 @@ def scan_antigravity() -> list[dict]:
 
             cur.execute("SELECT idx, metadata FROM steps WHERE step_type = 15 AND metadata IS NOT NULL")
             for idx, meta in cur.fetchall():
+                total15 += 1
                 p = _parse_proto(meta)
                 f9 = None
                 t_sec = None
@@ -261,7 +282,10 @@ def scan_antigravity() -> list[dict]:
                     elif fn == 1 and wt == 2:
                         t_sec = _get_time_from_proto(val)
 
-                if not f9 or t_sec is None:
+                if not f9:
+                    unparsed15 += 1     # token container gone → likely drift
+                    continue
+                if t_sec is None:
                     continue
 
                 tok_map = {fn: val for fn, wt, val in _parse_proto(f9) if wt == 0}
@@ -282,19 +306,23 @@ def scan_antigravity() -> list[dict]:
                     "cache_read":  cached,
                     "cache_write": 0,
                 }
+                cost = compute_cost(tokens, model)
+                if cost == 0 and out > 0:
+                    unpriced.add(model)
                 records.append({
                     "tool":    TOOL_NAME,
                     "model":   model,
                     "project": project,
                     "ts":      ts,
                     **tokens,
-                    "cost":    compute_cost(tokens, model),
+                    "cost":    cost,
                 })
 
             con.close()
         except (sqlite3.Error, OSError):
             continue
 
+    _report_scan_health(total15, unparsed15, unpriced)
     return records
 
 
