@@ -3242,6 +3242,7 @@ def export_conversations(collect_fn, output_path: str,
     """Export all conversations to a JSON file."""
     print(f"\n{BOLD} Exporting conversations{RESET}")
     print(f"{DIM}  Scanning transcripts...{RESET}\n")
+    load_pricing()   # so per-exchange cost is computed (not left at 0)
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -3280,8 +3281,17 @@ def export_conversations(collect_fn, output_path: str,
             "assistant": ex["assistant_texts"],
             "turns":     ex.get("num_turns", 0),
         }
+        tok = ex.get("tokens") or {}
+        if tok:
+            entry["tokens"] = {k: tok.get(k, 0) for k in
+                               ("input", "output", "cache_read", "cache_write")}
+        if ex.get("cost") is not None:
+            entry["cost"] = round(ex["cost"], 4)
         if ex.get("duration_s") is not None:
             entry["duration_s"] = round(ex["duration_s"], 1)
+            out = tok.get("output", 0) or 0
+            if ex["duration_s"] > 0 and out:   # end-to-end throughput (floor)
+                entry["speed_tps"] = round(out / ex["duration_s"], 1)
         if ex.get("context_peak"):
             entry["context_tokens"] = ex["context_peak"]
         if ex.get("context_growth"):
