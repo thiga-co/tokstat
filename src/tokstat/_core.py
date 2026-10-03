@@ -959,10 +959,10 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
               f"{CYAN}{len(exchanges)} exchanges{RESET}  {total_turns} turns  "
               f"{BOLD}{fmt_cost(total_cost)}{RESET}")
 
-        headers = ["#", "Time", "Dur", "Input text", "Model", "Turns",
+        headers = ["#", "Time", "Dur", "t/s", "Input text", "Model", "Turns",
                    "Input", "Output", "Cache R", "Cache W", "Context",
                    "Tools", "Cost", "Compaction"]
-        aligns  = [">", "<",    ">",   "<",          "<",     ">",
+        aligns  = [">", "<",    ">",   ">",   "<",          "<",     ">",
                    ">",     ">",      ">",       ">",       ">",
                    "<",     ">",    "<"]
         rows = []
@@ -1007,8 +1007,13 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
                 comp_cell = DIM + "-" + RESET
             dur = ex.get("duration_s")
             dur_cell = fmt_duration(dur) if dur is not None else DIM + "-" + RESET
+            # Output throughput (tok/s): end-to-end (output ÷ wall-clock),
+            # so it folds in TTFT and tool-call gaps — a floor, not decode speed.
+            out_tok = tok.get("output", 0) or 0
+            spd = (out_tok / dur) if (dur and dur > 0 and out_tok) else None
+            spd_cell = f"{spd:.0f}" if spd else DIM + "-" + RESET
             rows.append([
-                str(i), ts_str, dur_cell, user_text, DIM + model_short + RESET,
+                str(i), ts_str, dur_cell, spd_cell, user_text, DIM + model_short + RESET,
                 str(ex.get("num_turns", 0)),
                 fmt_tokens(tok.get("input", 0)), fmt_tokens(tok.get("output", 0)),
                 fmt_tokens(tok.get("cache_read", 0)), fmt_tokens(tok.get("cache_write", 0)),
