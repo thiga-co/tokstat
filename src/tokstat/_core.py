@@ -960,7 +960,7 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
               f"{BOLD}{fmt_cost(total_cost)}{RESET}")
 
         headers = ["#", "Time", "Dur", "t/s", "Input text", "Model", "Turns",
-                   "Input", "Output", "Cache R", "Cache W", "Context",
+                   "Input", "Output", "Cache R", "Cache W", "ΔCtx",
                    "Tools", "Cost", "Compaction"]
         aligns  = [">", "<",    ">",   ">",   "<",          "<",     ">",
                    ">",     ">",      ">",       ">",       ">",
@@ -991,8 +991,11 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
                 tools_str = DIM + "-" + RESET
 
             tok = ex.get("tokens", {})
-            ctx = ex.get("context_peak", 0)
-            ctx_cell = fmt_tokens(ctx) if ctx else DIM + "-" + RESET
+            # ΔCtx = how much the context window grew across the prompt
+            # (last − first API-call context this turn), i.e. what the tool
+            # loop + intermediate messages added. ~0 for a single-call turn.
+            grow = ex.get("context_growth")
+            ctx_cell = ("+" + fmt_tokens(grow)) if grow else DIM + "-" + RESET
             comps = ex.get("compactions") or []
             if comps:
                 parts = []
@@ -3281,6 +3284,8 @@ def export_conversations(collect_fn, output_path: str,
             entry["duration_s"] = round(ex["duration_s"], 1)
         if ex.get("context_peak"):
             entry["context_tokens"] = ex["context_peak"]
+        if ex.get("context_growth"):
+            entry["context_growth"] = ex["context_growth"]
         if ex.get("compactions"):
             entry["compactions"] = ex["compactions"]
         if ex.get("tools_used"):

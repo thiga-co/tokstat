@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.20.0"
+__version__ = "1.20.1"
 
 import json
 import sys
@@ -258,7 +258,8 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     "project": rec.get("cwd"), "ts": ts, "last_ts": ts,
                     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                     "cost": 0.0,
-                    "context_peak": 0, "compactions": pending_compactions,
+                    "context_peak": 0, "context_first": None, "context_last": 0,
+                    "compactions": pending_compactions,
                     "tool_calls": [],
                 }
                 pending_compactions = []
@@ -303,6 +304,12 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                        + usage.get("cache_creation_input_tokens", 0))
                 if ctx > current.get("context_peak", 0):
                     current["context_peak"] = ctx
+                # First/last context fed this turn → growth = how much the
+                # prompt grew the window (tool outputs + intermediate messages).
+                if ctx:
+                    if current.get("context_first") is None:
+                        current["context_first"] = ctx
+                    current["context_last"] = ctx
                 msg_id = msg.get("id", "")
                 prev_id = current.get("_prev_msg_id")
                 if msg_id and msg_id == prev_id:
@@ -356,6 +363,10 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
         start, end = ex.get("ts"), ex.pop("last_ts", None)
         if start and end:
             ex["duration_s"] = max((end - start).total_seconds(), 0.0)
+        first = ex.pop("context_first", None)
+        if first is not None:
+            ex["context_growth"] = max(ex.get("context_last", 0) - first, 0)
+        ex.pop("context_last", None)
     return exchanges
 
 

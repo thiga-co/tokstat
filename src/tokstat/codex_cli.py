@@ -334,7 +334,8 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 "project": current_cwd, "ts": ts, "last_ts": ts,
                 "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                 "cost": 0.0,
-                "context_peak": 0, "compactions": pending_compactions,
+                "context_peak": 0, "context_first": None, "context_last": 0,
+                "compactions": pending_compactions,
                 "tool_calls": [],
             }
             pending_compactions = []
@@ -417,6 +418,9 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 if ctx > 0:
                     if ctx > current["context_peak"]:
                         current["context_peak"] = ctx
+                    if current.get("context_first") is None:
+                        current["context_first"] = ctx
+                    current["context_last"] = ctx
                     last_ctx = ctx
                     # post_tokens = first real context size after a compaction.
                     if awaiting_post:
@@ -430,6 +434,10 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
         start, end = ex.get("ts"), ex.pop("last_ts", None)
         if start and end:
             ex["duration_s"] = max((end - start).total_seconds(), 0.0)
+        first = ex.pop("context_first", None)
+        if first is not None:
+            ex["context_growth"] = max(ex.get("context_last", 0) - first, 0)
+        ex.pop("context_last", None)
     return exchanges
 
 
