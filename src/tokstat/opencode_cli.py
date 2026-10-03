@@ -51,6 +51,18 @@ def _db_connect() -> sqlite3.Connection:
     return sqlite3.connect(f"file:{_DB}?mode=ro", uri=True)
 
 
+def _db_last_write() -> float:
+    """Latest mtime of opencode.db and its ``-wal`` sidecar, as an epoch
+    float (the ``-wal`` is what moves on each commit)."""
+    latest = 0.0
+    for suffix in ("", "-wal"):
+        try:
+            latest = max(latest, Path(str(_DB) + suffix).stat().st_mtime)
+        except OSError:
+            pass
+    return latest
+
+
 def _db_session_cwd_map(con: sqlite3.Connection) -> dict[str, str]:
     """{session_id: directory} from session/session_v2 tables."""
     out: dict[str, str] = {}
@@ -65,27 +77,29 @@ def _db_session_cwd_map(con: sqlite3.Connection) -> dict[str, str]:
     return out
 
 
-_DB_MSG_CACHE: dict = {}   # {mtime: parsed messages} — one entry, mtime-keyed
+_DB_MSG_CACHE: dict = {}   # {(mtime, cutoff_ms): parsed messages} — one entry
 
 
-def _load_db_messages() -> list[tuple[str, dict, str | None, list[dict]]]:
-    """Cached wrapper: parse opencode.db once per (path, mtime).
+def _load_db_messages(cutoff: datetime | None = None) -> list[tuple[str, dict, str | None, list[dict]]]:
+    """Cached wrapper: parse opencode.db once per (path mtime, period).
 
     The DB is read by scan / scan_speed / exchange extraction in the same run;
     keying on mtime avoids re-parsing it each time while staying correct under
-    ``--watch`` (a write bumps mtime and invalidates the cache)."""
-    try:
-        mtime = _DB.stat().st_mtime
-    except OSError:
-        return _load_db_messages_uncached()
-    hit = _DB_MSG_CACHE.get(mtime)
+    ``--watch`` (a write bumps mtime and invalidates the cache). The period is
+    part of the key because the SQL pre-filter depends on it."""
+    mtime = _db_last_write()
+    if not mtime:
+        return _load_db_messages_uncached(cutoff)
+    cutoff_ms = int(cutoff.timestamp() * 1000) if cutoff is not None else None
+    key = (mtime, cutoff_ms)
+    hit = _DB_MSG_CACHE.get(key)
     if hit is None:
         _DB_MSG_CACHE.clear()
-        hit = _DB_MSG_CACHE[mtime] = _load_db_messages_uncached()
+        hit = _DB_MSG_CACHE[key] = _load_db_messages_uncached(cutoff)
     return hit
 
 
-def _load_db_messages_uncached() -> list[tuple[str, dict, str | None, list[dict]]]:
+def _load_db_messages_uncached(cutoff: datetime | None = None) -> list[tuple[str, dict, str | None, list[dict]]]:
     """[(session_id, msg, session_directory, parts)] ordered by time.
 
     Supports both SQLite schemas:
@@ -93,8 +107,12 @@ def _load_db_messages_uncached() -> list[tuple[str, dict, str | None, list[dict]
         text in ``data.text``, parts inlined in ``data.content``, model in
         ``data.model.id``. Rows are normalized to the legacy shape.
       • Legacy (``message`` + ``part``): blobs as in the old JSON storage.
-    """
+
+    When ``cutoff`` is set, only messages created at/after it are decoded —
+    the JSON blobs dominate the cost, and an exchange is anchored on its user
+    prompt, so earlier messages can never belong to an in-period exchange."""
     con = _db_connect()
+    cutoff_ms = int(cutoff.timestamp() * 1000) if cutoff is not None else None
     try:
         cwd_map = _db_session_cwd_map(con)
 
@@ -102,9 +120,21 @@ def _load_db_messages_uncached() -> list[tuple[str, dict, str | None, list[dict]
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='session_message'").fetchone() is not None
         if has_new:
-            rows = con.execute(
-                "SELECT type, session_id, data FROM session_message "
-                "ORDER BY time_created, seq").fetchall()
+            sql = ("SELECT type, session_id, data FROM session_message "
+                   "ORDER BY time_created, seq")
+            params: tuple = ()
+            if cutoff_ms is not None:
+                sql = ("SELECT type, session_id, data FROM session_message "
+                       "WHERE time_created >= ? ORDER BY time_created, seq")
+                params = (cutoff_ms,)
+            rows = con.execute(sql, params).fetchall()
+            if not rows and cutoff_ms is not None:
+                # Empty result may just mean "nothing in this period"; only
+                # fall through to the legacy tables if the new one is empty
+                # too (mid-migration state).
+                if con.execute(
+                        "SELECT 1 FROM session_message LIMIT 1").fetchone() is not None:
+                    return []
             if rows:
                 out = []
                 for typ, sid, data in rows:
@@ -211,11 +241,11 @@ def _load_session_cwd_map() -> dict[str, str]:
     return out
 
 
-def _iter_assistant_messages():
+def _iter_assistant_messages(cutoff: datetime | None = None):
     """Yield (msg_dict, fallback_cwd) for every assistant message."""
     if _DB.exists():
         try:
-            messages = _load_db_messages()
+            messages = _load_db_messages(cutoff)
         except sqlite3.Error:
             messages = []
         for _sid, msg, directory, _parts in messages:
@@ -224,6 +254,7 @@ def _iter_assistant_messages():
         return
     if not _MSG_BASE.exists():
         return
+    cutoff_ts = cutoff.timestamp() if cutoff is not None else None
     session_cwd = _load_session_cwd_map()
     for ses_dir in _MSG_BASE.iterdir():
         if not ses_dir.is_dir():
@@ -232,6 +263,12 @@ def _iter_assistant_messages():
         for f in ses_dir.iterdir():
             if not f.name.endswith(".json"):
                 continue
+            if cutoff_ts is not None:
+                try:
+                    if f.stat().st_mtime < cutoff_ts:
+                        continue
+                except OSError:
+                    continue
             try:
                 msg = json.loads(f.read_text(errors="replace"))
             except (OSError, json.JSONDecodeError):
@@ -241,10 +278,11 @@ def _iter_assistant_messages():
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
 
-def scan_opencode() -> list[dict]:
+def scan_opencode(cutoff: datetime | None = None,
+                  cutoff_end: datetime | None = None) -> list[dict]:
     """Scan opencode assistant messages for token usage."""
     records = []
-    for msg, fallback_cwd in _iter_assistant_messages():
+    for msg, fallback_cwd in _iter_assistant_messages(cutoff):
         if msg.get("role") != "assistant":
             continue
         tok = msg.get("tokens") or {}
@@ -275,10 +313,11 @@ def scan_opencode() -> list[dict]:
     return records
 
 
-def scan_speed_opencode() -> list[dict]:
+def scan_speed_opencode(cutoff: datetime | None = None,
+                        cutoff_end: datetime | None = None) -> list[dict]:
     """Output speed (tokens/sec) from completed-created timestamps."""
     results = []
-    for msg, _fallback in _iter_assistant_messages():
+    for msg, _fallback in _iter_assistant_messages(cutoff):
         if msg.get("role") != "assistant":
             continue
         t = msg.get("time") or {}
@@ -309,13 +348,14 @@ def scan_speed_opencode() -> list[dict]:
 
 # ─── Exchanges ────────────────────────────────────────────────────────────────
 
-def _extract_exchanges_opencode() -> list[dict]:
+def _extract_exchanges_opencode(cutoff: datetime | None = None) -> list[dict]:
     """Group user → assistant messages per session into exchanges."""
     if _DB.exists():
-        return _extract_exchanges_db()
+        return _extract_exchanges_db(cutoff)
     if not _MSG_BASE.exists():
         return []
 
+    cutoff_ts = cutoff.timestamp() if cutoff is not None else None
     session_cwd = _load_session_cwd_map()
     exchanges: list[dict] = []
 
@@ -326,6 +366,12 @@ def _extract_exchanges_opencode() -> list[dict]:
         for f in ses_dir.iterdir():
             if not f.name.endswith(".json"):
                 continue
+            if cutoff_ts is not None:
+                try:
+                    if f.stat().st_mtime < cutoff_ts:
+                        continue
+                except OSError:
+                    continue
             try:
                 m = json.loads(f.read_text(errors="replace"))
             except (OSError, json.JSONDecodeError):
@@ -384,7 +430,7 @@ def _extract_exchanges_opencode() -> list[dict]:
     return exchanges
 
 
-def _extract_exchanges_db() -> list[dict]:
+def _extract_exchanges_db(cutoff: datetime | None = None) -> list[dict]:
     """Exchange extraction from the SQLite backend (opencode.db).
 
     User prompt text and tool calls live in the `part` table; token usage
@@ -393,7 +439,7 @@ def _extract_exchanges_db() -> list[dict]:
     current: dict | None = None
     last_sid: str | None = None
 
-    for sid, m, directory, parts in _load_db_messages():
+    for sid, m, directory, parts in _load_db_messages(cutoff):
         if sid != last_sid:
             if current:
                 exchanges.append(current)
@@ -495,7 +541,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
             all_exchanges.extend(filtered)
             tool_counts[tool_name] = tool_counts.get(tool_name, 0) + len(filtered)
 
-    _add("opencode", _extract_exchanges_opencode())
+    _add("opencode", _extract_exchanges_opencode(cutoff))
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
     return all_exchanges, tool_counts
 
@@ -521,7 +567,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
         print(f"  {DIM}opencode not found at {_BASE}{RESET}\n")
         return
 
-    records = scan_opencode()
+    records = scan_opencode(cutoff=cutoff, cutoff_end=cutoff_end)
     records = [r for r in records
                if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
 
@@ -535,7 +581,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
         return
 
-    speed_records = scan_speed_opencode()
+    speed_records = scan_speed_opencode(cutoff=cutoff, cutoff_end=cutoff_end)
     speed_records = [sr for sr in speed_records
                      if sr["ts"] >= cutoff and (cutoff_end is None or sr["ts"] < cutoff_end)]
 

@@ -8,11 +8,44 @@ Copyright (c) 2026 Olivier Bergeret
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# ─── Timing instrumentation (opt-in: TOKSTAT_TIMING=1) ────────────────────
+# Elapsed-time markers on the progress lines, so a slow startup (network
+# fetch, data scan) can be attributed to a specific step. Disabled by
+# default so normal output is untouched.
+_PROCESS_T0 = time.monotonic()
+_TIMING_ENABLED = os.environ.get("TOKSTAT_TIMING", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+
+def timing_enabled() -> bool:
+    """True when TOKSTAT_TIMING asks for elapsed-time markers."""
+    return _TIMING_ENABLED
+
+
+def tstamp() -> str:
+    """Elapsed-since-process-start prefix, e.g. '[+  12.34s] ', or '' when
+    timing is disabled."""
+    if not _TIMING_ENABLED:
+        return ""
+    return f"[+{time.monotonic() - _PROCESS_T0:7.2f}s] "
+
+
+def tstamp_scan(label: str, started: float, n: int) -> None:
+    """Emit a dimmed per-step timing line (only when timing is enabled)."""
+    if not _TIMING_ENABLED:
+        return
+    print(f"{DIM}    · {label}: {n} record(s) in "
+          f"{time.monotonic() - started:.2f}s{RESET}")
+
 
 # ─── Pricing (loaded dynamically from LiteLLM) ────────────────────────────
 LITELLM_PRICING_URL = (
@@ -27,12 +60,15 @@ PRICING: dict[str, dict] = {}
 
 def load_pricing():
     global PRICING
+    t0 = time.monotonic()
     raw = None
+    source = "none"
     if LITELLM_CACHE_PATH.exists():
         age = datetime.now() - datetime.fromtimestamp(LITELLM_CACHE_PATH.stat().st_mtime)
         if age < LITELLM_CACHE_MAX_AGE:
             try:
                 raw = json.loads(LITELLM_CACHE_PATH.read_text())
+                source = "cache"
             except (json.JSONDecodeError, OSError):
                 pass
     if raw is None:
@@ -42,13 +78,18 @@ def load_pricing():
                 raw = json.loads(resp.read().decode())
             LITELLM_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             LITELLM_CACHE_PATH.write_text(json.dumps(raw))
+            source = "network"
         except Exception:
-            pass
+            source = "network (failed)"
     if raw is None and LITELLM_CACHE_PATH.exists():
         try:
             raw = json.loads(LITELLM_CACHE_PATH.read_text())
+            source = "stale cache"
         except (json.JSONDecodeError, OSError):
             pass
+    if timing_enabled():
+        print(f"{DIM}    · pricing: {source} in "
+              f"{time.monotonic() - t0:.2f}s{RESET}")
     if raw is None:
         print(f"  {DIM}Warning: could not load LiteLLM pricing data, costs will show as $0{RESET}")
         return
@@ -904,11 +945,11 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
 def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
     """Show per-prompt/exchange token usage."""
     print(f"\n{BOLD} Exchanges — Prompt-level Usage{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
-        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
-    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+        print(f"{tstamp()}  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{tstamp()}{DIM}  Scanning exchanges...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -1034,7 +1075,7 @@ def show_tool_use(collect_fn, period_name: str | None = None,
     targeted, and when — grouped by conversation. Claude Code & Codex.
     `session_filter` narrows to one session (full id or short-handle prefix)."""
     print(f"\n{BOLD} Tool-use Timeline{RESET}")
-    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+    print(f"{tstamp()}{DIM}  Scanning exchanges...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -1109,11 +1150,11 @@ def show_tool_use(collect_fn, period_name: str | None = None,
 def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
     """Detect technical anomalies."""
     print(f"\n{BOLD} Technical Anomaly Detection{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
-        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
-    print(f"{DIM}  Scanning transcripts...{RESET}\n")
+        print(f"{tstamp()}  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{tstamp()}{DIM}  Scanning transcripts...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -1360,11 +1401,11 @@ def _reco_google(mp: float) -> None:
 def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
     """Recommend plan and optimization strategies based on usage patterns."""
     print(f"\n{BOLD} Plan & Optimization Recommendations{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
-        print(f"  {DIM}{len(PRICING)} models loaded{RESET}")
-    print(f"{DIM}  Scanning usage data...{RESET}\n")
+        print(f"{tstamp()}  {DIM}{len(PRICING)} models loaded{RESET}")
+    print(f"{tstamp()}{DIM}  Scanning usage data...{RESET}\n")
 
     label_parts = []
     if tool_filter:
@@ -1668,9 +1709,9 @@ def show_activity(collect_fn, period_name: str | None = None,
     total prompts, turns and tokens. Respects --period and --tool.
     """
     print(f"\n{BOLD} Activity Overview{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
-    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+    print(f"{tstamp()}{DIM}  Scanning exchanges...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -1795,9 +1836,9 @@ def show_total(collect_fn, period_name: str | None = None,
     """Compact totals: tokens and cost for the selected period/tool, plus the
     actual date span covered by the data and a per-tool breakdown."""
     print(f"\n{BOLD} Total{RESET}")
-    print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
+    print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
-    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+    print(f"{tstamp()}{DIM}  Scanning exchanges...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -2034,7 +2075,7 @@ def show_impact(collect_fn, period_name: str | None = None,
     print(f"\n{BOLD} Environmental Impact{RESET}  {DIM}(usage phase, EcoLogits){RESET}")
     print(f"{DIM}  Loading model database (EcoLogits)...{RESET}")
     load_ecologits_db()
-    print(f"{DIM}  Scanning exchanges...{RESET}\n")
+    print(f"{tstamp()}{DIM}  Scanning exchanges...{RESET}\n")
 
     try:
         cutoff, cutoff_end, period_label = resolve_period(period_name)
@@ -2461,7 +2502,7 @@ def export_conversations(collect_fn, output_path: str,
                          tool_filter: str | None = None):
     """Export all conversations to a JSON file."""
     print(f"\n{BOLD} Exporting conversations{RESET}")
-    print(f"{DIM}  Scanning transcripts...{RESET}\n")
+    print(f"{tstamp()}{DIM}  Scanning transcripts...{RESET}\n")
     load_pricing()   # so per-exchange cost is computed (not left at 0)
 
     try:

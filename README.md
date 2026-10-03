@@ -6,6 +6,7 @@ CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each
 
 ## Changelog
 
+- **1.21.0** — **Startup diagnostics + faster period-filtered runs**. Set `TOKSTAT_TIMING=1` to prefix each progress line with the elapsed time since launch (`[+  1.23s]`) and to log whether pricing came from the local cache or a network fetch — off by default, output unchanged without it. Also **speeds up runs**: Antigravity now parses each SQLite conversation DB **once** (shared by the scan / speed / exchange passes) instead of three times; Antigravity + opencode **skip data that cannot fall inside the requested `--period`** (opencode filters in SQL, Antigravity skips DBs whose latest write — `.db`/`-wal` mtime — predates the cutoff); and Antigravity keeps a small **persistent index** (`~/.cache/token-usage/antigravity_index.json`, invalidated by DB mtime + size, **numeric aggregates only — no prompts or transcripts**, written only when Antigravity data exists, pruned under 64 MB) so unchanged databases aren't re-decoded next run — `tokstat --period today` drops from several seconds to well under a second on a warm index. Thanks **@louisvolant** ([#4](https://github.com/thiga-co/tokstat/pull/4)).
 - **1.20.2** — `--export` entries now carry the full per-prompt metrics matching `--prompts`: **`tokens`** (input/output/cache_read/cache_write), **`cost`**, and **`speed_tps`** (output ÷ duration, end-to-end). Also fixes exported `cost` always being 0 — export wasn't loading pricing before computing.
 - **1.20.1** — `--prompts`: the per-prompt context column is now **`ΔCtx`** — how much the context window **grew** across the prompt (last − first API-call context that turn = what the tool loop + intermediate messages added), shown as `+12.6K`; `~0` for a single-call turn. `--export` adds `context_growth` (alongside `context_tokens`, the peak). Claude Code + Codex.
 - **1.20.0** — `--prompts` gains a per-prompt **`t/s`** column (output throughput = output tokens ÷ exchange duration) next to **Dur**. It's **end-to-end** (folds in TTFT and tool-call gaps), so read it as a floor, not a clean decode rate. The per-prompt **Context** column (peak context the exchange reached) is already there.
@@ -472,6 +473,40 @@ available history.
 ## Pricing
 
 Model pricing is fetched from [LiteLLM's model pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and cached at `~/.cache/token-usage/litellm_prices.json` for 24 hours. Falls back to stale cache if fetch fails.
+
+## Caches
+
+tokstat writes a few regenerable caches under `~/.cache/` — all safe to delete:
+
+- `~/.cache/token-usage/litellm_prices.json` — LiteLLM pricing (24 h TTL).
+- `~/.cache/token-usage/ecologits_models.json` — EcoLogits model database (for `--impact`).
+- `~/.cache/token-usage/update_check.json` — last seen PyPI version.
+- `~/.cache/token-usage/antigravity_index.json` — parsed Antigravity step metadata, keyed by each DB's mtime + size so unchanged databases are not re-decoded on the next run. Contains **numeric aggregates only** (token counts, model names, project paths — no prompts or transcripts), is written **only if Antigravity data is present**, and is pruned to stay under 64 MB. Delete it to force a full re-parse.
+- `~/.cache/tokstat/web/` — conversations imported from claude.ai / ChatGPT exports.
+
+## Diagnostics
+
+Set `TOKSTAT_TIMING=1` to add an elapsed-time marker to each progress line, so you can see where a slow run spends its time:
+
+```sh
+TOKSTAT_TIMING=1 tokstat
+```
+
+```text
+[+   0.01s]   Loading pricing from LiteLLM...
+    · pricing: cache in 0.01s
+[+   0.03s]   3698 models loaded
+[+   0.03s]  Token Usage — All tools
+[+   0.03s]    Scanning all data sources...
+    · Claude Code: 163 record(s) in 0.02s
+    · Antigravity: 18262 record(s) in 2.16s
+    · Antigravity (speed): 7542 record(s) in 0.01s
+    · Antigravity (exchanges): 493 record(s) in 0.67s
+    · opencode: 12295 record(s) in 1.91s
+[+   5.80s]   ● Antigravity    651 records · ...
+```
+
+Off by default — without the variable, output is unchanged. The `pricing:` line reports whether pricing came from the local cache or a network fetch (a slow first line usually means a cold network fetch).
 
 ## Credits
 
