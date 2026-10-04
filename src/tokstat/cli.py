@@ -255,6 +255,7 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                     "user_text": text, "assistant_texts": [], "tool_errors": [],
                     "tools_used": defaultdict(int), "num_turns": 0, "model": None,
                     "project": rec.get("cwd"), "ts": ts, "last_ts": ts,
+                    "first_assistant_ts": None,
                     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
                     "cost": 0.0,
                     "context_peak": 0, "context_first": None, "context_last": 0,
@@ -280,6 +281,8 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
         elif rec_type == "assistant" and current is not None:
             if rec_ts:
                 current["last_ts"] = rec_ts
+                if current.get("first_assistant_ts") is None:
+                    current["first_assistant_ts"] = rec_ts   # for TTFT
             if not current["model"]:
                 current["model"] = msg.get("model")
             usage = msg.get("usage")
@@ -351,6 +354,9 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
         start, end = ex.get("ts"), ex.pop("last_ts", None)
         if start and end:
             ex["duration_s"] = max((end - start).total_seconds(), 0.0)
+        first_a = ex.pop("first_assistant_ts", None)
+        if start and first_a:
+            ex["ttft_s"] = max((first_a - start).total_seconds(), 0.0)
         first = ex.pop("context_first", None)
         if first is not None:
             ex["context_growth"] = max(ex.get("context_last", 0) - first, 0)

@@ -368,6 +368,18 @@ def fmt_duration(seconds) -> str:
     return f"{h}h{m:02d}m"
 
 
+def fmt_latency(seconds) -> str:
+    """Short latency with sub-second resolution, for TTFT: 350ms · 1.2s · 8.4s.
+    Above a minute it falls back to the compact duration format."""
+    if seconds is None or seconds < 0:
+        return "-"
+    if seconds < 1:
+        return f"{int(round(seconds * 1000))}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    return fmt_duration(seconds)
+
+
 def _strip_ansi(text: str) -> str:
     return re.sub(r'\033\[[0-9;]*m', '', text)
 
@@ -984,10 +996,10 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
               f"{CYAN}{len(exchanges)} exchanges{RESET}  {total_turns} turns  "
               f"{BOLD}{fmt_cost(total_cost)}{RESET}")
 
-        headers = ["#", "Time", "Dur", "t/s", "Input text", "Model", "Turns",
+        headers = ["#", "Time", "Dur", "TTFT", "t/s", "Input text", "Model", "Turns",
                    "Input", "Output", "Cache R", "Cache W", "ΔCtx",
                    "Tools", "Cost", "Compaction"]
-        aligns  = [">", "<",    ">",   ">",   "<",          "<",     ">",
+        aligns  = [">", "<",    ">",   ">",    ">",   "<",          "<",     ">",
                    ">",     ">",      ">",       ">",       ">",
                    "<",     ">",    "<"]
         rows = []
@@ -1035,13 +1047,16 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
                 comp_cell = DIM + "-" + RESET
             dur = ex.get("duration_s")
             dur_cell = fmt_duration(dur) if dur is not None else DIM + "-" + RESET
+            # TTFT = latency from the user prompt to the first assistant token.
+            ttft = ex.get("ttft_s")
+            ttft_cell = fmt_latency(ttft) if ttft is not None else DIM + "-" + RESET
             # Output throughput (tok/s): end-to-end (output ÷ wall-clock),
             # so it folds in TTFT and tool-call gaps — a floor, not decode speed.
             out_tok = tok.get("output", 0) or 0
             spd = (out_tok / dur) if (dur and dur > 0 and out_tok) else None
             spd_cell = f"{spd:.0f}" if spd else DIM + "-" + RESET
             rows.append([
-                str(i), ts_str, dur_cell, spd_cell, user_text, DIM + model_short + RESET,
+                str(i), ts_str, dur_cell, ttft_cell, spd_cell, user_text, DIM + model_short + RESET,
                 str(ex.get("num_turns", 0)),
                 fmt_tokens(tok.get("input", 0)), fmt_tokens(tok.get("output", 0)),
                 fmt_tokens(tok.get("cache_read", 0)), fmt_tokens(tok.get("cache_write", 0)),
@@ -2553,6 +2568,8 @@ def export_conversations(collect_fn, output_path: str,
             out = tok.get("output", 0) or 0
             if ex["duration_s"] > 0 and out:   # end-to-end throughput (floor)
                 entry["speed_tps"] = round(out / ex["duration_s"], 1)
+        if ex.get("ttft_s") is not None:       # latency to first assistant token
+            entry["ttft_s"] = round(ex["ttft_s"], 2)
         if ex.get("context_peak"):
             entry["context_tokens"] = ex["context_peak"]
         if ex.get("context_growth"):
