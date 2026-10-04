@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.request
@@ -384,6 +385,16 @@ def _strip_ansi(text: str) -> str:
     return re.sub(r'\033\[[0-9;]*m', '', text)
 
 
+def _term_width(default: int = 120) -> int:
+    """Visible terminal width, for sizing detail lines to the display. Falls
+    back to `default` when there's no tty (pipe, redirect, CI)."""
+    try:
+        w = shutil.get_terminal_size((default, 24)).columns
+        return w if w and w > 40 else default
+    except (OSError, ValueError):
+        return default
+
+
 def short_session_id(sid) -> str:
     """A recognizable 8-char handle for a session id. Claude/Cursor ids ARE
     UUIDs; Codex rollouts embed one after an ISO timestamp — pull the UUID's
@@ -414,7 +425,12 @@ def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
     return 2 + sum(widths) + 2 * (len(widths) - 1)
 
 
-def print_table(headers: list[str], rows: list[list[str]], col_aligns: list[str] | None = None) -> int:
+def print_table(headers: list[str], rows: list[list[str]], col_aligns: list[str] | None = None,
+                row_details: list[list[str]] | None = None) -> int:
+    """Render a padded table. `row_details`, if given, is one list of extra
+    lines per row — each printed on its own indented continuation line under
+    that row (empty lists are skipped), e.g. a prompt's full text then its
+    tool calls one per line. Callers format each line (incl. any marker)."""
     if not rows:
         return 0
     widths = [len(h) for h in headers]
@@ -435,9 +451,12 @@ def print_table(headers: list[str], rows: list[list[str]], col_aligns: list[str]
     print(f"  {BOLD}{header_line}{RESET}")
     sep = "  ".join("─" * w for w in widths)
     print(f"  {DIM}{sep}{RESET}")
-    for row in rows:
+    for idx, row in enumerate(rows):
         line = "  ".join(pad(row[i], widths[i], col_aligns[i]) for i in range(len(headers)))
         print(f"  {line}")
+        if row_details and idx < len(row_details):
+            for detail in row_details[idx]:
+                print(f"       {detail}")
     return table_width
 
 
@@ -954,6 +973,43 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
 
 # ─── Shared display: prompts ──────────────────────────────────────────────
 
+def _tool_calls_detail(ex: dict, width: int) -> list[str]:
+    """A prompt's tool calls, one formatted line per call, in call order:
+    `name  target` with the tool name padded so targets align, the target's
+    home dir collapsed to ~, and failed calls marked ✗. Each line's target is
+    truncated to fit `width` (the terminal width). Falls back to a single
+    name:count summary line for tools that don't record per-call targets."""
+    calls = ex.get("tool_calls") or []
+    if calls:
+        home = str(Path.home())
+        # Detail lines are printed at a 7-space indent; "↳ " + optional "✗ "
+        # + name + "  " precede the target. No name padding — aligning to the
+        # longest name would give short names (Bash) a huge gap when a long
+        # one (SubagentHandback, MCP tools) is in the same exchange.
+        lines = []
+        for c in calls:
+            name = c.get("name", "?")
+            tgt = " ".join(str(c.get("target") or "").split()).replace(home, "~")
+            mark = f"{BRED}✗{RESET} " if c.get("error") else ""
+            prefix = f"{DIM}↳{RESET} "
+            if tgt:
+                budget = width - 7 - 2 - (2 if c.get("error") else 0) - len(name) - 2
+                if budget < 12:
+                    budget = 12
+                if len(tgt) > budget:
+                    tgt = tgt[:budget - 3] + "..."
+                lines.append(f"{prefix}{mark}{name}  {DIM}{tgt}{RESET}")
+            else:
+                lines.append(f"{prefix}{mark}{name}")
+        return lines
+    tools = ex.get("tools_used") or {}
+    if tools:
+        summary = " ".join(f"{t}:{n}" if n > 1 else t
+                           for t, n in sorted(tools.items(), key=lambda x: -x[1]))
+        return [f"{DIM}↳ {summary}{RESET}"]
+    return []
+
+
 def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
     """Show per-prompt/exchange token usage."""
     print(f"\n{BOLD} Exchanges — Prompt-level Usage{RESET}")
@@ -976,6 +1032,7 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
         return
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
+    term_w = _term_width()
 
     grouped: dict[tuple[str, str], list[dict]] = {}
     for ex in all_exchanges:
@@ -996,36 +1053,40 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
               f"{CYAN}{len(exchanges)} exchanges{RESET}  {total_turns} turns  "
               f"{BOLD}{fmt_cost(total_cost)}{RESET}")
 
-        headers = ["#", "Time", "Dur", "TTFT", "t/s", "Input text", "Model", "Turns",
+        headers = ["#", "Time", "Dur", "TTFT", "t/s", "Model", "Turns",
                    "Input", "Output", "Cache R", "Cache W", "ΔCtx",
-                   "Tools", "Cost", "Compaction"]
-        aligns  = [">", "<",    ">",   ">",    ">",   "<",          "<",     ">",
+                   "Cost", "Compaction"]
+        aligns  = [">", "<",    ">",   ">",    ">",   "<",     ">",
                    ">",     ">",      ">",       ">",       ">",
-                   "<",     ">",    "<"]
+                   ">",    "<"]
         rows = []
+        details = []
 
         for i, ex in enumerate(sorted(exchanges,
                                       key=lambda e: e.get("ts") or datetime.min.replace(tzinfo=timezone.utc)), 1):
-            user_text = ex.get("user_text", "").replace("\n", " ")
-            if len(user_text) > 50:
-                user_text = user_text[:47] + "..."
+            user_text = " ".join(ex.get("user_text", "").split())
+            prompt_budget = max(term_w - 7, 20)   # 7-space detail indent
+            if len(user_text) > prompt_budget:
+                user_text = user_text[:prompt_budget - 3] + "..."
             if not user_text:
-                user_text = DIM + "(no text)" + RESET
+                prompt_line = f"{DIM}(no text){RESET}"
+            else:
+                # Injected messages (e.g. "Another Claude session sent a
+                # message: <agent-message …>") carry a prose lead then a
+                # structured tag — bold only the lead, dim the tag part.
+                head, sep, tail = user_text.partition("<")
+                head = head.rstrip()
+                if sep and head:
+                    prompt_line = f"{BOLD}{head}{RESET} {DIM}{sep}{tail}{RESET}"
+                elif sep:
+                    prompt_line = f"{DIM}{sep}{tail}{RESET}"
+                else:
+                    prompt_line = f"{BOLD}{head}{RESET}"
 
             ts_str = ex["ts"].strftime("%H:%M") if ex.get("ts") else "?"
             model_short = (ex.get("model") or "?").split("/")[-1]
             if len(model_short) > 20:
                 model_short = model_short[:17] + "..."
-
-            tools = ex.get("tools_used", {})
-            if tools:
-                tool_parts = [f"{t}:{c}" if c > 1 else t
-                              for t, c in sorted(tools.items(), key=lambda x: -x[1])[:4]]
-                tools_str = " ".join(tool_parts)
-                if len(tools) > 4:
-                    tools_str += f" +{len(tools)-4}"
-            else:
-                tools_str = DIM + "-" + RESET
 
             tok = ex.get("tokens", {})
             # ΔCtx = how much the context window grew across the prompt
@@ -1056,14 +1117,15 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
             spd = (out_tok / dur) if (dur and dur > 0 and out_tok) else None
             spd_cell = f"{spd:.0f}" if spd else DIM + "-" + RESET
             rows.append([
-                str(i), ts_str, dur_cell, ttft_cell, spd_cell, user_text, DIM + model_short + RESET,
+                str(i), ts_str, dur_cell, ttft_cell, spd_cell, DIM + model_short + RESET,
                 str(ex.get("num_turns", 0)),
                 fmt_tokens(tok.get("input", 0)), fmt_tokens(tok.get("output", 0)),
                 fmt_tokens(tok.get("cache_read", 0)), fmt_tokens(tok.get("cache_write", 0)),
-                ctx_cell, tools_str, fmt_cost(ex.get("cost", 0)), comp_cell,
+                ctx_cell, fmt_cost(ex.get("cost", 0)), comp_cell,
             ])
+            details.append([prompt_line] + _tool_calls_detail(ex, term_w))
 
-        print_table(headers, rows, aligns)
+        print_table(headers, rows, aligns, row_details=details)
         print()
 
 
