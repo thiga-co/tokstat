@@ -603,7 +603,8 @@ def cli():
         sys.exit(1)
 
     if "--prompts" in args or "-p" in args:
-        show_prompts(_collect_all_exchanges, period, tool)
+        show_prompts(_collect_all_exchanges, period, tool,
+                     session_filter=_arg_value(args, "--session"))
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:

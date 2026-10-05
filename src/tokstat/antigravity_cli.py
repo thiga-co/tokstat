@@ -872,7 +872,8 @@ def cli():
     period = _parse_period(args)
 
     if "--prompts" in args or "-p" in args:
-        show_prompts(_collect_all_exchanges, period, TOOL_NAME)
+        show_prompts(_collect_all_exchanges, period, TOOL_NAME,
+                     session_filter=_arg_value(args, "--session"))
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, TOOL_NAME)
     elif "--activity" in args:

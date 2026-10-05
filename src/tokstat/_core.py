@@ -1010,8 +1010,10 @@ def _tool_calls_detail(ex: dict, width: int) -> list[str]:
     return []
 
 
-def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
-    """Show per-prompt/exchange token usage."""
+def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | None = None,
+                 session_filter: str | None = None):
+    """Show per-prompt/exchange token usage. `session_filter` narrows to one
+    session (full id or short-handle prefix), like --tool-use."""
     print(f"\n{BOLD} Exchanges — Prompt-level Usage{RESET}")
     print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
@@ -1024,11 +1026,21 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
     except ValueError as e:
         print(f"  {RED}{e}{RESET}\n")
         return
-    print(f"  Period: {BOLD}{period_label}{RESET}\n")
+    print(f"  Period: {BOLD}{period_label}{RESET}")
+    if session_filter:
+        print(f"  Session: {BOLD}{session_filter}{RESET}")
+    print()
 
     all_exchanges, tool_counts = collect_fn(cutoff, tool_filter, cutoff_end)
+    if session_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if session_matches(e.get("session_id"), session_filter)]
     if not all_exchanges:
-        print(f"  {YELLOW}No exchanges found.{RESET}\n")
+        if session_filter:
+            print(f"  {YELLOW}No exchanges found for session "
+                  f"'{session_filter}'.{RESET}\n")
+        else:
+            print(f"  {YELLOW}No exchanges found.{RESET}\n")
         return
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))

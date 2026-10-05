@@ -406,6 +406,8 @@ def show_help():
                        "6 months", year   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, antigravity,
                        opencode, claude.ai, chatgpt (default: all)
+  --session <id>       scope --prompts / --tool-use to one session (full id
+                       or the short 8-char handle, e.g. 019f6a75)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/                          exact tokens
@@ -459,7 +461,8 @@ def cli():
         return
 
     if "--prompts" in args or "-p" in args:
-        show_prompts(_collect_all_exchanges, period, tool)
+        show_prompts(_collect_all_exchanges, period, tool,
+                     session_filter=_arg_value(args, "--session"))
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
