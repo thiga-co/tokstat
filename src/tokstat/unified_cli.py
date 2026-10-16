@@ -67,7 +67,7 @@ from tokstat._core import (
     show_activity, show_total, show_impact, show_tool_use,
     export_conversations, _parse_period, _parse_region, print_update_notice,
     print_retention_alerts,
-    compute_overview_state,
+    compute_overview_state, project_matches,
     tstamp, timing_enabled, tstamp_scan,
 )
 
@@ -207,7 +207,9 @@ def _span_label(timestamps: list) -> str:
 def _render_overview(period_name: str | None, tool_filter: str | None,
                      header_suffix: str = "",
                      prev_state: dict | None = None,
-                     by_session: bool = False) -> tuple[bool, dict | None]:
+                     by_session: bool = False,
+                     by_project: bool = False,
+                     project_filter: str | None = None) -> tuple[bool, dict | None]:
     """Scan all sources and print the overview tables.
 
     Returns (ok, current_state). `current_state` is the snapshot of the
@@ -231,6 +233,14 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
                      if sr["ts"] >= cutoff and (cutoff_end is None or sr["ts"] < cutoff_end)]
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
 
+    if project_filter:
+        records = [r for r in records
+                   if project_matches(r.get("project"), project_filter)]
+        speed_records = [sr for sr in speed_records
+                         if project_matches(sr.get("project"), project_filter)]
+        exchanges = [e for e in exchanges
+                     if project_matches(e.get("project"), project_filter)]
+
     for tool_name, n_total, data_path in counts:
         if n_total == 0:
             continue
@@ -247,6 +257,8 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
     print_retention_alerts(name for name, n_total, _ in counts if n_total > 0)
 
     print(f"  Period: {BOLD}{period_label}{RESET}")
+    if project_filter:
+        print(f"  Project: {BOLD}{project_filter}{RESET}")
 
     state = compute_overview_state(records, exchanges, cutoff, cutoff_end, period_label)
     changed_keys: set | None = None
@@ -259,21 +271,24 @@ def _render_overview(period_name: str | None, tool_filter: str | None,
 
     show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
                          tool_filter, all_exchanges=exchanges, changed_keys=changed_keys,
-                         by_session=by_session)
+                         by_session=by_session, by_project=by_project)
     return True, state
 
 
 def main(period_name: str | None = None, tool_filter: str | None = None,
-         by_session: bool = False):
+         by_session: bool = False, by_project: bool = False,
+         project_filter: str | None = None):
     print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
     if PRICING:
         print(f"{tstamp()}  {DIM}{len(PRICING)} models loaded{RESET}")
-    _render_overview(period_name, tool_filter, by_session=by_session)
+    _render_overview(period_name, tool_filter, by_session=by_session,
+                     by_project=by_project, project_filter=project_filter)
 
 
 def watch(period_name: str | None, tool_filter: str | None, interval: float,
-          by_session: bool = False):
+          by_session: bool = False, by_project: bool = False,
+          project_filter: str | None = None):
     """Refresh the overview every `interval` seconds until Ctrl+C.
 
     Uses cursor-home + erase-to-end-of-screen instead of full clear so the
@@ -300,7 +315,9 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float,
                 ok, state = _render_overview(period_name, tool_filter,
                                              header_suffix=suffix,
                                              prev_state=prev_state,
-                                             by_session=by_session)
+                                             by_session=by_session,
+                                             by_project=by_project,
+                                             project_filter=project_filter)
             output = buf.getvalue()
 
             sys.stdout.write("\033[H")  # cursor home, no clear
@@ -323,7 +340,9 @@ def watch(period_name: str | None, tool_filter: str | None, interval: float,
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--session", "--export", "--period", "--since", "--tool", "--watch", "-w",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--by-project",
+    "--tool-use", "--session", "--project",
+    "--export", "--period", "--since", "--tool", "--watch", "-w",
 }
 
 _DEFAULT_WATCH_INTERVAL = 5.0
@@ -387,6 +406,7 @@ def show_help():
 {BOLD}MODES{RESET}
   tokstat                                  Aggregated overview (period, project, model)
   tokstat --by-session                     Overview + a per-session table (all sessions)
+  tokstat --by-project                     Overview + a project → sessions drill-down
   tokstat --prompts  [-p]                  Per-exchange detail across all tools
   tokstat --anomalies                      Technical anomaly detection
   tokstat --activity                       Activity calendar (GitHub-style, by day)
@@ -408,6 +428,8 @@ def show_help():
                        opencode, claude.ai, chatgpt (default: all)
   --session <id>       scope --prompts / --tool-use to one session (full id
                        or the short 8-char handle, e.g. 019f6a75)
+  --project <name>     scope every view to one project (substring on the repo
+                       path, e.g. --project tokstat)
 
 {BOLD}TOOLS COVERED{RESET}
   Claude Code  ~/.claude/projects/                          exact tokens
@@ -451,18 +473,22 @@ def cli():
         sys.exit(1)
 
     by_session = "--by-session" in args
+    by_project = "--by-project" in args
+    project = _arg_value(args, "--project")
 
     watch_interval = _parse_watch_interval(args)
     if watch_interval is not None:
         if any(f in args for f in ("--prompts", "-p", "--anomalies", "--plan", "--export")):
             print(f"\n  {RED}--watch only applies to the default overview mode.{RESET}\n")
             sys.exit(1)
-        watch(period, tool, watch_interval, by_session=by_session)
+        watch(period, tool, watch_interval, by_session=by_session,
+              by_project=by_project, project_filter=project)
         return
 
     if "--prompts" in args or "-p" in args:
         show_prompts(_collect_all_exchanges, period, tool,
-                     session_filter=_arg_value(args, "--session"))
+                     session_filter=_arg_value(args, "--session"),
+                     project_filter=project)
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
@@ -470,10 +496,12 @@ def cli():
     elif "--total" in args:
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
-        show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+        show_impact(_collect_all_exchanges, period, tool, _parse_region(args),
+                    project_filter=project)
     elif "--tool-use" in args:
         show_tool_use(_collect_all_exchanges, period, tool,
-                      session_filter=_arg_value(args, "--session"))
+                      session_filter=_arg_value(args, "--session"),
+                      project_filter=project)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:
@@ -481,9 +509,11 @@ def cli():
         out = "conversations.json"
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             out = args[idx + 1]
-        export_conversations(_collect_all_exchanges, out, period, tool)
+        export_conversations(_collect_all_exchanges, out, period, tool,
+                             project_filter=project)
     else:
-        main(period, tool, by_session=by_session)
+        main(period, tool, by_session=by_session,
+             by_project=by_project, project_filter=project)
 
     print_update_notice(__version__)
 

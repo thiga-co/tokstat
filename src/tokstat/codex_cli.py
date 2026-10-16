@@ -28,7 +28,7 @@ from tokstat._core import (
     show_overview_tables, show_prompts, show_anomalies, show_plan,
     show_activity, show_total, show_impact, show_tool_use, tool_target,
     export_conversations, _parse_period, _parse_region, print_update_notice,
-    print_retention_alerts,
+    print_retention_alerts, project_matches,
 )
 
 # Register Codex color
@@ -460,7 +460,8 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
 # ─── Main (aggregated overview) ──────────────────────────────────────────────
 
 def main(period_name: str | None = None, tool_filter: str | None = None,
-         by_session: bool = False):
+         by_session: bool = False, by_project: bool = False,
+         project_filter: str | None = None):
     print(f"\n{BOLD} Token Usage — Codex{RESET}")
     print(f"{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
@@ -483,12 +484,16 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
     records = scan_codex()
     records = [r for r in records
                if r["ts"] >= cutoff and (cutoff_end is None or r["ts"] < cutoff_end)]
+    if project_filter:
+        records = [r for r in records if project_matches(r.get("project"), project_filter)]
 
     if records:
         print(f"  {GREEN}●{RESET} {'Codex':<12} {len(records):>6} records from {data_path}")
     print()
     print_retention_alerts(["Codex"])
     print(f"  Period: {BOLD}{period_label}{RESET}")
+    if project_filter:
+        print(f"  Project: {BOLD}{project_filter}{RESET}")
 
     if not records:
         print(f"\n  {YELLOW}No token usage data found.{RESET}\n")
@@ -501,7 +506,8 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
     exchanges, _ = _collect_all_exchanges(cutoff, tool_filter, cutoff_end)
     show_overview_tables(records, speed_records, cutoff, cutoff_end, period_label,
                          tool_filter, all_exchanges=exchanges,
-                         by_session=by_session)
+                         by_session=by_session, by_project=by_project,
+                         project_filter=project_filter)
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -512,7 +518,8 @@ _TOOL_ALIASES = {
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--tool-use", "--session", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--by-project",
+    "--tool-use", "--session", "--project", "--export", "--period", "--since", "--tool",
 }
 
 
@@ -547,6 +554,8 @@ def show_help():
   codex-token-usage --total                    Compact totals (tokens + cost + data span)
   codex-token-usage --impact                   Energy & CO₂ estimate (EcoLogits)
   codex-token-usage --by-session               Overview + per-session table (all sessions)
+  codex-token-usage --by-project               Overview + a project → sessions drill-down
+  codex-token-usage --project <name>           Scope every view to one project (substring)
   codex-token-usage --tool-use                 Timeline of tool calls (file/command + time)
   codex-token-usage --plan                     Cost breakdown + plan recommendation + optimization tips
   codex-token-usage --export   [file.json]     Export all exchanges to JSON
@@ -602,9 +611,12 @@ def cli():
         print(f"\n  {RED}{e}{RESET}\n")
         sys.exit(1)
 
+    project = _arg_value(args, "--project")
+
     if "--prompts" in args or "-p" in args:
         show_prompts(_collect_all_exchanges, period, tool,
-                     session_filter=_arg_value(args, "--session"))
+                     session_filter=_arg_value(args, "--session"),
+                     project_filter=project)
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
@@ -612,10 +624,12 @@ def cli():
     elif "--total" in args:
         show_total(_collect_all_exchanges, period, tool)
     elif "--impact" in args:
-        show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+        show_impact(_collect_all_exchanges, period, tool, _parse_region(args),
+                    project_filter=project)
     elif "--tool-use" in args:
         show_tool_use(_collect_all_exchanges, period, tool,
-                      session_filter=_arg_value(args, "--session"))
+                      session_filter=_arg_value(args, "--session"),
+                      project_filter=project)
     elif "--plan" in args:
         show_plan(_collect_all_exchanges, period, tool)
     elif "--export" in args:
@@ -623,9 +637,11 @@ def cli():
         out = "conversations.json"
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             out = args[idx + 1]
-        export_conversations(_collect_all_exchanges, out, period, tool)
+        export_conversations(_collect_all_exchanges, out, period, tool,
+                             project_filter=project)
     else:
-        main(period, tool, by_session="--by-session" in args)
+        main(period, tool, by_session="--by-session" in args,
+             by_project="--by-project" in args, project_filter=project)
 
     print_update_notice(__version__)
 

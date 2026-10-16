@@ -417,6 +417,19 @@ def session_matches(session_id, value: str) -> bool:
     return v in s or short_session_id(session_id).lower().startswith(v)
 
 
+def project_matches(project, value: str) -> bool:
+    """Does a record/exchange project match a --project filter? Case-insensitive
+    substring, tested against both the raw cwd and its normalized repo root, so
+    `--project tokstat` matches `/Users/me/Code/tokstat` and its sub-dirs."""
+    if not value:
+        return True
+    if not project:
+        return False
+    v = value.lower()
+    p = str(project).lower()
+    return v in p or v in normalize_project(str(project)).lower()
+
+
 def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
     widths = [len(h) for h in headers]
     for row in rows:
@@ -531,7 +544,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                          period_label: str, tool_filter: str | None = None,
                          all_exchanges: list[dict] | None = None,
                          changed_keys: set | None = None,
-                         by_session: bool = False, session_limit: int = 0):
+                         by_session: bool = False, session_limit: int = 0,
+                         project_filter: str | None = None, by_project: bool = False):
     """Print period, project, model, and speed tables from a list of records.
 
     If `all_exchanges` is provided, three extra activity columns are added to
@@ -541,7 +555,18 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     If `changed_keys` is provided (a set produced by `compute_overview_state`
     diffed across two refreshes), rows whose compound key is in the set get a
     ◆ marker in their leftmost data column. Used by `tokstat --watch`.
+
+    `project_filter` narrows every table to one project (substring on the repo
+    path). `by_project` adds a project → sessions drill-down.
     """
+    if project_filter:
+        all_records = [r for r in all_records
+                       if project_matches(r.get("project"), project_filter)]
+        speed_records = [s for s in speed_records
+                         if project_matches(s.get("project"), project_filter)]
+        if all_exchanges is not None:
+            all_exchanges = [e for e in all_exchanges
+                             if project_matches(e.get("project"), project_filter)]
     show_activity = all_exchanges is not None
     exchanges = all_exchanges or []
     watching = changed_keys is not None
@@ -822,6 +847,52 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
             print(f"{'─' * sw}")
             print_table(s_headers, s_rows, s_aligns)
 
+    # ─── 2c. Project → sessions drill-down (opt-in --by-project) ───────
+    if by_project:
+        if not exchanges:
+            print(f"\n  {DIM}--by-project: no per-session data for this "
+                  f"selection.{RESET}")
+        else:
+            proj_sess: dict[str, dict[str, dict]] = defaultdict(dict)
+            sess_tool: dict[tuple[str, str], str] = {}
+            for ex in exchanges:
+                sid = ex.get("session_id")
+                if not sid:
+                    continue
+                proj = normalize_project(ex.get("project") or "unknown")
+                bucket = proj_sess[proj].get(sid)
+                if bucket is None:
+                    bucket = proj_sess[proj][sid] = empty_bucket()
+                    sess_tool[(proj, sid)] = ex.get("tool", "?")
+                tok = ex.get("tokens") or {}
+                bucket["input"]       += tok.get("input", 0) or 0
+                bucket["output"]      += tok.get("output", 0) or 0
+                bucket["cache_read"]  += tok.get("cache_read", 0) or 0
+                bucket["cache_write"] += tok.get("cache_write", 0) or 0
+                bucket["cost"]        += compute_cost(tok, ex.get("model") or "")
+                bucket["prompts"]     += 1
+            proj_cost = {p: sum(b["cost"] for b in ss.values())
+                         for p, ss in proj_sess.items()}
+            print(f"\n{'─' * 60}")
+            print(f"{BOLD} CONSUMPTION BY PROJECT → SESSIONS{RESET}"
+                  f"{DIM}  (by cost){RESET}")
+            print(f"{'─' * 60}")
+            for proj in sorted(proj_sess, key=lambda p: proj_cost[p], reverse=True):
+                print(f"\n  {BOLD}{shorten_path(proj, 50)}{RESET}  "
+                      f"{DIM}{fmt_cost(proj_cost[proj])}{RESET}")
+                ranked_s = sorted(proj_sess[proj].items(),
+                                  key=lambda kv: kv[1]["cost"], reverse=True)
+                for sid, b in ranked_s:
+                    tool = sess_tool[(proj, sid)]
+                    color = TOOL_COLORS.get(tool, "")
+                    no_tok = (b["input"] == 0 and b["output"] == 0
+                              and b["cache_read"] == 0 and b["cache_write"] == 0)
+                    cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
+                    print(f"    {DIM}•{RESET} {BOLD}{short_session_id(sid)}{RESET}  "
+                          f"{color}{tool:<12}{RESET}  "
+                          f"{b['prompts']:>4} prompts  "
+                          f"{fmt_tokens(b['input'] + b['output']):>8}  {cost_cell}")
+
     # ─── 3. Model breakdown ────────────────────────────────────────────
     model_data = defaultdict(lambda: {"input": 0, "output": 0, "cost": 0.0, "tool": "",
                                       "prompts": 0, "turns": 0, "api_calls": 0})
@@ -1011,9 +1082,10 @@ def _tool_calls_detail(ex: dict, width: int) -> list[str]:
 
 
 def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | None = None,
-                 session_filter: str | None = None):
+                 session_filter: str | None = None, project_filter: str | None = None):
     """Show per-prompt/exchange token usage. `session_filter` narrows to one
-    session (full id or short-handle prefix), like --tool-use."""
+    session (full id or short-handle prefix), `project_filter` to one project
+    (substring on the repo path), like --tool-use."""
     print(f"\n{BOLD} Exchanges — Prompt-level Usage{RESET}")
     print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
     load_pricing()
@@ -1029,16 +1101,21 @@ def show_prompts(collect_fn, period_name: str | None = None, tool_filter: str | 
     print(f"  Period: {BOLD}{period_label}{RESET}")
     if session_filter:
         print(f"  Session: {BOLD}{session_filter}{RESET}")
+    if project_filter:
+        print(f"  Project: {BOLD}{project_filter}{RESET}")
     print()
 
     all_exchanges, tool_counts = collect_fn(cutoff, tool_filter, cutoff_end)
     if session_filter:
         all_exchanges = [e for e in all_exchanges
                          if session_matches(e.get("session_id"), session_filter)]
+    if project_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if project_matches(e.get("project"), project_filter)]
     if not all_exchanges:
-        if session_filter:
-            print(f"  {YELLOW}No exchanges found for session "
-                  f"'{session_filter}'.{RESET}\n")
+        scope = session_filter or project_filter
+        if scope:
+            print(f"  {YELLOW}No exchanges found for '{scope}'.{RESET}\n")
         else:
             print(f"  {YELLOW}No exchanges found.{RESET}\n")
         return
@@ -1159,10 +1236,11 @@ def tool_target(name: str, inp: dict) -> str:
 
 def show_tool_use(collect_fn, period_name: str | None = None,
                   tool_filter: str | None = None,
-                  session_filter: str | None = None):
+                  session_filter: str | None = None,
+                  project_filter: str | None = None):
     """Chronological timeline of every tool call — which tool, what it
     targeted, and when — grouped by conversation. Claude Code & Codex.
-    `session_filter` narrows to one session (full id or short-handle prefix)."""
+    `session_filter` narrows to one session, `project_filter` to one project."""
     print(f"\n{BOLD} Tool-use Timeline{RESET}")
     print(f"{tstamp()}{DIM}  Scanning exchanges...{RESET}\n")
 
@@ -1174,6 +1252,8 @@ def show_tool_use(collect_fn, period_name: str | None = None,
     print(f"  Period: {BOLD}{period_label}{RESET}")
     if session_filter:
         print(f"  Session: {BOLD}{session_filter}{RESET}")
+    if project_filter:
+        print(f"  Project: {BOLD}{project_filter}{RESET}")
     print()
 
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
@@ -1181,10 +1261,13 @@ def show_tool_use(collect_fn, period_name: str | None = None,
     if session_filter:
         all_exchanges = [e for e in all_exchanges
                          if session_matches(e.get("session_id"), session_filter)]
+    if project_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if project_matches(e.get("project"), project_filter)]
     if not all_exchanges:
-        if session_filter:
-            print(f"  {YELLOW}No tool calls found for session "
-                  f"'{session_filter}'.{RESET}\n")
+        scope = session_filter or project_filter
+        if scope:
+            print(f"  {YELLOW}No tool calls found for '{scope}'.{RESET}\n")
         else:
             print(f"  {YELLOW}No tool calls found "
                   f"(only Claude Code, Codex and OpenCode record them).{RESET}\n")
@@ -2155,10 +2238,12 @@ def _estimate_total_impact(exchanges, region: str | None = None):
 
 
 def show_impact(collect_fn, period_name: str | None = None,
-                tool_filter: str | None = None, region: str | None = None):
+                tool_filter: str | None = None, region: str | None = None,
+                project_filter: str | None = None):
     """Estimate the energy and CO2 (usage phase) of the observed activity,
     using the EcoLogits methodology and model database. Order-of-magnitude.
-    `region` (e.g. eu/world/france) overrides the configured electricity mix."""
+    `region` (e.g. eu/world/france) overrides the configured electricity mix.
+    `project_filter` narrows to one project (substring on the repo path)."""
     from tokstat._ecologits import impact_for, load_ecologits_db
 
     print(f"\n{BOLD} Environmental Impact{RESET}  {DIM}(usage phase, EcoLogits){RESET}")
@@ -2174,6 +2259,9 @@ def show_impact(collect_fn, period_name: str | None = None,
 
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
     all_exchanges = [e for e in all_exchanges if e.get("ts")]
+    if project_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if project_matches(e.get("project"), project_filter)]
     if not all_exchanges:
         print(f"  {YELLOW}No data found.{RESET}\n")
         return
@@ -2588,8 +2676,10 @@ def show_impact(collect_fn, period_name: str | None = None,
 
 def export_conversations(collect_fn, output_path: str,
                          period_name: str | None = None,
-                         tool_filter: str | None = None):
-    """Export all conversations to a JSON file."""
+                         tool_filter: str | None = None,
+                         project_filter: str | None = None):
+    """Export all conversations to a JSON file. `project_filter` narrows to one
+    project (substring on the repo path)."""
     print(f"\n{BOLD} Exporting conversations{RESET}")
     print(f"{tstamp()}{DIM}  Scanning transcripts...{RESET}\n")
     load_pricing()   # so per-exchange cost is computed (not left at 0)
@@ -2603,9 +2693,17 @@ def export_conversations(collect_fn, output_path: str,
     if tool_filter:
         color = TOOL_COLORS.get(tool_filter, "")
         label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
+    if project_filter:
+        label += f"  Project: {BOLD}{project_filter}{RESET}"
     print(label + "\n")
 
     all_exchanges, tool_counts = collect_fn(cutoff, tool_filter, cutoff_end)
+    if project_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if project_matches(e.get("project"), project_filter)]
+        tool_counts = defaultdict(int)
+        for e in all_exchanges:
+            tool_counts[e.get("tool", "?")] += 1
     if not all_exchanges:
         print(f"  {YELLOW}No conversation data found.{RESET}\n")
         return
