@@ -545,7 +545,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                          all_exchanges: list[dict] | None = None,
                          changed_keys: set | None = None,
                          by_session: bool = False, session_limit: int = 0,
-                         project_filter: str | None = None, by_project: bool = False):
+                         project_filter: str | None = None, by_project: bool = False,
+                         session_filter: str | None = None):
     """Print period, project, model, and speed tables from a list of records.
 
     If `all_exchanges` is provided, three extra activity columns are added to
@@ -557,7 +558,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     ◆ marker in their leftmost data column. Used by `tokstat --watch`.
 
     `project_filter` narrows every table to one project (substring on the repo
-    path). `by_project` adds a project → sessions drill-down.
+    path); `session_filter` to one session (id or short handle). `by_project`
+    adds a project → sessions drill-down.
     """
     if project_filter:
         all_records = [r for r in all_records
@@ -567,6 +569,14 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         if all_exchanges is not None:
             all_exchanges = [e for e in all_exchanges
                              if project_matches(e.get("project"), project_filter)]
+    if session_filter:
+        all_records = [r for r in all_records
+                       if session_matches(r.get("session_id"), session_filter)]
+        speed_records = [s for s in speed_records
+                         if session_matches(s.get("session_id"), session_filter)]
+        if all_exchanges is not None:
+            all_exchanges = [e for e in all_exchanges
+                             if session_matches(e.get("session_id"), session_filter)]
     show_activity = all_exchanges is not None
     exchanges = all_exchanges or []
     watching = changed_keys is not None
@@ -2239,11 +2249,13 @@ def _estimate_total_impact(exchanges, region: str | None = None):
 
 def show_impact(collect_fn, period_name: str | None = None,
                 tool_filter: str | None = None, region: str | None = None,
-                project_filter: str | None = None):
+                project_filter: str | None = None,
+                session_filter: str | None = None):
     """Estimate the energy and CO2 (usage phase) of the observed activity,
     using the EcoLogits methodology and model database. Order-of-magnitude.
     `region` (e.g. eu/world/france) overrides the configured electricity mix.
-    `project_filter` narrows to one project (substring on the repo path)."""
+    `project_filter` narrows to one project (substring on the repo path);
+    `session_filter` to one session (id or short handle)."""
     from tokstat._ecologits import impact_for, load_ecologits_db
 
     print(f"\n{BOLD} Environmental Impact{RESET}  {DIM}(usage phase, EcoLogits){RESET}")
@@ -2262,6 +2274,9 @@ def show_impact(collect_fn, period_name: str | None = None,
     if project_filter:
         all_exchanges = [e for e in all_exchanges
                          if project_matches(e.get("project"), project_filter)]
+    if session_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if session_matches(e.get("session_id"), session_filter)]
     if not all_exchanges:
         print(f"  {YELLOW}No data found.{RESET}\n")
         return
@@ -2677,9 +2692,11 @@ def show_impact(collect_fn, period_name: str | None = None,
 def export_conversations(collect_fn, output_path: str,
                          period_name: str | None = None,
                          tool_filter: str | None = None,
-                         project_filter: str | None = None):
+                         project_filter: str | None = None,
+                         session_filter: str | None = None):
     """Export all conversations to a JSON file. `project_filter` narrows to one
-    project (substring on the repo path)."""
+    project (substring on the repo path); `session_filter` to one session (id
+    or short handle)."""
     print(f"\n{BOLD} Exporting conversations{RESET}")
     print(f"{tstamp()}{DIM}  Scanning transcripts...{RESET}\n")
     load_pricing()   # so per-exchange cost is computed (not left at 0)
@@ -2695,12 +2712,18 @@ def export_conversations(collect_fn, output_path: str,
         label += f"  Tool: {color}{BOLD}{tool_filter}{RESET}"
     if project_filter:
         label += f"  Project: {BOLD}{project_filter}{RESET}"
+    if session_filter:
+        label += f"  Session: {BOLD}{session_filter}{RESET}"
     print(label + "\n")
 
     all_exchanges, tool_counts = collect_fn(cutoff, tool_filter, cutoff_end)
     if project_filter:
         all_exchanges = [e for e in all_exchanges
                          if project_matches(e.get("project"), project_filter)]
+    if session_filter:
+        all_exchanges = [e for e in all_exchanges
+                         if session_matches(e.get("session_id"), session_filter)]
+    if project_filter or session_filter:
         tool_counts = defaultdict(int)
         for e in all_exchanges:
             tool_counts[e.get("tool", "?")] += 1

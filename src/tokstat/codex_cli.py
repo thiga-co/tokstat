@@ -97,12 +97,13 @@ def scan_codex() -> list[dict]:
                         if current_effort and current_effort != "medium":
                             model = f"{model} [{current_effort}]"
                         records.append({
-                            "tool":    "Codex",
-                            "model":   model,
-                            "project": project,
-                            "ts":      ts,
+                            "tool":       "Codex",
+                            "model":      model,
+                            "project":    project,
+                            "ts":         ts,
+                            "session_id": jsonl_file.stem,
                             **tokens,
-                            "cost":    compute_cost(tokens, model),
+                            "cost":       compute_cost(tokens, model),
                         })
         except (OSError, IOError):
             continue
@@ -191,12 +192,13 @@ def scan_speed_codex() -> list[dict]:
                         if current_effort and current_effort != "medium":
                             model = f"{model} [{current_effort}]"
                         results.append({
-                            "tool":     "Codex",
-                            "model":    model,
-                            "ts":       tc_ts,
-                            "tokens":   out,
-                            "duration": dt,
-                            "speed":    speed,
+                            "tool":       "Codex",
+                            "model":      model,
+                            "ts":         tc_ts,
+                            "session_id": jsonl_file.stem,
+                            "tokens":     out,
+                            "duration":   dt,
+                            "speed":      speed,
                             "ttft":     ((tc_ts - last_user_ts).total_seconds() - dt
                                          if last_tc_ts is None and last_user_ts else None),
                         })

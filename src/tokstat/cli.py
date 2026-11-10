@@ -91,6 +91,7 @@ def scan_claude_code() -> list[dict]:
                             "model":       model,
                             "project":     rec_project,
                             "ts":          ts,
+                            "session_id":  jsonl_file.stem,
                             "input":       usage.get("input_tokens", 0),
                             "output":      usage.get("output_tokens", 0),
                             "cache_read":  usage.get("cache_read_input_tokens", 0),
@@ -177,13 +178,14 @@ def scan_speed_claude_code() -> list[dict]:
                     if dt < 0.5 or dt > 300:
                         continue
                     results.append({
-                        "tool":     "Claude Code",
-                        "model":    last["model"],
-                        "ts":       last["ts"],
-                        "tokens":   last["output"],
-                        "duration": dt,
-                        "speed":    last["output"] / dt,
-                        "ttft":     ttft if len(assistants) >= 2 else None,
+                        "tool":       "Claude Code",
+                        "model":      last["model"],
+                        "ts":         last["ts"],
+                        "session_id": jsonl_file.stem,
+                        "tokens":     last["output"],
+                        "duration":   dt,
+                        "speed":      last["output"] / dt,
+                        "ttft":       ttft if len(assistants) >= 2 else None,
                     })
             except (OSError, IOError):
                 continue
