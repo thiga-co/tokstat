@@ -1280,7 +1280,8 @@ def show_tool_use(collect_fn, period_name: str | None = None,
             print(f"  {YELLOW}No tool calls found for '{scope}'.{RESET}\n")
         else:
             print(f"  {YELLOW}No tool calls found "
-                  f"(only Claude Code, Codex and OpenCode record them).{RESET}\n")
+                  f"(Claude Code, Codex, OpenCode, Antigravity and GitHub "
+                  f"Copilot record them).{RESET}\n")
         return
 
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))

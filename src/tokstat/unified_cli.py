@@ -56,6 +56,11 @@ from tokstat.antigravity_cli import (
     _collect_all_exchanges as _collect_antigravity,
     _CONV_DIR as _AG_CONV_DIR,
 )
+from tokstat.copilot_cli import (
+    scan_copilot,
+    _collect_all_exchanges as _collect_copilot,
+    _copilot_dbs,
+)
 
 from tokstat._core import (
     BOLD, DIM, RESET, YELLOW, RED,
@@ -82,6 +87,8 @@ _TOOLS = [
      "~/Library/.../Cursor/", None),
     ("Kiro",         scan_kiro,          None,                   _collect_kiro,
      "~/Library/Application Support/Kiro/", None),
+    ("GitHub Copilot", scan_copilot,     None,                   _collect_copilot,
+     "VS Code Copilot Chat store", lambda: bool(_copilot_dbs())),
     ("Gemini CLI",   scan_gemini,        scan_speed_gemini,      _collect_gemini,      "~/.gemini/", None),
     ("Antigravity",  scan_antigravity,   scan_speed_antigravity, _collect_antigravity, "~/.gemini/antigravity-cli/",
      lambda: _path_exists(_AG_CONV_DIR)),
@@ -118,6 +125,8 @@ _TOOL_ALIASES = {
     "codex":  "Codex",       "openai":      "Codex",
     "cursor": "Cursor",
     "kiro":   "Kiro",
+    "copilot": "GitHub Copilot", "github-copilot": "GitHub Copilot",
+    "gh-copilot": "GitHub Copilot", "ghcopilot": "GitHub Copilot",
     "gemini": "Gemini CLI",  "gemini-cli":  "Gemini CLI",
     "antigravity": "Antigravity", "agy": "Antigravity",
     "opencode": "opencode",  "open-code":   "opencode",
@@ -450,6 +459,7 @@ def show_help():
   Codex        ~/.codex/sessions/                           exact tokens
   Cursor       Cursor globalStorage/state.vscdb             exact / no data
   Kiro         Kiro .../workspace-sessions/                 activity only
+  GH Copilot   VS Code Copilot Chat session-store.db        activity only
   Gemini CLI   ~/.gemini/tmp/                               exact tokens
   Antigravity  ~/.gemini/antigravity-cli/                   exact tokens
   opencode     ~/.local/share/opencode/ (opencode.db)       exact tokens
