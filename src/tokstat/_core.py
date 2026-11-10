@@ -430,6 +430,18 @@ def project_matches(project, value: str) -> bool:
     return v in p or v in normalize_project(str(project)).lower()
 
 
+def _filter_exchanges(exchanges: list[dict], project_filter: str | None = None,
+                      session_filter: str | None = None) -> list[dict]:
+    """Apply the --project and/or --session filters to a list of exchanges."""
+    if project_filter:
+        exchanges = [e for e in exchanges
+                     if project_matches(e.get("project"), project_filter)]
+    if session_filter:
+        exchanges = [e for e in exchanges
+                     if session_matches(e.get("session_id"), session_filter)]
+    return exchanges
+
+
 def calc_table_width(headers: list[str], rows: list[list[str]]) -> int:
     widths = [len(h) for h in headers]
     for row in rows:
@@ -1330,7 +1342,8 @@ def show_tool_use(collect_fn, period_name: str | None = None,
                     sorted(tool_counter.items(), key=lambda x: -x[1])[:8])
     print(f"  {DIM}{total_calls} tool calls · {top}{RESET}\n")
 
-def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
+def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str | None = None,
+                   project_filter: str | None = None, session_filter: str | None = None):
     """Detect technical anomalies."""
     print(f"\n{BOLD} Technical Anomaly Detection{RESET}")
     print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
@@ -1351,6 +1364,7 @@ def show_anomalies(collect_fn, period_name: str | None = None, tool_filter: str 
     print(label + "\n")
 
     all_prompts, tool_counts = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_prompts = _filter_exchanges(all_prompts, project_filter, session_filter)
     all_prompts = [p for p in all_prompts if p.get("tokens") and p["ts"]]
 
     if not all_prompts:
@@ -1581,7 +1595,8 @@ def _reco_google(mp: float) -> None:
               f"API for Gemini CLI. {proj}")
 
 
-def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | None = None):
+def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | None = None,
+              project_filter: str | None = None, session_filter: str | None = None):
     """Recommend plan and optimization strategies based on usage patterns."""
     print(f"\n{BOLD} Plan & Optimization Recommendations{RESET}")
     print(f"{tstamp()}{DIM}  Loading pricing from LiteLLM...{RESET}")
@@ -1610,6 +1625,7 @@ def show_plan(collect_fn, period_name: str | None = None, tool_filter: str | Non
     analysis = {}
     for pname, (p_cutoff, p_cutoff_end) in boundaries.items():
         all_exs, _ = collect_fn(p_cutoff, tool_filter, p_cutoff_end)
+        all_exs = _filter_exchanges(all_exs, project_filter, session_filter)
         period_exs = [e for e in all_exs if e.get("tokens") and e["ts"]
                       and (e["tokens"]["input"] > 0 or e["tokens"]["output"] > 0
                            or e.get("cost", 0) > 0)]
@@ -1885,7 +1901,8 @@ def _activity_level(count: int, thresholds: list[int]) -> int:
 
 
 def show_activity(collect_fn, period_name: str | None = None,
-                  tool_filter: str | None = None):
+                  tool_filter: str | None = None,
+                  project_filter: str | None = None, session_filter: str | None = None):
     """Render a GitHub-style contribution calendar of activity over the period.
 
     Cells are colored by the number of prompts per day; the summary reports
@@ -1911,6 +1928,7 @@ def show_activity(collect_fn, period_name: str | None = None,
     from datetime import date as _date, timedelta as _td
 
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_exchanges = _filter_exchanges(all_exchanges, project_filter, session_filter)
     all_exchanges = [e for e in all_exchanges if e.get("ts")]
     if not all_exchanges:
         print(f"  {YELLOW}No activity found.{RESET}\n")
@@ -2015,7 +2033,8 @@ def show_activity(collect_fn, period_name: str | None = None,
 # ─── Shared display: total ─────────────────────────────────────────────────
 
 def show_total(collect_fn, period_name: str | None = None,
-               tool_filter: str | None = None):
+               tool_filter: str | None = None,
+               project_filter: str | None = None, session_filter: str | None = None):
     """Compact totals: tokens and cost for the selected period/tool, plus the
     actual date span covered by the data and a per-tool breakdown."""
     print(f"\n{BOLD} Total{RESET}")
@@ -2030,6 +2049,7 @@ def show_total(collect_fn, period_name: str | None = None,
         return
 
     all_exchanges, _ = collect_fn(cutoff, tool_filter, cutoff_end)
+    all_exchanges = _filter_exchanges(all_exchanges, project_filter, session_filter)
     all_exchanges = [e for e in all_exchanges if e.get("ts")]
     if not all_exchanges:
         print(f"  {YELLOW}No data found.{RESET}\n")

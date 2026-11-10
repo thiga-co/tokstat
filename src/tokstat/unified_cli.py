@@ -448,10 +448,10 @@ def show_help():
                        "6 months", year   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, antigravity,
                        opencode, claude.ai, chatgpt (default: all)
-  --session <id>       scope the overview, --prompts, --tool-use, --impact and
-                       --export to one session (full id or the short 8-char
-                       handle, e.g. 019f6a75). Claude Code + Codex.
-  --project <name>     scope every view to one project (substring on the repo
+  --session <id>       scope any view to one session — full id or the short
+                       8-char handle, e.g. 019f6a75 (Claude Code, Codex,
+                       GitHub Copilot)
+  --project <name>     scope any view to one project (substring on the repo
                        path, e.g. --project tokstat)
 
 {BOLD}TOOLS COVERED{RESET}
@@ -515,11 +515,14 @@ def cli():
                      session_filter=_arg_value(args, "--session"),
                      project_filter=project)
     elif "--anomalies" in args:
-        show_anomalies(_collect_all_exchanges, period, tool)
+        show_anomalies(_collect_all_exchanges, period, tool,
+                       project_filter=project, session_filter=session)
     elif "--activity" in args:
-        show_activity(_collect_all_exchanges, period, tool)
+        show_activity(_collect_all_exchanges, period, tool,
+                      project_filter=project, session_filter=session)
     elif "--total" in args:
-        show_total(_collect_all_exchanges, period, tool)
+        show_total(_collect_all_exchanges, period, tool,
+                   project_filter=project, session_filter=session)
     elif "--impact" in args:
         show_impact(_collect_all_exchanges, period, tool, _parse_region(args),
                     project_filter=project, session_filter=session)
@@ -528,7 +531,8 @@ def cli():
                       session_filter=_arg_value(args, "--session"),
                       project_filter=project)
     elif "--plan" in args:
-        show_plan(_collect_all_exchanges, period, tool)
+        show_plan(_collect_all_exchanges, period, tool,
+                  project_filter=project, session_filter=session)
     elif "--export" in args:
         idx = args.index("--export")
         out = "conversations.json"
