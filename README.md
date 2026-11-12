@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/pypi/l/tokstat.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/tokstat.svg)](https://pypi.org/project/tokstat/)
 
-**One command to see how many tokens — and how much money — your AI coding assistants are burning.**
+**One command to see what your AI coding assistants really cost you — in tokens, money, and carbon.**
 
-`tokstat` scans the **local** data of every assistant you use — Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini CLI, Antigravity, opencode, plus claude.ai / ChatGPT web exports — estimates cost with live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints clear, color-coded terminal tables. Zero dependencies, nothing leaves your machine.
+`tokstat` scans the **local** data of every assistant you use — Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini CLI, Antigravity, opencode, plus claude.ai / ChatGPT web exports — and turns it into clear, color-coded terminal tables: **cost** with live [LiteLLM](https://github.com/BerriAI/litellm) pricing, an **electricity & carbon** footprint, a browsable **history of every prompt, response and tool call** to audit sessions and projects, and **plan & optimization tips**. Zero dependencies, nothing leaves your machine.
 
 ```sh
 pip install tokstat     # Python 3.7+, no dependencies
