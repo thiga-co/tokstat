@@ -16,6 +16,13 @@ tokstat                 # aggregated overview across all tools
 
 > **Accuracy.** On our test account, tokstat's Claude Code estimate matched Anthropic billing within ~5% over 30 days. It varies by tool: Claude Code, Codex, Antigravity, Gemini CLI and opencode read **exact** token counts; Cursor reads exact counts where recorded and flags the rest `⚠ no data`; **Kiro and GitHub Copilot expose no token counts (activity only)**; web exports are estimated from text length. Estimates only — see [Tools](docs/tools.md) for per-tool accuracy.
 
+## What it helps you do
+
+- 💰 **Estimate cost** — spend per tool, model, project and session, with live pricing. → [`--total`](docs/modes.md#--total--compact-totals), [`--plan`](docs/modes.md#--plan--plan--optimization-recommendations)
+- 🌱 **Estimate impact** — electricity (kWh) and carbon (CO₂e) footprint of your usage. → [`--impact`](docs/impact.md)
+- 🔎 **Audit sessions & projects** — browse the full prompt/response history and tool-call timeline, scoped to any conversation or repo. → [`--prompts`](docs/modes.md#--prompts--per-exchange-detail), [`--tool-use`](docs/modes.md#--tool-use--tool-call-timeline), [`--export`](docs/modes.md#--export--conversation-export)
+- 🛠️ **Optimize** — technical anomaly detection and per-provider plan recommendations. → [`--anomalies`](docs/modes.md#--anomalies--technical-anomaly-detection), [`--plan`](docs/modes.md#--plan--plan--optimization-recommendations)
+
 ---
 
 ## Quickstart
