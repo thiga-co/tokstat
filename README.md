@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/pypi/l/tokstat.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/tokstat.svg)](https://pypi.org/project/tokstat/)
 
-**One command to see what your AI coding assistants really cost you — in tokens, money, and carbon — and how they behave.**
+**One command to see what your AI coding assistants really cost you — in tokens, money, and carbon — and how they behave, down to the prompts they send themselves.**
 
 `tokstat` scans the **local** data of every assistant you use — Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini CLI, Antigravity, opencode, plus claude.ai / ChatGPT web exports — and turns it into clear, color-coded terminal tables: **cost** with live [LiteLLM](https://github.com/BerriAI/litellm) pricing, an **electricity & carbon** footprint, a browsable **history of every prompt, response and tool call** to audit sessions and projects, and **plan & optimization tips**. Zero dependencies, nothing leaves your machine.
 
@@ -20,7 +20,7 @@ tokstat                 # aggregated overview across all tools
 
 - 💰 **Estimate cost** — spend per tool, model, project and session, with live pricing. → [`--total`](docs/modes.md#--total--compact-totals), [`--plan`](docs/modes.md#--plan--plan--optimization-recommendations)
 - 🌱 **Estimate impact** — electricity (kWh) and carbon (CO₂e) footprint of your usage. → [`--impact`](docs/impact.md)
-- 🔎 **Audit sessions & projects** — browse the full prompt/response history and tool-call timeline, scoped to any conversation or repo. → [`--prompts`](docs/modes.md#--prompts--per-exchange-detail), [`--tool-use`](docs/modes.md#--tool-use--tool-call-timeline), [`--export`](docs/modes.md#--export--conversation-export)
+- 🔎 **Audit sessions & projects** — browse the full prompt/response history and tool-call timeline, including the prompts agents send **themselves** (sub-agent hand-offs, inter-session messages, the tool loop) — scoped to any conversation or repo. → [`--prompts`](docs/modes.md#--prompts--per-exchange-detail), [`--tool-use`](docs/modes.md#--tool-use--tool-call-timeline), [`--export`](docs/modes.md#--export--conversation-export)
 - 🛠️ **Optimize** — technical anomaly detection and per-provider plan recommendations. → [`--anomalies`](docs/modes.md#--anomalies--technical-anomaly-detection), [`--plan`](docs/modes.md#--plan--plan--optimization-recommendations)
 
 ---
