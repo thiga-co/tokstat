@@ -61,6 +61,11 @@ from tokstat.copilot_cli import (
     _collect_all_exchanges as _collect_copilot,
     _copilot_dbs,
 )
+from tokstat.pi_cli import (
+    scan_pi, scan_speed_pi,
+    _collect_all_exchanges as _collect_pi,
+    PI_SESSIONS as _PI_SESSIONS,
+)
 
 from tokstat._core import (
     BOLD, DIM, RESET, YELLOW, RED,
@@ -95,6 +100,8 @@ _TOOLS = [
     ("opencode",     scan_opencode,      scan_speed_opencode,    _collect_opencode,
      "~/.local/share/opencode/",
      lambda: _path_exists(_OPENCODE_DB) or _path_exists(_OPENCODE_MSG_BASE)),
+    ("pi",           scan_pi,            scan_speed_pi,          _collect_pi,
+     "~/.pi/agent/sessions/", lambda: _path_exists(_PI_SESSIONS)),
     ("Claude.ai",    scan_claude_web,    None,                   _collect_claude_web,
      "claude.ai (web)", None),
     ("ChatGPT",      scan_chatgpt_web,   None,                   _collect_chatgpt_web,
@@ -130,6 +137,7 @@ _TOOL_ALIASES = {
     "gemini": "Gemini CLI",  "gemini-cli":  "Gemini CLI",
     "antigravity": "Antigravity", "agy": "Antigravity",
     "opencode": "opencode",  "open-code":   "opencode",
+    "pi": "pi",              "pi-coding-agent": "pi",
     "claude.ai": "Claude.ai", "claude-web": "Claude.ai", "claudeai": "Claude.ai",
     "chatgpt":   "ChatGPT",   "chatgpt.com": "ChatGPT",  "chatgpt-web": "ChatGPT",
 }
@@ -447,10 +455,10 @@ def show_help():
                        "30 days", "1 month", "2 months", "3 months",
                        "6 months", year   (partial match works; default: today)
   --tool   <name>      claude, codex, cursor, kiro, gemini, antigravity,
-                       opencode, claude.ai, chatgpt (default: all)
+                       opencode, pi, claude.ai, chatgpt (default: all)
   --session <id>       scope any view to one session — full id or the short
                        8-char handle, e.g. 019f6a75 (Claude Code, Codex,
-                       GitHub Copilot)
+                       GitHub Copilot, pi)
   --project <name>     scope any view to one project (substring on the repo
                        path, e.g. --project tokstat)
 
@@ -463,13 +471,14 @@ def show_help():
   Gemini CLI   ~/.gemini/tmp/                               exact tokens
   Antigravity  ~/.gemini/antigravity-cli/                   exact tokens
   opencode     ~/.local/share/opencode/ (opencode.db)       exact tokens
+  pi           ~/.pi/agent/sessions/                        exact tokens
   Claude.ai    --import of official export (claude-web-token-usage)
   ChatGPT      --import of official export (chatgpt-web-token-usage)
 
 {BOLD}SEE ALSO{RESET}
   claude-token-usage, codex-token-usage, cursor-token-usage,
   kiro-token-usage, gemini-token-usage, antigravity-token-usage,
-  opencode-token-usage, claude-web-token-usage,
+  opencode-token-usage, pi-token-usage, claude-web-token-usage,
   chatgpt-web-token-usage — single-tool variants.
 """)
 

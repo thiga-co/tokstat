@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokstat"
-version = "1.28.0"
-description = "Aggregate and analyze AI coding assistant token consumption (Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini, Antigravity, opencode, web exports)"
+version = "1.29.0"
+description = "Aggregate and analyze AI coding assistant token consumption (Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini, Antigravity, opencode, pi, web exports)"
 readme = "README.md"
 license = "MIT AND MPL-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -41,6 +41,7 @@ gemini-token-usage = "tokstat.gemini_cli:cli"
 antigravity-token-usage = "tokstat.antigravity_cli:cli"
 agy-token-usage = "tokstat.antigravity_cli:cli"
 opencode-token-usage = "tokstat.opencode_cli:cli"
+pi-token-usage = "tokstat.pi_cli:cli"
 claude-web-token-usage = "tokstat.claude_web_cli:cli"
 chatgpt-web-token-usage = "tokstat.chatgpt_web_cli:cli"
 

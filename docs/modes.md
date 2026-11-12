@@ -66,7 +66,7 @@ claude-token-usage -p --period "7 days"
 ## `--tool-use` — tool-call timeline
 
 Chronological list of every tool call (Claude Code, Codex, opencode, Antigravity,
-GitHub Copilot), grouped by conversation: the tool, what it targeted (file for
+GitHub Copilot, pi), grouped by conversation: the tool, what it targeted (file for
 Read/Edit/Write, command for Bash/exec, pattern/query for search) and the time it
 ran. Failed calls are marked `✗`. Filterable by `--period` / `--tool`, and by
 **`--session <id>`** to scope to one conversation (full id or the short handle
@@ -192,12 +192,12 @@ claude-token-usage --plan --period all
 Exports all exchanges to a JSON file. Each entry carries its `session` (the
 source transcript id), `cwd` (the working directory the session ran in) and
 `worktree` (the git main worktree that `cwd` resolves to — same as `cwd` unless
-the session ran in a linked worktree). For **Claude Code and Codex** it also
-carries `context_tokens` (the peak context size the exchange reached) and
-`compactions` (each compaction event, with `pre_tokens` → `post_tokens`; Claude
-Code also gives `trigger` auto/manual and duration, Codex leaves those `null`);
-these same signals appear as the **Context** and **Compaction** columns in
-`--prompts`.
+the session ran in a linked worktree). For **Claude Code, Codex and pi** it also
+carries `context_tokens` (the peak context size the exchange reached). **Claude
+Code and Codex** additionally carry `compactions` (each compaction event, with
+`pre_tokens` → `post_tokens`; Claude Code also gives `trigger` auto/manual and
+duration, Codex leaves those `null`; pi records no compaction events); these same
+signals appear as the **Context** and **Compaction** columns in `--prompts`.
 
 ```sh
 claude-token-usage --export

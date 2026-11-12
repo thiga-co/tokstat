@@ -7,14 +7,14 @@
 
 **One command to see what your AI coding assistants really cost you — in tokens, money, and carbon — and how they work internally: prompts, responses, tool calls, and the internal prompts agents send themselves.**
 
-`tokstat` scans the **local** data of every assistant you use — Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini CLI, Antigravity, opencode, plus claude.ai / ChatGPT web exports — and turns it into clear, color-coded terminal tables: **cost** with live [LiteLLM](https://github.com/BerriAI/litellm) pricing, an **electricity & carbon** footprint, a browsable **history of every prompt, response and tool call** to audit sessions and projects, and **plan & optimization tips**. Zero dependencies, nothing leaves your machine.
+`tokstat` scans the **local** data of every assistant you use — Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini CLI, Antigravity, opencode, pi, plus claude.ai / ChatGPT web exports — and turns it into clear, color-coded terminal tables: **cost** with live [LiteLLM](https://github.com/BerriAI/litellm) pricing, an **electricity & carbon** footprint, a browsable **history of every prompt, response and tool call** to audit sessions and projects, and **plan & optimization tips**. Zero dependencies, nothing leaves your machine.
 
 ```sh
 pip install tokstat     # Python 3.7+, no dependencies
 tokstat                 # aggregated overview across all tools
 ```
 
-> **Accuracy.** On our test account, tokstat's Claude Code estimate matched Anthropic billing within ~5% over 30 days. It varies by tool: Claude Code, Codex, Antigravity, Gemini CLI and opencode read **exact** token counts; Cursor reads exact counts where recorded and flags the rest `⚠ no data`; **Kiro and GitHub Copilot expose no token counts (activity only)**; web exports are estimated from text length. Estimates only — see [Tools](docs/tools.md) for per-tool accuracy.
+> **Accuracy.** On our test account, tokstat's Claude Code estimate matched Anthropic billing within ~5% over 30 days. It varies by tool: Claude Code, Codex, Antigravity, Gemini CLI, opencode and pi read **exact** token counts; Cursor reads exact counts where recorded and flags the rest `⚠ no data`; **Kiro and GitHub Copilot expose no token counts (activity only)**; web exports are estimated from text length. Estimates only — see [Tools](docs/tools.md) for per-tool accuracy.
 
 ## What it helps you do
 
@@ -50,6 +50,7 @@ See [Filters](docs/filters.md).
 | Codex (OpenAI) | `codex-token-usage` | ✓ exact |
 | Gemini CLI | `gemini-token-usage` | ✓ exact |
 | opencode | `opencode-token-usage` | ✓ exact |
+| pi | `pi-token-usage` | ✓ exact |
 | Antigravity | `antigravity-token-usage` | ✓ exact |
 | Cursor | `cursor-token-usage` | exact / `⚠ no data` |
 | Kiro | `kiro-token-usage` | activity only |
