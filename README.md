@@ -2,7 +2,7 @@
 
 CLI toolkit to aggregate and analyze AI coding assistant token consumption. Each tool scans local data, estimates costs using live [LiteLLM](https://github.com/BerriAI/litellm) pricing, and prints color-coded terminal tables.
 
-> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Antigravity, Gemini CLI and opencode read exact token counts; Cursor reads exact counts where they're recorded locally and flags the rest as `⚠ no data`; Kiro exposes no token counts at all (activity only); the web exports are estimated from text length. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
+> On our test account, Tokstat’s estimation of Claude Code usage matched Anthropic billing with approximately 95% accuracy over 30 days. Accuracy varies by tool — Claude Code, Codex, Antigravity, Gemini CLI and opencode read exact token counts; Cursor reads exact counts where they're recorded locally and flags the rest as `⚠ no data`; Kiro and GitHub Copilot expose no token counts at all (activity only); the web exports are estimated from text length. Tokstat provides estimates only, and we disclaim any responsibility or liability for differences between estimated and actual billing.
 
 ## Changelog
 
@@ -59,6 +59,7 @@ Requires Python 3.7+. No dependencies. MIT (one MPL-2.0 file — see [License](#
 | `antigravity-token-usage` / `agy-token-usage` | Antigravity | `~/.gemini/antigravity-cli/` | ✓ exact | ✓ | experimental |
 | `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | n.a. | n.a. | stable |
 | `kiro-token-usage` | Kiro | `Kiro/.../workspace-sessions/` | n.a. | n.a. | stable |
+| `copilot-token-usage` | GitHub Copilot (Chat) | VS Code `github.copilot-chat/session-store.db` | n.a. | n.a. | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
 | `claude-web-token-usage` | claude.ai (web export) | `--import` of official ZIP | ~ estimated | ~ | experimental |
@@ -71,6 +72,8 @@ Requires Python 3.7+. No dependencies. MIT (one MPL-2.0 file — see [License](#
 > **Cursor note:** tokstat reads Cursor's local SQLite store (`globalStorage/state.vscdb`). Some sessions have token counts recorded locally — these are reported exactly (`[exact]`). Others store no token counts (the local values are zero); those are tagged `[no tokens]`, counted as activity (prompts/turns), and never estimated — their cost shows `⚠ no data`. For authoritative totals use the [Cursor dashboard](https://cursor.com/dashboard).
 >
 > **Kiro note:** Kiro stores no usable token counts locally (its token log is always zero), so `kiro-token-usage` reports **activity only** — prompts and turns — with tokens and cost left blank. It does not estimate.
+>
+> **GitHub Copilot note:** `copilot-token-usage` reads the VS Code Copilot **Chat** session store (across Code / Insiders / VSCodium / Cursor). Copilot is a flat-rate subscription and records no token counts, model or cost locally (premium requests are metered only on GitHub's cloud billing), so it reports **activity only** (`[no tokens]`) — prompts, turns, projects and the tool/file timeline. Inline completions leave no local trace and aren't covered.
 >
 > **No-data flag:** any row whose tool/session has activity but no reliable local token data shows `⚠ no data` in the cost column (instead of a misleading `$0.00`). This is normal for Kiro and recent Cursor sessions.
 
@@ -141,11 +144,20 @@ Changed rows are flagged with a ◆ between refreshes; press Ctrl+C to stop.
 
 ### Default — aggregated overview
 
+Consumption tables by period, by project and by model.
+
 ```sh
-claude-token-usage
-claude-token-usage --period all
+tokstat
+tokstat --period all
 codex-token-usage --period "7 days"
 cursor-token-usage --period "30 days"
+```
+
+Two optional breakdowns can be added to the overview:
+
+```sh
+tokstat --by-session      # + a per-session table (heaviest conversations by cost)
+tokstat --by-project      # + a project → sessions drill-down
 ```
 
 ### `--prompts` — per-exchange detail
@@ -476,6 +488,28 @@ All modes support `--period`:
 With `--period all`, the **CONSUMPTION BY PERIOD** table shows every window from
 *Last hour* through *Last year*, plus a **Forever** row aggregating the entire
 available history.
+
+On the unified `tokstat` command, three scoping filters apply to **every** mode
+(overview, `--prompts`, `--tool-use`, `--impact`, `--export`, `--anomalies`,
+`--plan`, `--activity`, `--total`):
+
+```sh
+--tool    <name>     claude, codex, cursor, kiro, copilot, gemini, antigravity,
+                     opencode, claude.ai, chatgpt   (default: all)
+--project <name>     one project — case-insensitive substring on the repo path,
+                     e.g. --project tokstat   (all tools)
+--session <id>       one conversation — full session id or the short 8-char
+                     handle, e.g. 019f6a75   (Claude Code, Codex, GitHub Copilot;
+                     other tools carry no session id on their records)
+```
+
+They combine freely, e.g.:
+
+```sh
+tokstat --impact  --session 019f6a75
+tokstat --prompts --tool copilot --project benchmark-slm
+tokstat --export out.json --project tokstat --period "30 days"
+```
 
 ## Pricing
 
