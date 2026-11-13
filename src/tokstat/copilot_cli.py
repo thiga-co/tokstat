@@ -16,12 +16,14 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from tokstat.cli import __version__
 
@@ -71,6 +73,178 @@ def _copilot_dbs() -> list[Path]:
 def _db_connect(db: Path) -> sqlite3.Connection:
     """Open a Copilot session store read-only (WAL-safe)."""
     return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+
+
+def _vscode_user_dirs() -> list[Path]:
+    """Every VS Code (and variant) `User` directory on macOS / Linux / Windows."""
+    home = Path.home()
+    roots = [
+        home / "Library" / "Application Support",   # macOS
+        home / ".config",                           # Linux
+    ]
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roots.append(Path(appdata))                 # Windows
+    dirs: list[Path] = []
+    for root in roots:
+        try:
+            if root.exists():
+                dirs.extend(root.glob("*/User"))
+        except OSError:
+            continue
+    return dirs
+
+
+def _vscode_chat_files() -> list[tuple[Path, Path | None]]:
+    """Native VS Code chat session files (the built-in Chat / Copilot agent, a
+    separate store from the Copilot extension's session-store.db):
+    `…/User/workspaceStorage/<hash>/chatSessions/*.json` (with its workspace dir)
+    and `…/User/globalStorage/emptyWindowChatSessions/*.json` (no workspace).
+    Returns (json_path, workspace_dir_or_None)."""
+    files: list[tuple[Path, Path | None]] = []
+    for user in _vscode_user_dirs():
+        try:
+            for f in (user / "workspaceStorage").glob("*/chatSessions/*.json"):
+                files.append((f, f.parent.parent))   # <hash>/ dir
+        except OSError:
+            pass
+        try:
+            for f in (user / "globalStorage" / "emptyWindowChatSessions").glob("*.json"):
+                files.append((f, None))
+        except OSError:
+            pass
+    return files
+
+
+_WS_FOLDER_CACHE: dict[str, str] = {}
+
+
+def _workspace_folder(ws_dir: Path | None) -> str:
+    """Resolve a workspaceStorage/<hash> dir to its project path, via its
+    workspace.json `folder` file-URI. Cached; 'unknown' when absent."""
+    if ws_dir is None:
+        return "unknown"
+    key = str(ws_dir)
+    if key in _WS_FOLDER_CACHE:
+        return _WS_FOLDER_CACHE[key]
+    folder = "unknown"
+    try:
+        meta = json.loads((ws_dir / "workspace.json").read_text(errors="replace"))
+        uri = meta.get("folder") or meta.get("workspace") or ""
+        if uri.startswith("file://"):
+            folder = unquote(urlparse(uri).path) or "unknown"
+        elif uri:
+            folder = uri
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    _WS_FOLDER_CACHE[key] = folder
+    return folder
+
+
+def _ts_from_ms(ms) -> datetime | None:
+    """VS Code native-chat timestamps are epoch milliseconds."""
+    if not ms:
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    except (ValueError, OSError, OverflowError, TypeError):
+        return None
+
+
+def _vscode_part_text(part) -> str:
+    """Prose text from a response part (MarkdownString `.value`, or a
+    markdownContent part's `.content.value`)."""
+    if not isinstance(part, dict):
+        return ""
+    v = part.get("value")
+    if isinstance(v, str):
+        return v
+    content = part.get("content")
+    if isinstance(content, dict) and isinstance(content.get("value"), str):
+        return content["value"]
+    return ""
+
+
+def _extract_exchanges_vscode_chat() -> list[dict]:
+    """One exchange per request in a native VS Code chat session. Activity only
+    (no token counts, like the Copilot extension). Captures the prompt, the
+    assistant text, and any tool invocations in the response."""
+    exchanges: list[dict] = []
+    for path, ws_dir in _vscode_chat_files():
+        try:
+            data = json.loads(path.read_text(errors="replace"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        requests = data.get("requests") or []
+        if not requests:
+            continue
+        project = _workspace_folder(ws_dir)
+        session_id = data.get("sessionId") or path.stem
+        session_fallback_ts = (_ts_from_ms(data.get("lastMessageDate"))
+                               or _ts_from_ms(data.get("creationDate")))
+        for req in requests:
+            if not isinstance(req, dict):
+                continue
+            msg = req.get("message") or {}
+            user_text = (msg.get("text") or "").strip()
+            if not user_text and isinstance(msg.get("parts"), list):
+                user_text = " ".join(
+                    p.get("text", "") for p in msg["parts"]
+                    if isinstance(p, dict) and p.get("text")).strip()
+            ts = _ts_from_ms(req.get("timestamp")) or session_fallback_ts
+            if ts is None:
+                continue
+
+            assistant_texts: list[str] = []
+            tool_calls: list[dict] = []
+            tools_used: dict[str, int] = defaultdict(int)
+            for part in (req.get("response") or []):
+                if not isinstance(part, dict):
+                    continue
+                kind = str(part.get("kind") or "")
+                if "tool" in kind.lower():
+                    name = (part.get("toolId") or part.get("toolName")
+                            or part.get("toolSpecificData", {}).get("kind")
+                            if isinstance(part.get("toolSpecificData"), dict)
+                            else None) or part.get("toolId") or "tool"
+                    inv = part.get("invocationMessage")
+                    target = inv.get("value") if isinstance(inv, dict) else (inv or "")
+                    call = {"name": str(name), "target": str(target or ""),
+                            "error": bool(part.get("isError")), "ts": ts}
+                    tool_calls.append(call)
+                    tools_used[call["name"]] += 1
+                else:
+                    t = _vscode_part_text(part).strip()
+                    if t:
+                        assistant_texts.append(t)
+
+            exchanges.append({
+                "session_id":      session_id,
+                "user_text":       user_text,
+                "assistant_texts": assistant_texts,
+                "tool_errors":     [],
+                "tools_used":      tools_used,
+                "tool_calls":      tool_calls,
+                "num_turns":       1,
+                "model":           _MODEL,
+                "project":         project,
+                "ts":              ts,
+                "tokens":          {"input": 0, "output": 0,
+                                    "cache_read": 0, "cache_write": 0},
+                "cost":            0.0,
+            })
+    return exchanges
+
+
+def _all_copilot_exchanges() -> list[dict]:
+    """Copilot Chat activity from both stores: the Copilot extension's
+    session-store.db and VS Code's native chat session files."""
+    return _extract_exchanges_copilot() + _extract_exchanges_vscode_chat()
+
+
+def _copilot_present() -> bool:
+    """True when either Copilot store has data on disk."""
+    return bool(_copilot_dbs()) or bool(_vscode_chat_files())
 
 
 def _parse_ts(value) -> datetime | None:
@@ -166,7 +340,7 @@ def scan_copilot() -> list[dict]:
     """One record per Copilot Chat turn. No token counts are available, so
     token/cost are left at 0 (activity only)."""
     records = []
-    for ex in _extract_exchanges_copilot():
+    for ex in _all_copilot_exchanges():
         if ex["ts"] is None:
             continue
         records.append({
@@ -202,7 +376,7 @@ def _collect_all_exchanges(cutoff: datetime, tool_filter: str | None = None,
             all_exchanges.extend(filtered)
             tool_counts[tool_name] = tool_counts.get(tool_name, 0) + len(filtered)
 
-    _add(TOOL_NAME, _extract_exchanges_copilot())
+    _add(TOOL_NAME, _all_copilot_exchanges())
     _warm_worktree_cache(set(e.get("project") or "unknown" for e in all_exchanges))
     return all_exchanges, tool_counts
 
@@ -223,7 +397,7 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
         print(f"  {RED}{e}{RESET}\n")
         return
 
-    if not _copilot_dbs():
+    if not _copilot_present():
         print(f"  {DIM}GitHub Copilot Chat session store not found.{RESET}\n")
         return
 

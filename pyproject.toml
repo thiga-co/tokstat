@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokstat"
-version = "1.30.0"
+version = "1.31.0"
 description = "Aggregate and analyze AI coding assistant token consumption (Claude Code, Codex, Cursor, Kiro, GitHub Copilot, Gemini, Antigravity, opencode, pi, Qwen Code, web exports)"
 readme = "README.md"
 license = "MIT AND MPL-2.0"

@@ -59,7 +59,7 @@ from tokstat.antigravity_cli import (
 from tokstat.copilot_cli import (
     scan_copilot,
     _collect_all_exchanges as _collect_copilot,
-    _copilot_dbs,
+    _copilot_present,
 )
 from tokstat.pi_cli import (
     scan_pi, scan_speed_pi,
@@ -98,7 +98,7 @@ _TOOLS = [
     ("Kiro",         scan_kiro,          None,                   _collect_kiro,
      "~/Library/Application Support/Kiro/", None),
     ("GitHub Copilot", scan_copilot,     None,                   _collect_copilot,
-     "VS Code Copilot Chat store", lambda: bool(_copilot_dbs())),
+     "VS Code Copilot Chat store", _copilot_present),
     ("Gemini CLI",   scan_gemini,        scan_speed_gemini,      _collect_gemini,      "~/.gemini/", None),
     ("Antigravity",  scan_antigravity,   scan_speed_antigravity, _collect_antigravity, "~/.gemini/antigravity-cli/",
      lambda: _path_exists(_AG_CONV_DIR)),
