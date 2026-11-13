@@ -66,7 +66,7 @@ claude-token-usage -p --period "7 days"
 ## `--tool-use` — tool-call timeline
 
 Chronological list of every tool call (Claude Code, Codex, opencode, Antigravity,
-GitHub Copilot, pi, Qwen Code), grouped by conversation: the tool, what it targeted (file for
+GitHub Copilot, Copilot CLI, pi, Qwen Code), grouped by conversation: the tool, what it targeted (file for
 Read/Edit/Write, command for Bash/exec, pattern/query for search) and the time it
 ran. Failed calls are marked `✗`. Filterable by `--period` / `--tool`, and by
 **`--session <id>`** to scope to one conversation (full id or the short handle

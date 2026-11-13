@@ -23,13 +23,13 @@ On the unified `tokstat` command, three scoping filters apply to **every** mode
 `--plan`, `--activity`, `--total`):
 
 ```sh
---tool    <name>     claude, codex, cursor, kiro, copilot, gemini, antigravity,
-                     opencode, pi, qwen, claude.ai, chatgpt   (default: all)
+--tool    <name>     claude, codex, cursor, kiro, copilot, copilot-cli, gemini,
+                     antigravity, opencode, pi, qwen, claude.ai, chatgpt   (default: all)
 --project <name>     one project — case-insensitive substring on the repo path,
                      e.g. --project tokstat   (all tools)
 --session <id>       one conversation — full session id or the short 8-char
                      handle, e.g. 019f6a75   (Claude Code, Codex, GitHub Copilot,
-                     pi, Qwen Code; other tools carry no session id on their records)
+                     Copilot CLI, pi, Qwen Code; other tools carry no session id)
 ```
 
 They combine freely, e.g.:

@@ -71,6 +71,11 @@ from tokstat.qwen_cli import (
     _collect_all_exchanges as _collect_qwen,
     QWEN_PROJECTS as _QWEN_PROJECTS,
 )
+from tokstat.copilotcli_cli import (
+    scan_copilotcli, scan_speed_copilotcli,
+    _collect_all_exchanges as _collect_copilotcli,
+    COPILOT_CLI_DB as _COPILOT_CLI_DB,
+)
 
 from tokstat._core import (
     BOLD, DIM, RESET, YELLOW, RED,
@@ -109,6 +114,8 @@ _TOOLS = [
      "~/.pi/agent/sessions/", lambda: _path_exists(_PI_SESSIONS)),
     ("Qwen Code",    scan_qwen,          scan_speed_qwen,        _collect_qwen,
      "~/.qwen/projects/", lambda: _path_exists(_QWEN_PROJECTS)),
+    ("Copilot CLI",  scan_copilotcli,    scan_speed_copilotcli,  _collect_copilotcli,
+     "~/.copilot/session-store.db", lambda: _path_exists(_COPILOT_CLI_DB)),
     ("Claude.ai",    scan_claude_web,    None,                   _collect_claude_web,
      "claude.ai (web)", None),
     ("ChatGPT",      scan_chatgpt_web,   None,                   _collect_chatgpt_web,
@@ -141,6 +148,8 @@ _TOOL_ALIASES = {
     "kiro":   "Kiro",
     "copilot": "GitHub Copilot", "github-copilot": "GitHub Copilot",
     "gh-copilot": "GitHub Copilot", "ghcopilot": "GitHub Copilot",
+    "copilot-cli": "Copilot CLI", "copilotcli": "Copilot CLI",
+    "gh-copilot-cli": "Copilot CLI",
     "gemini": "Gemini CLI",  "gemini-cli":  "Gemini CLI",
     "antigravity": "Antigravity", "agy": "Antigravity",
     "opencode": "opencode",  "open-code":   "opencode",
@@ -462,11 +471,11 @@ def show_help():
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days",
                        "30 days", "1 month", "2 months", "3 months",
                        "6 months", year   (partial match works; default: today)
-  --tool   <name>      claude, codex, cursor, kiro, gemini, antigravity,
-                       opencode, pi, qwen, claude.ai, chatgpt (default: all)
+  --tool   <name>      claude, codex, cursor, kiro, copilot, copilot-cli, gemini,
+                       antigravity, opencode, pi, qwen, claude.ai, chatgpt (default: all)
   --session <id>       scope any view to one session — full id or the short
                        8-char handle, e.g. 019f6a75 (Claude Code, Codex,
-                       GitHub Copilot, pi, Qwen Code)
+                       GitHub Copilot, Copilot CLI, pi, Qwen Code)
   --project <name>     scope any view to one project (substring on the repo
                        path, e.g. --project tokstat)
 
@@ -475,7 +484,8 @@ def show_help():
   Codex        ~/.codex/sessions/                           exact tokens
   Cursor       Cursor globalStorage/state.vscdb             exact / no data
   Kiro         Kiro .../workspace-sessions/                 activity only
-  GH Copilot   VS Code Copilot Chat session-store.db        activity only
+  GH Copilot   VS Code Copilot Chat + native chat           activity only
+  Copilot CLI  ~/.copilot/session-store.db                  exact tokens
   Gemini CLI   ~/.gemini/tmp/                               exact tokens
   Antigravity  ~/.gemini/antigravity-cli/                   exact tokens
   opencode     ~/.local/share/opencode/ (opencode.db)       exact tokens
@@ -488,7 +498,8 @@ def show_help():
   claude-token-usage, codex-token-usage, cursor-token-usage,
   kiro-token-usage, gemini-token-usage, antigravity-token-usage,
   opencode-token-usage, pi-token-usage, qwen-token-usage,
-  claude-web-token-usage, chatgpt-web-token-usage — single-tool variants.
+  copilot-cli-token-usage, claude-web-token-usage,
+  chatgpt-web-token-usage — single-tool variants.
 """)
 
 
