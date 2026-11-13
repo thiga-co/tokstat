@@ -916,15 +916,19 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                           f"{fmt_tokens(b['input'] + b['output']):>8}  {cost_cell}")
 
     # ─── 3. Model breakdown ────────────────────────────────────────────
-    model_data = defaultdict(lambda: {"input": 0, "output": 0, "cost": 0.0, "tool": "",
+    model_data = defaultdict(lambda: {"input": 0, "output": 0,
+                                      "cache_read": 0, "cache_write": 0,
+                                      "cost": 0.0, "tool": "",
                                       "prompts": 0, "turns": 0, "api_calls": 0})
     for rec in all_records:
         m = model_data[rec["model"]]
-        m["input"]     += rec["input"]
-        m["output"]    += rec["output"]
-        m["cost"]      += rec["cost"]
-        m["api_calls"] += 1
-        m["tool"]       = rec["tool"]
+        m["input"]       += rec["input"]
+        m["output"]      += rec["output"]
+        m["cache_read"]  += rec.get("cache_read", 0)
+        m["cache_write"] += rec.get("cache_write", 0)
+        m["cost"]        += rec["cost"]
+        m["api_calls"]   += 1
+        m["tool"]         = rec["tool"]
     for ex in exchanges:
         model = ex.get("model") or ""
         if not model:
@@ -937,11 +941,13 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
 
     sorted_models = sorted(model_data.keys(), key=lambda m: model_data[m]["cost"], reverse=True)
     if show_activity:
-        headers = ["Model", "Tool", "Prompts", "Turns", "API", "Input", "Output", "Cost"]
-        aligns  = ["<",     "<",    ">",       ">",     ">",   ">",     ">",      ">"]
+        headers = ["Model", "Tool", "Prompts", "Turns", "API",
+                   "Input", "Output", "Cache R", "Cache W", "Cost"]
+        aligns  = ["<",     "<",    ">",       ">",     ">",
+                   ">",     ">",      ">",       ">",       ">"]
     else:
-        headers = ["Model", "Tool", "Input", "Output", "Cost"]
-        aligns  = ["<",     "<",    ">",     ">",      ">"]
+        headers = ["Model", "Tool", "Input", "Output", "Cache R", "Cache W", "Cost"]
+        aligns  = ["<",     "<",    ">",     ">",      ">",       ">",       ">"]
     rows = []
     any_model_changed = False
     for model in sorted_models:
@@ -962,12 +968,15 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         row = [f"{mark}{model}", f"{color}{d['tool']}{RESET}"]
         if show_activity:
             row += [str(d["prompts"]), str(d["turns"]), str(d["api_calls"])]
-        row += [fmt_tokens(d["input"]), fmt_tokens(d["output"]), cost_cell]
+        row += [fmt_tokens(d["input"]), fmt_tokens(d["output"]),
+                fmt_tokens(d["cache_read"]), fmt_tokens(d["cache_write"]), cost_cell]
         rows.append(row)
 
     total_cost = sum(d["cost"] for d in model_data.values())
     total_in   = sum(d["input"] for d in model_data.values())
     total_out  = sum(d["output"] for d in model_data.values())
+    total_cr   = sum(d["cache_read"] for d in model_data.values())
+    total_cw   = sum(d["cache_write"] for d in model_data.values())
     total_mark = (f"{BYELLOW}◆{RESET} " if watching and any_model_changed
                   else ("  " if watching else ""))
     total_row = [f"{total_mark}{BOLD}ALL MODELS{RESET}", ""]
@@ -980,6 +989,8 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                       f"{BOLD}{total_api}{RESET}"]
     total_row += [f"{BOLD}{fmt_tokens(total_in)}{RESET}",
                   f"{BOLD}{fmt_tokens(total_out)}{RESET}",
+                  f"{BOLD}{fmt_tokens(total_cr)}{RESET}",
+                  f"{BOLD}{fmt_tokens(total_cw)}{RESET}",
                   f"{BOLD}{fmt_cost(total_cost)}{RESET}"]
     rows.append(total_row)
 
