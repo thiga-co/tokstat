@@ -18,6 +18,7 @@ for a focused view.
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
 | `opencode-token-usage` | opencode | `~/.local/share/opencode/` | ✓ exact | ✓ | experimental |
 | `pi-token-usage` | pi | `~/.pi/agent/sessions/` | ✓ exact | ✓ | experimental |
+| `qwen-token-usage` | Qwen Code | `~/.qwen/projects/` | ✓ exact | ✓ | experimental |
 | `claude-web-token-usage` | claude.ai (web export) | `--import` of official ZIP | ~ estimated | ~ | experimental |
 | `chatgpt-web-token-usage` | chatgpt.com (web export) | `--import` of official ZIP | ~ estimated | ~ | experimental |
 
@@ -30,6 +31,8 @@ for a focused view.
 > **GitHub Copilot note:** `copilot-token-usage` reads the VS Code Copilot **Chat** session store (across Code / Insiders / VSCodium / Cursor). Copilot is a flat-rate subscription and records no token counts, model or cost locally (premium requests are metered only on GitHub's cloud billing), so it reports **activity only** (`[no tokens]`) — prompts, turns, projects and the tool/file timeline. Inline completions leave no local trace and aren't covered.
 >
 > **pi note:** `pi-token-usage` reads the transcripts of the open-source [pi coding agent](https://pi.dev) (`@earendil-works/pi-coding-agent`) from `~/.pi/agent/sessions/`. pi records **exact** token counts, model, provider, tool calls, generation duration and the working directory per session, so it supports the full feature set (overview, `--prompts`, `--tool-use`, `--impact`, `--plan`, …). Cost uses live LiteLLM pricing keyed on the model id; **local models (Ollama, …) report exact tokens but have no price, so they correctly show `$0.00`** (not `⚠ no data`), and are excluded from the `--impact` estimate when absent from the EcoLogits database.
+>
+> **Qwen Code note:** `qwen-token-usage` reads the transcripts of [Qwen Code](https://github.com/QwenLM/qwen-code) (Alibaba's coding agent, a Gemini-CLI fork, `@qwen-code/qwen-code`) from `~/.qwen/projects/<cwd>/chats/*.jsonl`. Each turn carries **exact** token usage (Gemini-API `usageMetadata`), model, the working directory, message text and tool calls, so Qwen Code supports the full feature set. Output speed comes from the exact `apiDurationMs` in Qwen's token ledger (`~/.qwen/usage/`). Cost uses live LiteLLM pricing keyed on the model id; **local models (Ollama, …) report exact tokens but have no price, so they correctly show `$0.00`** and are excluded from `--impact` when absent from the EcoLogits database.
 >
 > **No-data flag:** any row whose tool/session has activity but no reliable local token data shows `⚠ no data` in the cost column (instead of a misleading `$0.00`). This is normal for Kiro, GitHub Copilot and recent Cursor sessions.
 
