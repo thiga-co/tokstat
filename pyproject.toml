@@ -47,5 +47,15 @@ copilot-cli-token-usage = "tokstat.copilotcli_cli:cli"
 claude-web-token-usage = "tokstat.claude_web_cli:cli"
 chatgpt-web-token-usage = "tokstat.chatgpt_web_cli:cli"
 
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: live end-to-end test that runs a real harness binary (deselect with -m 'not e2e')",
+    "billed: e2e test that hits a real paid provider via local config (run free only with -m 'e2e and not billed')",
+]
