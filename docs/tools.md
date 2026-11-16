@@ -13,7 +13,7 @@ for a focused view.
 | `codex-token-usage` | Codex (OpenAI) | `~/.codex/sessions/` | ✓ exact | ✓ | stable |
 | `antigravity-token-usage` / `agy-token-usage` | Antigravity | `~/.gemini/antigravity-cli/` | ✓ exact | ✓ | experimental |
 | `cursor-token-usage` | Cursor | `globalStorage/state.vscdb` | n.a. | n.a. | stable |
-| `kiro-token-usage` | Kiro | `Kiro/.../workspace-sessions/` | n.a. | n.a. | stable |
+| `kiro-token-usage` | Kiro (IDE + CLI) | `Kiro/.../workspace-sessions/` + `~/.kiro/sessions/` | n.a. | n.a. | stable |
 | `copilot-token-usage` | GitHub Copilot (Chat) | VS Code `github.copilot-chat/session-store.db` + native chat | n.a. | n.a. | experimental |
 | `copilot-cli-token-usage` | GitHub Copilot CLI | `~/.copilot/session-store.db` | ✓ exact | ✓ | experimental |
 | `gemini-token-usage` | Gemini CLI | `~/.gemini/tmp/` | ✓ exact | ✓ | experimental |
@@ -27,7 +27,7 @@ for a focused view.
 >
 > **Cursor note:** tokstat reads Cursor's local SQLite store (`globalStorage/state.vscdb`). Some sessions have token counts recorded locally — these are reported exactly (`[exact]`). Others store no token counts (the local values are zero); those are tagged `[no tokens]`, counted as activity (prompts/turns), and never estimated — their cost shows `⚠ no data`. For authoritative totals use the [Cursor dashboard](https://cursor.com/dashboard).
 >
-> **Kiro note:** Kiro stores no usable token counts locally (its token log is always zero), so `kiro-token-usage` reports **activity only** — prompts and turns — with tokens and cost left blank. It does not estimate.
+> **Kiro note:** `kiro-token-usage` reads both Kiro stores — the IDE's `workspace-sessions/` / `state.vscdb`, and the `kiro-cli` terminal agent's separate store under `~/.kiro/sessions/`. Neither records usable token counts (the IDE's token log is always zero; the CLI meters in opaque credits), so it reports **activity only** — prompts and turns — with tokens and cost left blank. It does not estimate.
 >
 > **GitHub Copilot note:** `copilot-token-usage` reads **two** VS Code chat stores (across Code / Insiders / VSCodium / Cursor): the Copilot extension's `…/globalStorage/github.copilot-chat/session-store.db`, **and** the built-in VS Code chat's native session files (`…/workspaceStorage/<hash>/chatSessions/*.json` + `emptyWindowChatSessions/`). Copilot is a flat-rate subscription and records no token counts, model or cost locally (premium requests are metered only on GitHub's cloud billing), so it reports **activity only** (`[no tokens]`) — prompts, turns, projects and the tool/file timeline. Inline completions leave no local trace and aren't covered, and empty chat sessions (a panel opened with no prompt sent) don't appear.
 >
