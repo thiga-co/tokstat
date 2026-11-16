@@ -3,16 +3,22 @@
 kiro-token-usage — Aggregate and display activity from Kiro.
 
 Data sources:
-  • per-session JSON (older Kiro) under
+  • per-session JSON (older Kiro IDE) under
       ~/Library/.../kiro.kiroagent/workspace-sessions/
         <base64(project path)>/<sessionId>.json   (history)
         <base64(project path)>/sessions.json       (dateCreated, project)
-  • recent Kiro no longer writes that store — it keeps session references
+  • recent Kiro IDE no longer writes that store — it keeps session references
       (id + title) in each workspace's state.vscdb under
       `kiro.kiroAgent → sessionPanels.entries`; read as activity-only.
+  • Kiro CLI (`kiro-cli`, the terminal agent) uses a SEPARATE store the IDE
+      never touches:
+      ~/.kiro/sessions/<hash>/sess_<uuid>/
+        session.json    (id, title, workspacePaths, createdAt, modelId)
+        messages.jsonl  (one {id, timestamp, payload} per line)
 
-Kiro records no usable token counts (its tokens_generated log is always
-zero with no per-message data), so tokstat reports activity only —
+Kiro records no usable token counts — neither store has per-message tokens
+(the IDE's tokens_generated log is always zero; the CLI meters in opaque
+"credits" via usage_summary). So tokstat reports activity only —
 prompts/turns — with token/cost left at 0 ([no tokens]). It does NOT
 estimate, to avoid misleading figures.
 
@@ -47,6 +53,8 @@ TOOL_COLORS["Kiro"] = YELLOW
 _KIRO_BASE = (Path.home() / "Library" / "Application Support" / "Kiro"
               / "User" / "globalStorage" / "kiro.kiroagent")
 _SESSIONS_DIR = _KIRO_BASE / "workspace-sessions"
+# Kiro CLI (kiro-cli) store — separate from the IDE's globalStorage above.
+_KIRO_CLI_SESSIONS = Path.home() / ".kiro" / "sessions"
 
 
 # ─── Scanners ────────────────────────────────────────────────────────────────
@@ -94,12 +102,9 @@ def _extract_exchanges_kiro() -> list[dict]:
     so we do NOT estimate — exchanges are counted as activity (prompts/turns)
     with token/cost left at 0, tagged [no tokens].
     """
-    sessions_dir = _KIRO_BASE / "workspace-sessions"
-    if not sessions_dir.exists():
-        return []
-
     exchanges: list[dict] = []
-    for ws_dir in sessions_dir.iterdir():
+    sessions_dir = _KIRO_BASE / "workspace-sessions"
+    for ws_dir in (sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []):
         if not ws_dir.is_dir():
             continue
         # Map sessionId -> (dateCreated_ms, workspaceDirectory, title)
@@ -159,11 +164,218 @@ def _extract_exchanges_kiro() -> list[dict]:
             if current:
                 exchanges.append(current)
 
+    # Kiro CLI (kiro-cli) keeps its own store under ~/.kiro/sessions — a store
+    # the IDE never touches. Merge it in (activity-only, like everything here).
+    exchanges += _extract_exchanges_kiro_cli()
+
     # Recent Kiro no longer writes the JSON store; merge in state.vscdb sessions.
     known_ids = {e["session_id"] for e in exchanges}
     exchanges += _extract_vscdb_sessions(known_ids)
 
     return [e for e in exchanges if e.get("user_text") or e["num_turns"] > 0]
+
+
+def _parse_iso(s) -> datetime | None:
+    """Parse an ISO-8601 timestamp (Kiro CLI uses a trailing Z)."""
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _extract_exchanges_kiro_cli() -> list[dict]:
+    """Kiro CLI (`kiro-cli`, the Amazon-Q-derived terminal agent) stores each
+    conversation under ~/.kiro/sessions/<hash>/sess_<uuid>/ as:
+        session.json    — id, title, workspacePaths/rootPaths, createdAt, modelId
+        messages.jsonl  — one {id, timestamp, payload} per line; payload.type is
+                          user / assistant / tool_call / tool_result / turn_* / …
+
+    Like the IDE store, the CLI records NO per-message token counts (it meters
+    in opaque "credits" via usage_summary, with contextUsage percentages only),
+    so these are activity-only exchanges — token/cost left at 0, tagged
+    [no tokens]. One exchange per user turn; assistant "Say" messages count as
+    turns ("Reasoning" entries are skipped to avoid double-counting)."""
+    root = _KIRO_CLI_SESSIONS
+    if not root.exists():
+        return []
+
+    exchanges: list[dict] = []
+    for ws_dir in sorted(root.iterdir()):
+        if not ws_dir.is_dir():
+            continue
+        for sess_dir in sorted(ws_dir.iterdir()):
+            if not sess_dir.is_dir():
+                continue
+            sj = sess_dir / "session.json"
+            if not sj.exists():
+                continue
+            try:
+                meta = json.loads(sj.read_text(errors="replace"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            sid = meta.get("id") or sess_dir.name
+            paths = meta.get("workspacePaths") or meta.get("rootPaths") or []
+            project = (paths[0] if paths else "") or "unknown"
+            created = _parse_iso(meta.get("createdAt"))
+
+            mfile = sess_dir / "messages.jsonl"
+            if not mfile.exists():
+                continue
+            try:
+                lines = mfile.read_text(errors="replace").splitlines()
+            except OSError:
+                continue
+
+            current = None
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                p = rec.get("payload") or {}
+                ptype = p.get("type")
+                ts = _parse_iso(rec.get("timestamp")) or created
+                if ptype == "user":
+                    if current:
+                        exchanges.append(current)
+                    current = {
+                        "session_id":      sid,
+                        "user_text":       (p.get("content") or "")[:500],
+                        "assistant_texts": [],
+                        "tool_errors":     [],
+                        "tools_used":      defaultdict(int),
+                        "num_turns":       0,
+                        "model":           "Kiro Agent [no tokens]",
+                        "project":         project,
+                        "ts":              ts or created,
+                        "tokens":          {"input": 0, "output": 0,
+                                            "cache_read": 0, "cache_write": 0},
+                        "cost":            0.0,
+                    }
+                elif ptype == "assistant" and current is not None:
+                    if p.get("operationType") == "Reasoning":
+                        continue
+                    current["num_turns"] += 1
+                    txt = (p.get("content") or "").strip()
+                    if txt:
+                        current["assistant_texts"].append(txt[:500])
+                elif ptype == "tool_call" and current is not None:
+                    current["tools_used"][p.get("toolName") or "tool"] += 1
+            if current:
+                exchanges.append(current)
+
+    # Non-interactive mode uses a flatter layout under sessions/cli/.
+    exchanges += _extract_cli_flat()
+    return exchanges
+
+
+def _cli_flat_text(content) -> str:
+    """Flatten a Kiro CLI flat-layout message `content` list to plain text
+    (keep `text` parts, drop `thinking`/tool parts)."""
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for c in content:
+        if isinstance(c, dict) and c.get("kind") == "text":
+            d = c.get("data")
+            if isinstance(d, str):
+                parts.append(d)
+    return " ".join(parts).strip()
+
+
+def _extract_cli_flat() -> list[dict]:
+    """Kiro CLI non-interactive mode (`kiro-cli chat --no-interactive`, as a
+    script or subagent) writes a flatter layout than the TUI:
+      ~/.kiro/sessions/cli/<uuid>.jsonl   — messages, one {version, kind, data}
+                                            per line (kind Prompt / AssistantMessage)
+      ~/.kiro/sessions/cli/<uuid>.json    — session_id, cwd, created_at, title,
+                                            session_state.conversation_metadata
+                                              .user_turn_metadatas[] (per-turn stats)
+
+    The turn metadata DOES carry input_/output_token_count fields, but Kiro
+    leaves them 0 and meters only in credits (metering_usage) — verified across
+    models — so this stays activity-only, token/cost left at 0, [no tokens]."""
+    flat_dir = _KIRO_CLI_SESSIONS / "cli"
+    if not flat_dir.exists():
+        return []
+
+    exchanges: list[dict] = []
+    for mfile in sorted(flat_dir.glob("*.jsonl")):
+        sid = mfile.stem
+        project = "unknown"
+        created = None
+        model = "Kiro Agent"
+        meta_file = mfile.with_suffix(".json")
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(errors="replace"))
+                sid = meta.get("session_id") or sid
+                project = meta.get("cwd") or "unknown"
+                created = _parse_iso(meta.get("created_at"))
+                turns = (((meta.get("session_state") or {})
+                          .get("conversation_metadata") or {})
+                         .get("user_turn_metadatas") or [])
+                for t in turns:
+                    if t.get("model"):
+                        model = t["model"]
+                        break
+            except (json.JSONDecodeError, OSError):
+                pass
+        model_label = f"{model} [no tokens]"
+
+        try:
+            lines = mfile.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+
+        current = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind = rec.get("kind")
+            data = rec.get("data") or {}
+            ts = created
+            m = data.get("meta") or {}
+            if isinstance(m.get("timestamp"), (int, float)):
+                try:
+                    ts = datetime.fromtimestamp(m["timestamp"], tz=timezone.utc)
+                except (OSError, ValueError):
+                    ts = created
+            if kind == "Prompt":
+                if current:
+                    exchanges.append(current)
+                current = {
+                    "session_id":      sid,
+                    "user_text":       _cli_flat_text(data.get("content"))[:500],
+                    "assistant_texts": [],
+                    "tool_errors":     [],
+                    "tools_used":      defaultdict(int),
+                    "num_turns":       0,
+                    "model":           model_label,
+                    "project":         project,
+                    "ts":              ts or created,
+                    "tokens":          {"input": 0, "output": 0,
+                                        "cache_read": 0, "cache_write": 0},
+                    "cost":            0.0,
+                }
+            elif kind == "AssistantMessage" and current is not None:
+                current["num_turns"] += 1
+                txt = _cli_flat_text(data.get("content"))
+                if txt:
+                    current["assistant_texts"].append(txt[:500])
+        if current:
+            exchanges.append(current)
+    return exchanges
 
 
 def _vscdb_workspace_project(ws_dir: Path) -> str:
@@ -286,8 +498,10 @@ def main(period_name: str | None = None, tool_filter: str | None = None,
         return
 
     _ws_storage = _KIRO_BASE.parent.parent / "workspaceStorage"
-    if not (_KIRO_BASE / "workspace-sessions").exists() and not _ws_storage.exists():
-        print(f"  {DIM}Kiro not found at {_KIRO_BASE}{RESET}\n")
+    if (not (_KIRO_BASE / "workspace-sessions").exists()
+            and not _ws_storage.exists()
+            and not _KIRO_CLI_SESSIONS.exists()):
+        print(f"  {DIM}Kiro not found at {_KIRO_BASE} or {_KIRO_CLI_SESSIONS}{RESET}\n")
         return
 
     records = scan_kiro()
@@ -356,7 +570,8 @@ def show_help():
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", "3 months", "6 months", year
 
 {BOLD}DATA SOURCE{RESET}
-  {YELLOW}Kiro{RESET}    {DIM}{_SESSIONS_DIR}/<project>/<sessionId>.json{RESET}
+  {YELLOW}Kiro IDE{RESET}  {DIM}{_SESSIONS_DIR}/<project>/<sessionId>.json{RESET}
+  {YELLOW}Kiro CLI{RESET}  {DIM}{_KIRO_CLI_SESSIONS}/<hash>/sess_<uuid>/messages.jsonl{RESET}
           {DIM}Kiro stores no token counts → activity only ([no tokens]){RESET}
 """)
 
