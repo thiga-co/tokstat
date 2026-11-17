@@ -525,6 +525,15 @@ _KNOWN_FLAGS = {
 }
 
 
+def _arg_value(args, flag, default=None):
+    """Value following `flag` on the command line, or default."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
+
+
 def _parse_tool(args: list[str]) -> str | None:
     if "--tool" not in args:
         return None
@@ -640,7 +649,8 @@ def cli():
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             out = args[idx + 1]
         export_conversations(_collect_all_exchanges, out, period, tool,
-                             project_filter=project)
+                             project_filter=project,
+                             session_filter=_arg_value(args, "--session"))
     else:
         main(period, tool, by_session="--by-session" in args,
              by_project="--by-project" in args, project_filter=project)

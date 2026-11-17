@@ -530,8 +530,18 @@ _TOOL_ALIASES = {"kiro": "Kiro"}
 
 _KNOWN_FLAGS = {
     "--help", "-h", "--version", "-V", "--prompts", "-p", "--anomalies",
-    "--plan", "--activity", "--total", "--impact", "--by-session", "--export", "--period", "--since", "--tool",
+    "--plan", "--activity", "--total", "--impact", "--by-session", "--export",
+    "--period", "--since", "--tool", "--project", "--session",
 }
+
+
+def _arg_value(args, flag, default=None):
+    """Value following `flag` on the command line, or default."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return default
 
 
 def _parse_tool(args: list[str]) -> str | None:
@@ -568,6 +578,8 @@ def show_help():
 
 {BOLD}FILTERS{RESET}
   --period <period>    all, hour, "5 hours", today, yesterday, "7 days", "30 days", "3 months", "6 months", year
+  --project <name>     Scope every view to one project (substring on repo path)
+  --session <id>       Scope every view to one session (id or short handle)
 
 {BOLD}DATA SOURCE{RESET}
   {YELLOW}Kiro IDE{RESET}  {DIM}{_SESSIONS_DIR}/<project>/<sessionId>.json{RESET}
@@ -598,24 +610,33 @@ def cli():
         print(f"\n  {RED}{e}{RESET}\n")
         sys.exit(1)
 
+    project = _arg_value(args, "--project")
+    session = _arg_value(args, "--session")
+
     if "--prompts" in args or "-p" in args:
-        show_prompts(_collect_all_exchanges, period, tool)
+        show_prompts(_collect_all_exchanges, period, tool,
+                     session_filter=session, project_filter=project)
     elif "--anomalies" in args:
         show_anomalies(_collect_all_exchanges, period, tool)
     elif "--activity" in args:
-        show_activity(_collect_all_exchanges, period, tool)
+        show_activity(_collect_all_exchanges, period, tool,
+                      project_filter=project, session_filter=session)
     elif "--total" in args:
-        show_total(_collect_all_exchanges, period, tool)
+        show_total(_collect_all_exchanges, period, tool,
+                   project_filter=project, session_filter=session)
     elif "--impact" in args:
-        show_impact(_collect_all_exchanges, period, tool, _parse_region(args))
+        show_impact(_collect_all_exchanges, period, tool, _parse_region(args),
+                    project_filter=project, session_filter=session)
     elif "--plan" in args:
-        show_plan(_collect_all_exchanges, period, tool)
+        show_plan(_collect_all_exchanges, period, tool,
+                  project_filter=project, session_filter=session)
     elif "--export" in args:
         idx = args.index("--export")
         out = "conversations.json"
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             out = args[idx + 1]
-        export_conversations(_collect_all_exchanges, out, period, tool)
+        export_conversations(_collect_all_exchanges, out, period, tool,
+                             project_filter=project, session_filter=session)
     else:
         main(period, tool, by_session="--by-session" in args)
 

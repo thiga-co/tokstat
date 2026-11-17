@@ -906,7 +906,8 @@ def cli():
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             out = args[idx + 1]
         export_conversations(_collect_all_exchanges, out, period, TOOL_NAME,
-                             project_filter=project)
+                             project_filter=project,
+                             session_filter=_arg_value(args, "--session"))
     else:
         main(period, TOOL_NAME, by_session="--by-session" in args,
              by_project="--by-project" in args, project_filter=project)
