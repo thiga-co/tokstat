@@ -143,7 +143,7 @@ def scan_pi() -> list[dict]:
                     "ts":         ts,
                     "session_id": session_id,
                     **tokens,
-                    "cost":       compute_cost(tokens, model),
+                    "cost":       compute_cost(tokens, model, ts),
                 })
         except (OSError, IOError):
             continue
@@ -312,7 +312,7 @@ def _extract_exchanges_pi(jsonl_path: str) -> list[dict]:
                 tk = _usage_tokens(usage)
                 for key in ("input", "output", "cache_read", "cache_write"):
                     current["tokens"][key] += tk[key]
-                current["cost"] += compute_cost(tk, current["model"])
+                current["cost"] += compute_cost(tk, current["model"], current.get("ts"))
                 ctx = tk["input"] + tk["cache_read"] + tk["cache_write"]
                 if ctx > 0:
                     if ctx > current["context_peak"]:

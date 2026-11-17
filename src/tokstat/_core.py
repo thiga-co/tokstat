@@ -61,6 +61,7 @@ PRICING: dict[str, dict] = {}
 
 def load_pricing():
     global PRICING
+    load_ollama_pricing()        # Ollama Cloud rates, independent of LiteLLM
     t0 = time.monotonic()
     raw = None
     source = "none"
@@ -172,39 +173,263 @@ def _model_provider(model_name: str) -> str:
     return "Other"
 
 
-def match_model(model_name: str) -> dict:
-    if not model_name or not PRICING:
+# ─── Ollama Cloud on-demand pricing (versioned JSON, refreshed like LiteLLM) ─
+# Ollama Cloud bills cloud models per token (pay-as-you-go), separately from
+# LiteLLM's catalog. These rates aren't in LiteLLM, so tokstat keeps them in a
+# JSON price list versioned in the repo (src/tokstat/data/ollama_cloud_prices.json)
+# and refreshes it from GitHub the same way it refreshes LiteLLM pricing: cache
+# (24 h) → network → stale cache → the copy shipped with the package. Regenerate
+# the file from the live page with scripts/refresh_ollama_pricing.py.
+#
+# A model is Ollama Cloud when its string carries a ":cloud" / "-cloud" marker
+# (e.g. "deepseek-v4.1-flash:cloud"); some models list a cheaper off-peak rate.
+# Cache reads bill at the cached-input rate; cache creation (cache_write) has no
+# published discount, so it bills at the full input rate.
+OLLAMA_PRICING_URL = (
+    "https://raw.githubusercontent.com/thiga-co/tokstat/main/"
+    "src/tokstat/data/ollama_cloud_prices.json"
+)
+OLLAMA_BUNDLED_PATH = Path(__file__).resolve().parent / "data" / "ollama_cloud_prices.json"
+OLLAMA_CACHE_PATH = Path.home() / ".cache" / "token-usage" / "ollama_prices.json"
+OLLAMA_CACHE_MAX_AGE = timedelta(hours=24)
+
+# base model name -> {"peak": [in, cached, out], "offpeak": [...] or None}
+# in USD per *million* tokens (a price may be None when the list omits it).
+OLLAMA_PRICING: dict[str, dict] = {}
+
+# Weekday UTC hours [start, end) that count as peak; outside this window (and
+# all weekend) is off-peak. Overridden by the price list's "offpeak_utc_hours".
+OLLAMA_OFFPEAK_HOURS = (12, 18)
+
+# Models that also ship as free, locally-runnable open weights: only charge
+# them Ollama-Cloud rates when the string carries an explicit cloud marker,
+# otherwise a free local run would be mis-priced. (A classification, not a
+# price.) Overridden by the price list's "local_also".
+OLLAMA_CLOUD_LOCAL_ALSO = {"gpt-oss:20b", "gpt-oss:120b", "gemma4"}
+
+
+def _apply_ollama_pricing(doc: dict) -> int:
+    """Load a parsed price-list document into the module globals. Returns the
+    number of models loaded (0 if the document has no usable models)."""
+    global OLLAMA_PRICING, OLLAMA_OFFPEAK_HOURS, OLLAMA_CLOUD_LOCAL_ALSO
+    if not isinstance(doc, dict):
+        return 0
+    models = doc.get("models")
+    if not isinstance(models, dict) or not models:
+        return 0
+    OLLAMA_PRICING = models
+    hours = doc.get("offpeak_utc_hours")
+    if isinstance(hours, (list, tuple)) and len(hours) == 2:
+        OLLAMA_OFFPEAK_HOURS = (int(hours[0]), int(hours[1]))
+    also = doc.get("local_also")
+    if isinstance(also, list):
+        OLLAMA_CLOUD_LOCAL_ALSO = {str(x).lower() for x in also}
+    return len(models)
+
+
+def load_ollama_pricing():
+    """Populate Ollama Cloud pricing: cache → network → stale cache → bundled."""
+    if OLLAMA_PRICING:            # already loaded this process
+        return
+    t0 = time.monotonic()
+    doc = None
+    source = "none"
+    if OLLAMA_CACHE_PATH.exists():
+        age = datetime.now() - datetime.fromtimestamp(OLLAMA_CACHE_PATH.stat().st_mtime)
+        if age < OLLAMA_CACHE_MAX_AGE:
+            try:
+                doc = json.loads(OLLAMA_CACHE_PATH.read_text())
+                source = "cache"
+            except (json.JSONDecodeError, OSError):
+                doc = None
+    if doc is None:
+        try:
+            req = urllib.request.Request(OLLAMA_PRICING_URL,
+                                         headers={"User-Agent": "tokstat/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                doc = json.loads(resp.read().decode("utf-8", "replace"))
+            OLLAMA_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            OLLAMA_CACHE_PATH.write_text(json.dumps(doc))
+            source = "network"
+        except Exception:
+            doc = None
+            source = "network (failed)"
+    if doc is None and OLLAMA_CACHE_PATH.exists():
+        try:
+            doc = json.loads(OLLAMA_CACHE_PATH.read_text())
+            source = "stale cache"
+        except (json.JSONDecodeError, OSError):
+            doc = None
+    if doc is None:                # last resort: the copy shipped in the wheel
+        try:
+            doc = json.loads(OLLAMA_BUNDLED_PATH.read_text())
+            source = "bundled"
+        except (json.JSONDecodeError, OSError):
+            doc = None
+    n = _apply_ollama_pricing(doc) if doc else 0
+    if timing_enabled():
+        print(f"{DIM}    · ollama pricing: {source}, {n} models in "
+              f"{time.monotonic() - t0:.2f}s{RESET}")
+
+
+def _is_offpeak(ts) -> bool:
+    """Ollama off-peak: weekends, or weekdays outside the peak UTC window."""
+    if not isinstance(ts, datetime):
+        return False
+    u = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    if u.weekday() >= 5:            # Saturday / Sunday
+        return True
+    start, end = OLLAMA_OFFPEAK_HOURS
+    return not (start <= u.hour < end)
+
+
+def _ollama_rates(base: str, ts) -> dict | None:
+    row = OLLAMA_PRICING.get(base)
+    if not row:
+        return None
+    rates = row["peak"]
+    if _is_offpeak(ts) and row.get("offpeak"):
+        rates = row["offpeak"]
+    inp, cached, out = (rates + [None, None, None])[:3]
+    inp = inp or 0.0
+    out = out or 0.0
+    cached = cached if cached is not None else inp   # no cached rate → full input
+    return {
+        "input":       inp / 1e6,
+        "output":      out / 1e6,
+        "cache_read":  cached / 1e6,
+        "cache_write": inp / 1e6,
+    }
+
+
+def parse_ollama_pricing_page(html: str) -> dict:
+    """Parse ollama.com/pricing's table into {model: {peak, offpeak}} (USD per
+    million tokens). Used only by scripts/refresh_ollama_pricing.py to
+    regenerate the versioned price list — not on the runtime path. Returns {}
+    when the markup can't be understood, so a layout change is caught in review
+    rather than shipping bad numbers.
+
+    The table has four columns — Model, Input, Cached input, Output — and an
+    off-peak tier is a separate row named "<model> (Off-Peak)".
+    """
+    from html.parser import HTMLParser
+
+    class _T(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.rows, self._row, self._cell, self._in_cell = [], None, None, False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "tr":
+                self._row = []
+            elif tag == "td" and self._row is not None:
+                self._cell, self._in_cell = [], True
+
+        def handle_data(self, data):
+            if self._in_cell:
+                self._cell.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "td" and self._row is not None:
+                self._row.append("".join(self._cell).strip())
+                self._in_cell = False
+            elif tag == "tr" and self._row is not None:
+                if self._row:
+                    self.rows.append(self._row)
+                self._row = None
+
+    def _num(cell):
+        cell = (cell or "").replace("$", "").replace(",", "").strip()
+        try:
+            return float(cell)
+        except ValueError:
+            return None
+
+    p = _T()
+    p.feed(html)
+    out = {}
+    for row in p.rows:
+        if len(row) < 4:
+            continue
+        name = row[0].strip().lower()
+        offpeak = name.endswith("(off-peak)")
+        if offpeak:
+            name = name[: -len("(off-peak)")].strip()
+        prices = [_num(row[1]), _num(row[2]), _num(row[3])]
+        if all(v is None for v in prices):
+            continue
+        slot = out.setdefault(name, {"peak": None, "offpeak": None})
+        slot["offpeak" if offpeak else "peak"] = prices
+    return {k: v for k, v in out.items() if v.get("peak")}
+
+
+def match_model(model_name: str, ts=None) -> dict:
+    if not model_name:
         return ZERO_PRICE
     name = model_name.lower().split("[")[0].strip()
-    if name in PRICING:
-        return PRICING[name]
-    for prefix in ["", "openai/", "anthropic/", "gemini/", "vertex_ai/",
-                   "deepseek/", "together_ai/", "fireworks_ai/"]:
-        candidate = prefix + name
-        if candidate in PRICING:
-            return PRICING[candidate]
-    for key, val in PRICING.items():
-        if key.endswith("/" + name) or key == name:
-            return val
-    best_key = None
-    best_len = 0
-    for key in PRICING:
-        if len(key) < 5:
-            continue
-        bare_key = key.split("/")[-1] if "/" in key else key
-        if bare_key in name and len(bare_key) > best_len:
-            best_key = key
-            best_len = len(bare_key)
-        elif name in bare_key and len(name) > best_len:
-            best_key = key
-            best_len = len(name)
-    if best_key:
-        return PRICING[best_key]
+    if name.startswith("ollama/"):
+        name = name[len("ollama/"):]
+
+    # Strip Ollama cloud / free markers to recover the base model key.
+    base = name
+    marker = False
+    for suf in (":cloud", "-cloud"):
+        if base.endswith(suf):
+            base, marker = base[: -len(suf)], True
+            break
+    free = False
+    for suf in (":free", "-free"):
+        if base.endswith(suf):
+            base, free = base[: -len(suf)], True
+            break
+
+    # Explicit free tier of a known Ollama model → no charge.
+    if free and base in OLLAMA_PRICING:
+        return ZERO_PRICE
+
+    ol = _ollama_rates(base, ts)
+    is_ollama = ol is not None and (marker or base not in OLLAMA_CLOUD_LOCAL_ALSO)
+
+    # A ":cloud" marker is authoritative: bill at Ollama Cloud rates even if
+    # the base name also appears in LiteLLM.
+    if marker and is_ollama:
+        return ol
+
+    if PRICING:
+        if base in PRICING:
+            return PRICING[base]
+        for prefix in ["", "openai/", "anthropic/", "gemini/", "vertex_ai/",
+                       "deepseek/", "together_ai/", "fireworks_ai/"]:
+            candidate = prefix + base
+            if candidate in PRICING:
+                return PRICING[candidate]
+        for key, val in PRICING.items():
+            if key.endswith("/" + base) or key == base:
+                return val
+        best_key = None
+        best_len = 0
+        for key in PRICING:
+            if len(key) < 5:
+                continue
+            bare_key = key.split("/")[-1] if "/" in key else key
+            if bare_key in base and len(bare_key) > best_len:
+                best_key = key
+                best_len = len(bare_key)
+            elif base in bare_key and len(base) > best_len:
+                best_key = key
+                best_len = len(base)
+        if best_key:
+            return PRICING[best_key]
+
+    # LiteLLM had no price: fall back to Ollama Cloud for a cloud-only model
+    # (e.g. "deepseek-v4.1-flash" recorded without the :cloud marker).
+    if is_ollama:
+        return ol
     return ZERO_PRICE
 
 
-def compute_cost(tokens: dict, model: str) -> float:
-    p = match_model(model)
+def compute_cost(tokens: dict, model: str, ts=None) -> float:
+    p = match_model(model, ts)
     cost = 0.0
     cost += tokens.get("input", 0) * p["input"]
     cost += tokens.get("output", 0) * p["output"]
@@ -821,7 +1046,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                 b["output"]      += tok.get("output", 0) or 0
                 b["cache_read"]  += tok.get("cache_read", 0) or 0
                 b["cache_write"] += tok.get("cache_write", 0) or 0
-                b["cost"]        += compute_cost(tok, ex.get("model") or "")
+                b["cost"]        += compute_cost(tok, ex.get("model") or "", ex.get("ts"))
                 b["prompts"]     += 1
                 b["turns"]       += ex.get("num_turns", 0) or 0
                 b["api_calls"]   += ex.get("num_turns", 0) or 0
@@ -891,7 +1116,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                 bucket["output"]      += tok.get("output", 0) or 0
                 bucket["cache_read"]  += tok.get("cache_read", 0) or 0
                 bucket["cache_write"] += tok.get("cache_write", 0) or 0
-                bucket["cost"]        += compute_cost(tok, ex.get("model") or "")
+                bucket["cost"]        += compute_cost(tok, ex.get("model") or "", ex.get("ts"))
                 bucket["prompts"]     += 1
             proj_cost = {p: sum(b["cost"] for b in ss.values())
                          for p, ss in proj_sess.items()}

@@ -111,7 +111,7 @@ def _load():
                 events.append({
                     "sid": sid, "ti": ti if ti is not None else 0,
                     "model": model or "copilot-cli", "tokens": tk,
-                    "cost": compute_cost(tk, model or ""),
+                    "cost": compute_cost(tk, model or "", _parse_ts(created)),
                     "duration_ms": dur or 0, "ttft_ms": ttft,
                     "ts": _parse_ts(created),
                 })

@@ -20,9 +20,10 @@ renders token usage, cost, and carbon as terminal tables. PyPI package
 - **Python 3.7+.** No `match`, no `:=` where 3.7 would choke, no `tomllib`,
   no `from __future__`-only features beyond `annotations` (which every module
   already imports). CI/users run old interpreters.
-- **Nothing leaves the machine.** The only outbound network call tokstat makes
-  is fetching LiteLLM pricing (cached). A scanner must never phone home. Reads
-  are strictly local files.
+- **Nothing leaves the machine.** The only outbound network calls tokstat makes
+  are fetching pricing (cached): the LiteLLM catalog, and the repo's own Ollama
+  Cloud price list from GitHub. Both are public, data-only, and carry no user
+  data. A scanner must never phone home. Reads are strictly local files.
 - **Read-only on the user's real stores.** Scanners open the assistants' data
   files read-only. Never write, move, or delete anything under `~/.claude`,
   `~/.codex`, `~/.kiro`, etc.

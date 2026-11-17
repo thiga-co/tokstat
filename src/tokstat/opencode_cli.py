@@ -308,7 +308,7 @@ def scan_opencode(cutoff: datetime | None = None,
             "project": cwd,
             "ts":      ts,
             **tokens,
-            "cost":    compute_cost(tokens, model),
+            "cost":    compute_cost(tokens, model, ts),
         })
     return records
 
@@ -423,7 +423,7 @@ def _extract_exchanges_opencode(cutoff: datetime | None = None) -> list[dict]:
                     current["tokens"]["cache_write"] += cw
                     current["cost"] += compute_cost(
                         {"input": inp, "output": out, "cache_read": cr, "cache_write": cw},
-                        current["model"] or model,
+                        current["model"] or model, current.get("ts"),
                     )
         if current:
             exchanges.append(current)
@@ -494,7 +494,7 @@ def _extract_exchanges_db(cutoff: datetime | None = None) -> list[dict]:
                 current["cost"] += compute_cost(
                     {"input": inp, "output": out,
                      "cache_read": cr, "cache_write": cw},
-                    current["model"] or model,
+                    current["model"] or model, current.get("ts"),
                 )
             for p in parts:
                 ptype = p.get("type")

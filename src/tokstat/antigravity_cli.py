@@ -513,7 +513,7 @@ def scan_antigravity(cutoff: datetime | None = None,
                 "cache_read":  cache_tok,
                 "cache_write": 0,
             }
-            cost = compute_cost(tokens, model)
+            cost = compute_cost(tokens, model, ts)
             if cost == 0 and out > 0:
                 unpriced.add(model)
             records.append({
@@ -691,7 +691,7 @@ def _extract_exchanges_antigravity(cutoff: datetime | None = None,
                             current["tokens"]["input"]      += tok["input"]
                             current["tokens"]["output"]     += tok["output"]
                             current["tokens"]["cache_read"] += tok["cache_read"]
-                            current["cost"] += compute_cost(tok, tok["model"])
+                            current["cost"] += compute_cost(tok, tok["model"], current.get("ts"))
                             ctx = tok.get("input", 0) + tok.get("cache_read", 0)
                             if ctx > current.get("context_peak", 0):
                                 current["context_peak"] = ctx

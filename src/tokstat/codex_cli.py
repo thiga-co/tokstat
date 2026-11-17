@@ -103,7 +103,7 @@ def scan_codex() -> list[dict]:
                             "ts":         ts,
                             "session_id": jsonl_file.stem,
                             **tokens,
-                            "cost":       compute_cost(tokens, model),
+                            "cost":       compute_cost(tokens, model, ts),
                         })
         except (OSError, IOError):
             continue
@@ -394,7 +394,7 @@ def _extract_exchanges_codex(jsonl_path: str) -> list[dict]:
                 current["tokens"]["cache_read"] += cached
                 current["cost"] += compute_cost(
                     {"input": inp, "output": out, "cache_read": cached, "cache_write": 0},
-                    current_model or "",
+                    current_model or "", current.get("ts"),
                 )
                 # Context size at this call = full input sent (incl. cached).
                 # Codex logs a zero-usage token_count right after a compaction

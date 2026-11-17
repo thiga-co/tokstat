@@ -10,7 +10,7 @@ Copyright (c) 2026 Olivier Bergeret
 
 from __future__ import annotations
 
-__version__ = "1.32.1"
+__version__ = "1.33.0"
 
 import json
 import sys
@@ -101,12 +101,12 @@ def scan_claude_code() -> list[dict]:
                             pending = entry
                         else:
                             if pending:
-                                pending["cost"] = compute_cost(pending, pending["model"])
+                                pending["cost"] = compute_cost(pending, pending["model"], pending.get("ts"))
                                 records.append(pending)
                             pending = entry
                         prev_msg_id = msg_id
                 if pending:
-                    pending["cost"] = compute_cost(pending, pending["model"])
+                    pending["cost"] = compute_cost(pending, pending["model"], pending.get("ts"))
                     records.append(pending)
             except (OSError, IOError):
                 continue
@@ -315,7 +315,7 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                         "output":      usage.get("output_tokens", 0),
                         "cache_read":  usage.get("cache_read_input_tokens", 0),
                         "cache_write": usage.get("cache_creation_input_tokens", 0),
-                    }, msg.get("model", ""))
+                    }, msg.get("model", ""), rec_ts)
                 else:
                     current["_prev_msg_id"] = msg_id
                     current["_prev_tokens"] = dict(current["tokens"])
@@ -330,7 +330,7 @@ def _extract_exchanges(jsonl_path: str) -> list[dict]:
                         "output":      usage.get("output_tokens", 0),
                         "cache_read":  usage.get("cache_read_input_tokens", 0),
                         "cache_write": usage.get("cache_creation_input_tokens", 0),
-                    }, msg.get("model", ""))
+                    }, msg.get("model", ""), rec_ts)
             if isinstance(content, list):
                 for c in content:
                     if isinstance(c, dict):

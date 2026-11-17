@@ -1,0 +1,208 @@
+{
+  "_comment": "Ollama Cloud on-demand pricing for tokstat. USD per MILLION tokens as [input, cached_input, output]; a value may be null when the page omits it. 'offpeak' is null when the model has no off-peak tier. Regenerate with scripts/refresh_ollama_pricing.py.",
+  "source": "https://ollama.com/pricing",
+  "updated": "2026-11-17",
+  "offpeak_utc_hours": [
+    12,
+    18
+  ],
+  "local_also": [
+    "gpt-oss:20b",
+    "gpt-oss:120b",
+    "gemma4"
+  ],
+  "models": {
+    "beam": {
+      "peak": [
+        0.125,
+        0.015,
+        0.4
+      ],
+      "offpeak": null
+    },
+    "clef": {
+      "peak": [
+        0.24,
+        null,
+        null
+      ],
+      "offpeak": null
+    },
+    "deepseek-v4-pro": {
+      "peak": [
+        1.32,
+        0.044,
+        3.96
+      ],
+      "offpeak": [
+        0.66,
+        0.022,
+        1.98
+      ]
+    },
+    "deepseek-v4.1-flash": {
+      "peak": [
+        0.3,
+        0.006,
+        1.2
+      ],
+      "offpeak": [
+        0.15,
+        0.003,
+        0.6
+      ]
+    },
+    "gemma4": {
+      "peak": [
+        0.14,
+        0.05,
+        0.4
+      ],
+      "offpeak": null
+    },
+    "glm-5.2": {
+      "peak": [
+        1.4,
+        0.26,
+        4.4
+      ],
+      "offpeak": null
+    },
+    "glm-5.3": {
+      "peak": [
+        1.4,
+        0.26,
+        4.4
+      ],
+      "offpeak": null
+    },
+    "glm-5.3-flash": {
+      "peak": [
+        0.15,
+        0.03,
+        0.5
+      ],
+      "offpeak": null
+    },
+    "gpt-oss:120b": {
+      "peak": [
+        0.15,
+        0.014,
+        0.6
+      ],
+      "offpeak": null
+    },
+    "gpt-oss:20b": {
+      "peak": [
+        0.07,
+        0.035,
+        0.3
+      ],
+      "offpeak": null
+    },
+    "inkling-2-small": {
+      "peak": [
+        0.3,
+        0.03,
+        1.0
+      ],
+      "offpeak": null
+    },
+    "kimi-k2.6": {
+      "peak": [
+        0.95,
+        0.16,
+        4.0
+      ],
+      "offpeak": null
+    },
+    "kimi-k2.7-code": {
+      "peak": [
+        0.95,
+        0.19,
+        4.0
+      ],
+      "offpeak": null
+    },
+    "kimi-k3": {
+      "peak": [
+        3.0,
+        0.3,
+        15.0
+      ],
+      "offpeak": null
+    },
+    "kimi-k3.1-pro": {
+      "peak": [
+        2.0,
+        0.2,
+        10.0
+      ],
+      "offpeak": null
+    },
+    "mimo-v2.6-flash": {
+      "peak": [
+        0.14,
+        0.0028,
+        0.28
+      ],
+      "offpeak": null
+    },
+    "mimo-v2.6-pro": {
+      "peak": [
+        0.435,
+        0.0036,
+        0.87
+      ],
+      "offpeak": null
+    },
+    "minimax-m3": {
+      "peak": [
+        0.6,
+        0.12,
+        2.4
+      ],
+      "offpeak": null
+    },
+    "minimax-m3.1-flash": {
+      "peak": [
+        0.15,
+        0.015,
+        0.6
+      ],
+      "offpeak": null
+    },
+    "mistral-large-4": {
+      "peak": [
+        0.7,
+        0.07,
+        2.1
+      ],
+      "offpeak": null
+    },
+    "muse-spark-open": {
+      "peak": [
+        1.25,
+        0.15,
+        4.25
+      ],
+      "offpeak": null
+    },
+    "nemotron-3-super": {
+      "peak": [
+        0.015,
+        0.015,
+        0.6
+      ],
+      "offpeak": null
+    },
+    "nemotron-3-ultra": {
+      "peak": [
+        0.1,
+        0.1,
+        3.0
+      ],
+      "offpeak": null
+    }
+  }
+}

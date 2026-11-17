@@ -108,7 +108,7 @@ def scan_gemini() -> list[dict]:
                         "project": project,
                         "ts":      ts,
                         **tokens,
-                        "cost":    compute_cost(tokens, model),
+                        "cost":    compute_cost(tokens, model, ts),
                     })
             except (OSError, json.JSONDecodeError):
                 continue
@@ -251,7 +251,7 @@ def _extract_exchanges_gemini() -> list[dict]:
                             current["cost"] += compute_cost(
                                 {"input": inp, "output": out,
                                  "cache_read": cached, "cache_write": 0},
-                                current["model"],
+                                current["model"], current.get("ts"),
                             )
 
             if current:

@@ -138,7 +138,7 @@ def scan_qwen() -> list[dict]:
                     "ts":         ts,
                     "session_id": rec.get("sessionId") or jsonl_file.stem,
                     **tokens,
-                    "cost":       compute_cost(tokens, model),
+                    "cost":       compute_cost(tokens, model, ts),
                 })
         except (OSError, IOError):
             continue
@@ -261,7 +261,7 @@ def _extract_exchanges_qwen(jsonl_path: str) -> list[dict]:
                 tk = _usage_tokens(um)
                 for key in ("input", "output", "cache_read", "cache_write"):
                     current["tokens"][key] += tk[key]
-                current["cost"] += compute_cost(tk, current["model"])
+                current["cost"] += compute_cost(tk, current["model"], current.get("ts"))
                 ctx = (um.get("promptTokenCount", 0) or 0)
                 if ctx > 0:
                     if ctx > current["context_peak"]:

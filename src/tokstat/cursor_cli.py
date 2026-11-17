@@ -319,7 +319,7 @@ def _extract_exchanges_cursor() -> list[dict]:
         raw_model = ex.pop("_raw_model", _CURSOR_DEFAULT_MODEL)
         if exact:
             ex["model"] = f"{raw_model} [exact]"
-            ex["cost"] = compute_cost(ex["tokens"], _price_model(raw_model))
+            ex["cost"] = compute_cost(ex["tokens"], _price_model(raw_model), ex.get("ts"))
         else:
             ex["model"] = f"{raw_model} [no tokens]"
             ex["cost"] = 0.0
