@@ -580,6 +580,37 @@ def fmt_cost(c: float) -> str:
     return "$0.00"
 
 
+def cost_or_no_token_cell(bucket) -> str:
+    """Cost-column text for a row/bucket with no cost.
+
+    A zero cost means one of two very different things, and conflating them is
+    what makes activity-only tools look broken:
+
+    - the row records real activity but **no local token counts** — GitHub
+      Copilot Chat, Kiro, recent Cursor (flat-rate; tokens never hit disk).
+      Its sessions ARE captured (prompts/turns > 0); only tokens/cost are
+      unavailable. Saying "no data" next to "8 prompts" reads as "tokstat sees
+      nothing of my Copilot" — the exact complaint. Say "no tokens" instead.
+    - the row is genuinely empty (no prompts, no turns, no tokens) → "⚠ no data".
+
+    `bucket` is any dict carrying token counts and (optionally) prompts/turns/
+    api_calls; it covers both the period/project buckets and the per-tool
+    summary buckets.
+    """
+    cost = bucket.get("cost", 0.0) or 0.0
+    toks = (bucket.get("input", 0) or 0) + (bucket.get("output", 0) or 0) \
+        + (bucket.get("cache_read", 0) or 0) + (bucket.get("cache_write", 0) or 0)
+    # some summary buckets carry a pre-summed scalar "tokens"
+    if not toks:
+        t = bucket.get("tokens", 0)
+        toks = t if isinstance(t, (int, float)) else 0
+    if toks or cost:
+        return fmt_cost(cost)
+    has_activity = (bucket.get("prompts", 0) or bucket.get("turns", 0)
+                    or bucket.get("api_calls", 0))
+    return f"{DIM}no tokens{RESET}" if has_activity else f"{BYELLOW}⚠ no data{RESET}"
+
+
 def fmt_duration(seconds) -> str:
     """Compact wall-clock duration: 42s · 3m · 1h12m."""
     if not seconds or seconds < 0:
@@ -882,11 +913,10 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     def _row(label, tool_disp, b, *, bold=False):
         def F(s):
             return f"{BOLD}{s}{RESET}" if bold else s
-        no_tok = (b["input"] == 0 and b["output"] == 0
-                  and b["cache_read"] == 0 and b["cache_write"] == 0)
-        # No local token data (Kiro, recent Cursor) → flag it explicitly in
-        # the cost column instead of a bare dash.
-        cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
+        # Activity-only tools (Copilot Chat, Kiro, recent Cursor) record no
+        # local tokens: show "no tokens" next to their real prompts/turns, not
+        # an alarming "no data" that reads as "nothing was captured".
+        cost_cell = cost_or_no_token_cell(b)
         cells = [label, tool_disp]
         if show_activity:
             cells += [F(str(b["prompts"])), F(str(b["turns"])), F(str(b["api_calls"]))]
@@ -1070,9 +1100,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                 # session ran in — not normalize_project()'s git-repo-root
                 # collapse, which would merge distinct sub-projects of one repo.
                 proj = shorten_path(meta["project"], 30)
-                no_tok = (b["input"] == 0 and b["output"] == 0
-                          and b["cache_read"] == 0 and b["cache_write"] == 0)
-                cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
+                cost_cell = cost_or_no_token_cell(b)
                 cells = [f"{BOLD}{short_session_id(sid)}{RESET}",
                          f"{color}{meta['tool']}{RESET}", proj]
                 if show_activity:
@@ -1132,9 +1160,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
                 for sid, b in ranked_s:
                     tool = sess_tool[(proj, sid)]
                     color = TOOL_COLORS.get(tool, "")
-                    no_tok = (b["input"] == 0 and b["output"] == 0
-                              and b["cache_read"] == 0 and b["cache_write"] == 0)
-                    cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(b["cost"])
+                    cost_cell = cost_or_no_token_cell(b)
                     print(f"    {DIM}•{RESET} {BOLD}{short_session_id(sid)}{RESET}  "
                           f"{color}{tool:<12}{RESET}  "
                           f"{b['prompts']:>4} prompts  "
@@ -1188,8 +1214,7 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
         mark = _mark(key)
         if key in marked_keys:
             any_model_changed = True
-        no_tok = d["input"] == 0 and d["output"] == 0
-        cost_cell = f"{BYELLOW}⚠ no data{RESET}" if no_tok else fmt_cost(d["cost"])
+        cost_cell = cost_or_no_token_cell(d)
         row = [f"{mark}{model}", f"{color}{d['tool']}{RESET}"]
         if show_activity:
             row += [str(d["prompts"]), str(d["turns"]), str(d["api_calls"])]
@@ -1297,6 +1322,25 @@ def show_overview_tables(all_records: list[dict], speed_records: list[dict],
     print(f"  {BOLD}Last 60 min:{RESET}  {fmt_tokens(last_hour_tokens)} t/h · "
           f"{fmt_cost(last_hour_cost)}/h{agents_suffix}")
     print(f"  {DIM}{period_line}{RESET}")
+
+    # Name any activity-only tool present (flat-rate: no local token counts).
+    # Their rows legitimately show 0 tokens / "no tokens"; without this line a
+    # user reads that as "tokstat can't see my Copilot/Kiro sessions".
+    tok_by_tool: dict = {}
+    rec_by_tool: dict = {}
+    for r in all_records:
+        t = r.get("tool", "?")
+        rec_by_tool[t] = rec_by_tool.get(t, 0) + 1
+        tok_by_tool[t] = tok_by_tool.get(t, 0) + (
+            int(r.get("input", 0) or 0) + int(r.get("output", 0) or 0)
+            + int(r.get("cache_read", 0) or 0) + int(r.get("cache_write", 0) or 0))
+    activity_only = sorted(t for t, n in rec_by_tool.items()
+                           if n and not tok_by_tool.get(t))
+    if activity_only:
+        names = ", ".join(activity_only)
+        print(f"  {DIM}ℹ {names}: flat-rate — no local token counts. Sessions are "
+              f"captured (prompts/turns); cost is unavailable, shown as "
+              f"\"no tokens\".{RESET}")
     print()
 
 
@@ -2346,7 +2390,7 @@ def show_total(collect_fn, period_name: str | None = None,
         print(f"\n  {DIM}By tool:{RESET}")
         for name, d in sorted(per_tool.items(), key=lambda kv: -kv[1]["cost"]):
             color = TOOL_COLORS.get(name, "")
-            cost_str = fmt_cost(d["cost"]) if d["tokens"] else "⚠ no data"
+            cost_str = cost_or_no_token_cell(d)
             span = f"{d.get('first')} → {d.get('last')}"
             print(f"    {color}{name:<12}{RESET} {cost_str:>10}   "
                   f"{DIM}{fmt_tokens(d['tokens']):>7} tokens · {d['prompts']:>4} prompts · "
